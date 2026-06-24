@@ -2,6 +2,8 @@
 
 `codex-swarm` is a thin local orchestration layer for Codex. It is intended to own the small amount of state around projects, workers, Codex app-server threads, Git worktrees, and issue-linked tasks without adopting a heavy orchestrator runtime.
 
+[![ci](https://github.com/MTG-Thomas/codex-swarm/actions/workflows/ci.yml/badge.svg)](https://github.com/MTG-Thomas/codex-swarm/actions/workflows/ci.yml)
+
 The first implementation target is deliberately narrow:
 
 - wrap `codex app-server` over local JSON-RPC
@@ -22,6 +24,16 @@ Current scaffold:
 go test ./...
 go run ./cmd/cs status
 go run ./cmd/csd
+```
+
+Local maturity checks:
+
+```powershell
+go fmt ./...
+go vet ./...
+go test ./...
+go build ./cmd/cs
+go build ./cmd/csd
 ```
 
 ## Complexity Budget
