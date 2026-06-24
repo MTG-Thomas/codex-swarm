@@ -1,53 +1,283 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
-	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
+	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
 
+type cli struct {
+	out io.Writer
+	err io.Writer
+	now func() time.Time
+}
+
 func main() {
-	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintf(os.Stderr, "cs: %v\n", err)
+	c := cli{
+		out: os.Stdout,
+		err: os.Stderr,
+		now: time.Now,
+	}
+	if err := c.run(os.Args[1:]); err != nil {
+		fmt.Fprintf(c.err, "cs: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(args []string) error {
+func (c cli) run(args []string) error {
 	if len(args) == 0 {
-		printUsage()
+		c.printUsage()
 		return nil
 	}
 
 	switch args[0] {
 	case "status":
-		fs := flag.NewFlagSet("status", flag.ContinueOnError)
-		if err := fs.Parse(args[1:]); err != nil {
-			return err
-		}
-		status := daemon.Status{
-			Daemon:  "not-running",
-			Workers: 0,
-		}
-		fmt.Println(status.String())
-		return nil
-	case "spawn", "send", "resume", "report":
-		return fmt.Errorf("%q is planned but not implemented in the scaffold", args[0])
+		return c.status(args[1:])
+	case "spawn":
+		return c.spawn(args[1:])
+	case "send":
+		return c.send(args[1:])
+	case "report":
+		return c.report(args[1:])
+	case "resume":
+		return c.resume(args[1:])
+	case "show":
+		return c.show(args[1:])
 	default:
-		printUsage()
+		c.printUsage()
 		return fmt.Errorf("unknown command %q", args[0])
 	}
 }
 
-func printUsage() {
-	fmt.Println(`cs - Codex swarm operator CLI
+func (c cli) status(args []string) error {
+	fs := c.flagSet("status")
+	statePath := fs.String("state", defaultStatePath(), "state file path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	workers, err := store.NewJSONStore(*statePath).ListWorkers()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "workers=%d state=%s\n", len(workers), *statePath)
+	for _, worker := range workers {
+		fmt.Fprintf(c.out, "%s\t%s\t%s\t%s\n", worker.ID, worker.Status, worker.ThreadID, short(worker.Prompt, 60))
+	}
+	return nil
+}
+
+func (c cli) spawn(args []string) error {
+	fs := c.flagSet("spawn")
+	statePath := fs.String("state", defaultStatePath(), "state file path")
+	repo := fs.String("repo", ".", "repository root")
+	prompt := fs.String("prompt", "", "worker prompt")
+	mock := fs.Bool("mock", true, "use deterministic mock worker")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*prompt) == "" {
+		return errors.New("spawn requires --prompt")
+	}
+	repoRoot, err := filepath.Abs(*repo)
+	if err != nil {
+		return fmt.Errorf("resolve repo: %w", err)
+	}
+
+	now := c.now().UTC()
+	id := fmt.Sprintf("w-%s", now.Format("20060102-150405"))
+	threadID := fmt.Sprintf("mock-thread-%s", id)
+	if !*mock {
+		threadID = "app-server-pending"
+	}
+	worker := store.Worker{
+		ID:          id,
+		ProjectRoot: repoRoot,
+		Worktree:    filepath.Join(repoRoot, ".codex-swarm", "worktrees", id),
+		Branch:      "cs/" + id,
+		ThreadID:    threadID,
+		Status:      store.WorkerIdle,
+		Prompt:      *prompt,
+		LastMessage: mockSummary(*prompt),
+		CreatedAt:   now,
+		UpdatedAt:   now,
+		Events: []store.Event{
+			{At: now, Type: "spawned", Message: "worker created"},
+			{At: now, Type: "mock.turn.completed", Message: mockSummary(*prompt)},
+		},
+	}
+
+	if err := store.NewJSONStore(*statePath).SaveWorker(worker); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "spawned %s thread=%s status=%s\n", worker.ID, worker.ThreadID, worker.Status)
+	fmt.Fprintf(c.out, "%s\n", worker.LastMessage)
+	return nil
+}
+
+func (c cli) send(args []string) error {
+	fs := c.flagSet("send")
+	statePath := fs.String("state", defaultStatePath(), "state file path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) < 2 {
+		return errors.New("send requires <worker> <message>")
+	}
+	id := rest[0]
+	message := strings.Join(rest[1:], " ")
+	return c.updateWorker(*statePath, id, func(worker *store.Worker, now time.Time) {
+		worker.Status = store.WorkerIdle
+		worker.LastMessage = mockSummary(message)
+		worker.Events = append(worker.Events,
+			store.Event{At: now, Type: "message.sent", Message: message},
+			store.Event{At: now, Type: "mock.turn.completed", Message: worker.LastMessage},
+		)
+	}, func(worker store.Worker) {
+		fmt.Fprintf(c.out, "sent %s status=%s\n%s\n", worker.ID, worker.Status, worker.LastMessage)
+	})
+}
+
+func (c cli) report(args []string) error {
+	fs := c.flagSet("report")
+	statePath := fs.String("state", defaultStatePath(), "state file path")
+	note := fs.String("note", "", "report note")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) < 2 {
+		return errors.New("report requires <worker> <done|blocked|failed>")
+	}
+	id := rest[0]
+	report := strings.Join(rest[1:], " ")
+	if *note != "" {
+		report = report + ": " + *note
+	}
+	return c.updateWorker(*statePath, id, func(worker *store.Worker, now time.Time) {
+		switch rest[1] {
+		case "done", "completed":
+			worker.Status = store.WorkerDone
+		case "failed":
+			worker.Status = store.WorkerFailed
+		default:
+			worker.Status = store.WorkerIdle
+		}
+		worker.Report = report
+		worker.Events = append(worker.Events, store.Event{At: now, Type: "reported", Message: report})
+	}, func(worker store.Worker) {
+		fmt.Fprintf(c.out, "reported %s status=%s report=%q\n", worker.ID, worker.Status, worker.Report)
+	})
+}
+
+func (c cli) resume(args []string) error {
+	fs := c.flagSet("resume")
+	statePath := fs.String("state", defaultStatePath(), "state file path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		return errors.New("resume requires <worker>")
+	}
+	return c.updateWorker(*statePath, rest[0], func(worker *store.Worker, now time.Time) {
+		worker.Status = store.WorkerIdle
+		worker.Events = append(worker.Events, store.Event{At: now, Type: "resume.requested", Message: "resume requested"})
+	}, func(worker store.Worker) {
+		fmt.Fprintf(c.out, "resume %s thread=%s status=%s\n", worker.ID, worker.ThreadID, worker.Status)
+	})
+}
+
+func (c cli) show(args []string) error {
+	fs := c.flagSet("show")
+	statePath := fs.String("state", defaultStatePath(), "state file path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		return errors.New("show requires <worker>")
+	}
+	worker, err := store.NewJSONStore(*statePath).GetWorker(rest[0])
+	if err != nil {
+		if errors.Is(err, store.ErrWorkerNotFound) {
+			return fmt.Errorf("worker %q not found", rest[0])
+		}
+		return err
+	}
+	fmt.Fprintf(c.out, "id=%s\nstatus=%s\nthread=%s\nrepo=%s\nprompt=%s\n", worker.ID, worker.Status, worker.ThreadID, worker.ProjectRoot, worker.Prompt)
+	if worker.Report != "" {
+		fmt.Fprintf(c.out, "report=%s\n", worker.Report)
+	}
+	for _, event := range worker.Events {
+		fmt.Fprintf(c.out, "%s\t%s\t%s\n", event.At.Format(time.RFC3339), event.Type, event.Message)
+	}
+	return nil
+}
+
+func (c cli) updateWorker(statePath, id string, mutate func(*store.Worker, time.Time), print func(store.Worker)) error {
+	s := store.NewJSONStore(statePath)
+	worker, err := s.GetWorker(id)
+	if err != nil {
+		if errors.Is(err, store.ErrWorkerNotFound) {
+			return fmt.Errorf("worker %q not found", id)
+		}
+		return err
+	}
+	now := c.now().UTC()
+	mutate(&worker, now)
+	worker.UpdatedAt = now
+	if err := s.SaveWorker(worker); err != nil {
+		return err
+	}
+	print(worker)
+	return nil
+}
+
+func (c cli) flagSet(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(c.err)
+	return fs
+}
+
+func (c cli) printUsage() {
+	fmt.Fprintln(c.out, `cs - Codex swarm operator CLI
 
 Usage:
   cs status
-  cs spawn --repo . --prompt "..."
-  cs send <worker> "..."
+  cs spawn --repo . --prompt "inspect this repo"
+  cs send <worker> "continue with tests"
   cs resume <worker>
-  cs report <worker> done`)
+  cs show <worker>
+  cs report --note "summary" <worker> done`)
+}
+
+func defaultStatePath() string {
+	if value := os.Getenv("CODEX_SWARM_STATE"); value != "" {
+		return value
+	}
+	return filepath.Join(".codex-swarm", "state.json")
+}
+
+func mockSummary(prompt string) string {
+	return "mock worker accepted: " + short(prompt, 96)
+}
+
+func short(value string, max int) string {
+	value = strings.Join(strings.Fields(value), " ")
+	if len(value) <= max {
+		return value
+	}
+	if max <= 3 {
+		return value[:max]
+	}
+	return value[:max-3] + "..."
 }

@@ -26,6 +26,20 @@ go run ./cmd/cs status
 go run ./cmd/csd
 ```
 
+## Friend-demo MVP
+
+The current MVP uses a deterministic mock worker so the operator flow is easy to demo without depending on a live Codex app-server session.
+
+```powershell
+go run ./cmd/cs spawn --repo . --prompt "inspect this repo and suggest the next useful slice"
+go run ./cmd/cs status
+go run ./cmd/cs send <worker-id> "continue with tests and docs"
+go run ./cmd/cs show <worker-id>
+go run ./cmd/cs report --note "demo completed" <worker-id> done
+```
+
+State is written to `.codex-swarm/state.json` by default. Use `--state <path>` or `CODEX_SWARM_STATE` for disposable demos and tests.
+
 Local maturity checks:
 
 ```powershell

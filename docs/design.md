@@ -39,6 +39,25 @@ cs resume <worker>
 cs report <worker> done
 ```
 
+## MVP slice
+
+The first demoable slice intentionally uses a mock worker behind the same operator commands:
+
+- `spawn` creates a worker record, thread placeholder, branch/worktree plan, and first mock event.
+- `send` appends a message and mock completion event.
+- `show` prints worker details and the event timeline.
+- `report` records done/failed/idle state and a human-readable report.
+- `status` lists current workers from local durable state.
+
+This proves the operator workflow, persistence shape, and CLI contract before the daemon owns a long-running Codex app-server process.
+
+Next real-worker slice:
+
+1. Add an app-server runner that starts `codex app-server`.
+2. Map `spawn` to `thread/start` plus `turn/start`.
+3. Stream events into the same worker event model.
+4. Keep `--mock` available for deterministic tests and demos.
+
 ## Dependency policy
 
 Start with the Go standard library. Add dependencies only when they reduce operational risk, testing cost, or cross-platform edge cases enough to justify the extra moving part.
