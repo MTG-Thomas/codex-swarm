@@ -1,0 +1,4 @@
+interface:
+  display_name: "codex-swarm Dependency Security"
+  short_description: "Dependency and security review policy for codex-swarm."
+  default_prompt: "Use this when adding dependencies, auditing supply chain risk, handling secrets, or reviewing local daemon security."

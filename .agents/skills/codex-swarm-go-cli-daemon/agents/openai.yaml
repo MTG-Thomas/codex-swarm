@@ -1,0 +1,4 @@
+interface:
+  display_name: "codex-swarm CLI Daemon"
+  short_description: "CLI and daemon/service patterns for codex-swarm."
+  default_prompt: "Use this when implementing or reviewing cs, csd, daemon lifecycle, or app-server worker boundaries."

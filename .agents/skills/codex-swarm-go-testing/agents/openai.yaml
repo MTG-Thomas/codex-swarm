@@ -1,0 +1,4 @@
+interface:
+  display_name: "codex-swarm Go Testing"
+  short_description: "Testing patterns for codex-swarm Go code."
+  default_prompt: "Use this when adding or reviewing Go tests, fakes, race tests, or integration boundaries in codex-swarm."

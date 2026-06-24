@@ -1,0 +1,4 @@
+interface:
+  display_name: "codex-swarm Go Modern"
+  short_description: "Version-gated modern Go guidance for codex-swarm."
+  default_prompt: "Use this when modernizing or reviewing codex-swarm Go code against the repo go.mod version."

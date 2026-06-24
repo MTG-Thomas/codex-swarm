@@ -1,0 +1,4 @@
+interface:
+  display_name: "codex-swarm Context Errors"
+  short_description: "Context, cancellation, and error handling for codex-swarm."
+  default_prompt: "Use this when working on context propagation, shutdown, goroutines, error wrapping, or operator-facing failures."

@@ -1,0 +1,15 @@
+id: jetbrains-go-modern-guidelines
+taxonomy_class: 200-go-quality
+status: adapted
+source: https://github.com/JetBrains/go-modern-guidelines
+license: Apache-2.0
+reviewed_at: "2026-06-24"
+trigger_phrases:
+  - modern Go
+  - Go stdlib idioms
+  - go.mod version gated modernization
+decision: "Adapt compact guidance into codex-swarm-go-modern."
+risk_notes:
+  - "Remove shell activation snippets."
+  - "Soften blanket guidance."
+  - "Ignore features newer than codex-swarm go.mod and CI."

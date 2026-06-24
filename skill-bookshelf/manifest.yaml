@@ -1,0 +1,35 @@
+version: 1
+policy:
+  default_status: candidate
+  promotion_rule: "Promote only compact, reviewed, repo-local skills. Do not install unpinned upstream bundles globally."
+  source_review_date: "2026-06-24"
+entries:
+  - id: jetbrains-go-modern-guidelines
+    name: JetBrains Go Modern Guidelines
+    source: https://github.com/JetBrains/go-modern-guidelines
+    license: Apache-2.0
+    status: adapted
+    promoted_skills:
+      - .agents/skills/codex-swarm-go-modern
+    notes: "Strong source reputation; adapt use-modern-go only. Remove Claude activation snippets and gate advice on go.mod."
+  - id: samber-cc-skills-golang
+    name: samber cc-skills-golang
+    source: https://github.com/samber/cc-skills-golang
+    license: MIT
+    status: adapted
+    promoted_skills:
+      - .agents/skills/codex-swarm-go-cli-daemon
+      - .agents/skills/codex-swarm-go-context-errors
+      - .agents/skills/codex-swarm-go-testing
+      - .agents/skills/codex-swarm-go-dependency-security
+    notes: "Best broad Go source. Do not import wholesale; remove dependency bias toward samber libraries and framework-specific skills."
+  - id: eduardo-sl-go-agent-skills
+    name: eduardo-sl Go Agent Skills
+    source: https://github.com/eduardo-sl/go-agent-skills
+    license: MIT
+    status: candidate
+    promoted_skills:
+      - .agents/skills/codex-swarm-go-context-errors
+      - .agents/skills/codex-swarm-go-testing
+      - .agents/skills/codex-swarm-go-dependency-security
+    notes: "Useful focused guidance; lower trust signal. Use as source library only, pinned and reviewed."

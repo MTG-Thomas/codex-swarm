@@ -1,0 +1,15 @@
+id: eduardo-sl-go-agent-skills
+taxonomy_class: 200-go-quality
+status: candidate
+source: https://github.com/eduardo-sl/go-agent-skills
+license: MIT
+reviewed_at: "2026-06-24"
+trigger_phrases:
+  - Go interface design
+  - Go table-driven tests
+  - Go dependency audit
+decision: "Use as reviewed source material only; lower trust signal than JetBrains or samber."
+risk_notes:
+  - "No releases."
+  - "Do not run unpinned npx installer."
+  - "Trim web/database guidance unless codex-swarm grows those surfaces."

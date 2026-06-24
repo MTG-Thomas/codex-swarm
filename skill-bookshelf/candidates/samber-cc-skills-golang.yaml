@@ -1,0 +1,18 @@
+id: samber-cc-skills-golang
+taxonomy_class: 200-go-quality
+status: adapted
+source: https://github.com/samber/cc-skills-golang
+license: MIT
+reviewed_at: "2026-06-24"
+trigger_phrases:
+  - Go CLI
+  - Go daemon
+  - Go context
+  - Go error handling
+  - Go testing
+  - Go security
+decision: "Adapt selected skills; do not install wholesale."
+risk_notes:
+  - "Avoid samber library bias."
+  - "Avoid unused framework skills such as GraphQL, gRPC, DI, Swagger, and Viper."
+  - "Keep observability/security skills intentional rather than always-on."
