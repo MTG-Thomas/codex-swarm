@@ -8,10 +8,11 @@ Run these before pushing:
 
 ```powershell
 go fmt ./...
+test -z "$(gofmt -l .)" # bash/sh
 go vet ./...
 go test ./...
-go build ./cmd/cs
-go build ./cmd/csd
+go build -trimpath ./cmd/cs
+go build -trimpath ./cmd/csd
 ```
 
 If `make` is available:
@@ -29,6 +30,7 @@ Prefer the Go standard library until a dependency clearly reduces operational ri
 - GitHub API work: a maintained client once shelling to `gh` is not enough
 - service install: platform helpers once `csd` needs install/uninstall commands
 - CLI complexity: a command framework once `flag` boilerplate hides behavior
+- vulnerability scanning: keep `govulncheck` green once dependencies arrive
 
 Every new dependency should include:
 
@@ -43,3 +45,11 @@ Every new dependency should include:
 - Keep daemon transport separate from worker/task state.
 - Keep GitHub and scheduler behavior optional at the edges.
 - Avoid MCP for routine local worker coordination unless a specific integration requires it.
+
+## Local Go references
+
+Patterns borrowed from nearby tools:
+
+- `discordo`: `fmt-check`, `-trimpath` builds, smoke-check habit, separate vuln workflow
+- `tickgit`: compact cross-platform test workflow and GoReleaser-style release path
+- `terraform-provider-definednetworking`: minimal module shape for a small single-purpose tool

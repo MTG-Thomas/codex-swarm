@@ -30,10 +30,11 @@ Local maturity checks:
 
 ```powershell
 go fmt ./...
+test -z "$(gofmt -l .)" # bash/sh
 go vet ./...
 go test ./...
-go build ./cmd/cs
-go build ./cmd/csd
+go build -trimpath ./cmd/cs
+go build -trimpath ./cmd/csd
 ```
 
 ## Complexity Budget

@@ -7,7 +7,10 @@ This repo should mature in layers. Each layer should make the operator experienc
 - public GitHub repository
 - MIT license
 - `go fmt`, `go vet`, `go test`, and build checks
+- non-mutating `gofmt` check in CI
+- `-trimpath` builds
 - Windows and Linux CI
+- `govulncheck` workflow
 - explicit dependency policy
 - package boundaries for app-server, daemon, store, worktree, config, and GitHub
 
@@ -18,6 +21,7 @@ This repo should mature in layers. Each layer should make the operator experienc
 - structured logs once `csd` runs longer than a one-shot command
 - integration test with a fake app-server process before driving real Codex
 - release workflow once binaries are useful outside local development
+- optional smoke target once version metadata or real daemon startup exists
 
 ## Complexity triggers
 
@@ -34,10 +38,8 @@ Add dependencies or infrastructure only when one of these is true:
 
 When comparing nearby Go tools, prefer borrowing:
 
-- command naming and help text conventions
-- CI and release workflow shape
-- config file locations
-- service install/uninstall behavior
-- logging and error presentation
+- `discordo`: Makefile targets for `fmt-check`, `test`, `build`, `smoke`, `lint`, and `vulncheck`; use `-trimpath` for builds.
+- `tickgit`: compact OS-matrix CI plus GoReleaser path once distribution matters.
+- `terraform-provider-definednetworking`: minimal single-purpose module shape.
 
 Do not copy broad architecture unless it directly helps the Codex app-server wrapper.

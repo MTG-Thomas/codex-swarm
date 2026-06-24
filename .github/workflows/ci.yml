@@ -28,14 +28,12 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: ${{ matrix.go-version }}
+          go-version-file: go.mod
           cache: true
 
       - name: Format check
         shell: bash
-        run: |
-          gofmt -w .
-          git diff --exit-code
+        run: test -z "$(gofmt -l .)"
 
       - name: Vet
         run: go vet ./...
@@ -45,5 +43,5 @@ jobs:
 
       - name: Build
         run: |
-          go build ./cmd/cs
-          go build ./cmd/csd
+          go build -trimpath ./cmd/cs
+          go build -trimpath ./cmd/csd

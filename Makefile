@@ -1,4 +1,4 @@
-.PHONY: all build test vet fmt check clean
+.PHONY: all build test vet fmt fmt-check vulncheck check clean
 
 GO ?= go
 BIN_DIR ?= bin
@@ -6,8 +6,8 @@ BIN_DIR ?= bin
 all: check build
 
 build:
-	$(GO) build -o $(BIN_DIR)/cs ./cmd/cs
-	$(GO) build -o $(BIN_DIR)/csd ./cmd/csd
+	$(GO) build -trimpath -o $(BIN_DIR)/cs ./cmd/cs
+	$(GO) build -trimpath -o $(BIN_DIR)/csd ./cmd/csd
 
 test:
 	$(GO) test ./...
@@ -18,7 +18,13 @@ vet:
 fmt:
 	$(GO) fmt ./...
 
-check: fmt vet test
+fmt-check:
+	test -z "$$(gofmt -l .)"
+
+vulncheck:
+	govulncheck ./...
+
+check: fmt-check vet test
 
 clean:
 	$(GO) clean
