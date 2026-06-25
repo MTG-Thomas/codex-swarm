@@ -692,6 +692,7 @@ Usage:
   cs issue export --issue owner/repo#123
   cs issue pull --issue owner/repo#123
   cs issue sync --issue owner/repo#123
+  cs issue report --issue owner/repo#123 --worker <worker>
   cs agent register --name "codex-thread" --role implementer
   cs agent current
   cs legacy import-coordinator

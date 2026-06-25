@@ -53,7 +53,7 @@ Exit criteria: one operator command can start a small set of role-based workers 
 - Link warning-only claims to GitHub issues.
 - Export or explicitly push claim summaries as issue comments.
 - Use `cs issue export/sync/pull` marker blocks to exchange claim state through GitHub issues across machines.
-- Post reports or status comments only on explicit commands.
+- Post reports or status comments only on explicit commands such as `cs issue report`.
 - Add optional labels for running, blocked, and done states.
 
 Exit criteria: an issue can become a worker-backed local task and receive a concise final report without clickops.

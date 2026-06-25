@@ -27,7 +27,7 @@ type issueClaimSnapshot struct {
 
 func (c cli) issue(args []string) error {
 	if len(args) == 0 {
-		return errors.New("issue requires <export|sync|pull|claim>")
+		return errors.New("issue requires <export|sync|pull|report|claim>")
 	}
 	switch args[0] {
 	case "export":
@@ -36,6 +36,8 @@ func (c cli) issue(args []string) error {
 		return c.issueSync(args[1:])
 	case "pull":
 		return c.issuePull(args[1:])
+	case "report":
+		return c.issueReport(args[1:])
 	case "claim":
 		return c.issueClaim(args[1:])
 	default:
@@ -129,6 +131,40 @@ func (c cli) issuePull(args []string) error {
 	return nil
 }
 
+func (c cli) issueReport(args []string) error {
+	fs := c.flagSet("issue report")
+	statePath := fs.String("state", defaultStatePath(), "state file path")
+	issueValue := fs.String("issue", "", "GitHub issue reference")
+	workerID := fs.String("worker", "", "worker id")
+	note := fs.String("note", "", "optional report note override")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	issue, err := normalizeRequiredIssue(*issueValue)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(*workerID) == "" {
+		return errors.New("issue report requires --worker")
+	}
+	worker, err := store.NewJSONStore(*statePath).GetWorker(*workerID)
+	if err != nil {
+		if errors.Is(err, store.ErrWorkerNotFound) {
+			return fmt.Errorf("worker %q not found", *workerID)
+		}
+		return err
+	}
+	if worker.Issue != "" && worker.Issue != issue {
+		return fmt.Errorf("worker %s is linked to %s, not %s", worker.ID, worker.Issue, issue)
+	}
+	body := workerIssueReportMarkdown(issue, worker, *note, c.now().UTC())
+	if err := postIssueComment(context.Background(), issue, body); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "reported issue=%s worker=%s status=%s\n", issue, worker.ID, worker.Status)
+	return nil
+}
+
 func (c cli) issueClaim(args []string) error {
 	if len(args) == 0 {
 		return errors.New("issue claim requires <create>")
@@ -149,6 +185,34 @@ func claimIssueMarkerMarkdown(issue string, all []store.Claim, now time.Time) (s
 		return "", fmt.Errorf("encode claim snapshot: %w", err)
 	}
 	return claimMarkerStart + "\n" + string(payload) + "\n" + claimMarkerEnd + "\n\n" + claimIssueMarkdown(issue, all, now), nil
+}
+
+func workerIssueReportMarkdown(issue string, worker store.Worker, note string, now time.Time) string {
+	report := strings.TrimSpace(note)
+	if report == "" {
+		report = strings.TrimSpace(worker.Report)
+	}
+	if report == "" {
+		report = strings.TrimSpace(worker.LastMessage)
+	}
+	if report == "" {
+		report = "No report text recorded."
+	}
+
+	var buf strings.Builder
+	fmt.Fprintf(&buf, "## codex-swarm worker report for `%s`\n\n", issue)
+	fmt.Fprintf(&buf, "_Generated: %s_\n\n", now.Format(time.RFC3339))
+	fmt.Fprintf(&buf, "- Worker: `%s`\n", worker.ID)
+	fmt.Fprintf(&buf, "- Status: `%s`\n", worker.Status)
+	fmt.Fprintf(&buf, "- Engine: `%s`\n", worker.Engine)
+	if worker.ThreadID != "" {
+		fmt.Fprintf(&buf, "- Thread: `%s`\n", worker.ThreadID)
+	}
+	if worker.ProjectRoot != "" {
+		fmt.Fprintf(&buf, "- Repo: `%s`\n", worker.ProjectRoot)
+	}
+	fmt.Fprintf(&buf, "\n%s\n", report)
+	return buf.String()
 }
 
 type ghIssueView struct {

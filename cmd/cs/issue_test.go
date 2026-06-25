@@ -76,3 +76,27 @@ func TestLatestClaimSnapshotUsesNewestMarker(t *testing.T) {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}
 }
+
+func TestWorkerIssueReportMarkdownUsesWorkerReport(t *testing.T) {
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	body := workerIssueReportMarkdown("MTG-Thomas/codex-swarm#42", store.Worker{
+		ID:          "w-1",
+		Issue:       "MTG-Thomas/codex-swarm#42",
+		Status:      store.WorkerDone,
+		Engine:      "mock",
+		ThreadID:    "mock-thread-w-1",
+		ProjectRoot: `C:\repo`,
+		Report:      "implemented and verified",
+		LastMessage: "fallback",
+	}, "", now)
+	for _, want := range []string{
+		"codex-swarm worker report for `MTG-Thomas/codex-swarm#42`",
+		"- Worker: `w-1`",
+		"- Status: `done`",
+		"implemented and verified",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("report markdown missing %q:\n%s", want, body)
+		}
+	}
+}
