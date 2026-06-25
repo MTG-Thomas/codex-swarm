@@ -22,6 +22,9 @@ This repo should mature in layers. Each layer should make the operator experienc
 - integration test with a fake app-server process before driving real Codex
 - release workflow once binaries are useful outside local development
 - optional smoke target once version metadata or real daemon startup exists
+- repo-local agent entrypoint in `AGENTS.md`
+- version metadata command before the first binary release
+- macOS CI once daemon service or IPC behavior appears
 
 ## Complexity triggers
 
@@ -41,5 +44,9 @@ When comparing nearby Go tools, prefer borrowing:
 - `discordo`: Makefile targets for `fmt-check`, `test`, `build`, `smoke`, `lint`, and `vulncheck`; use `-trimpath` for builds.
 - `tickgit`: compact OS-matrix CI plus GoReleaser path once distribution matters.
 - `terraform-provider-definednetworking`: minimal single-purpose module shape.
+- `netbirdio/netbird`: CLI/daemon service command boundaries, pinned CI/release maturity, and command-file decomposition once command handlers grow.
+- `slackhq/nebula`: explicit Makefile targets, version stamping, cross-build discipline, and smoke-test layering.
 
 Do not copy broad architecture unless it directly helps the Codex app-server wrapper.
+
+See `docs/mature-go-cli-lessons.md` for current borrow/defer/avoid guidance.
