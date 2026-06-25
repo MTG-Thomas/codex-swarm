@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/MTG-Thomas/codex-swarm/internal/appserver"
+	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
 
@@ -148,8 +149,23 @@ func (c cli) doctor(args []string) error {
 func (c cli) status(args []string) error {
 	fs := c.flagSet("status")
 	statePath := fs.String("state", defaultStatePath(), "state file path")
+	daemonURL := fs.String("daemon", "", "daemon base URL, for example http://127.0.0.1:8787")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+
+	if *daemonURL != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		status, err := (daemon.Client{BaseURL: *daemonURL}).Status(ctx)
+		if err != nil {
+			return fmt.Errorf("daemon status: %w", err)
+		}
+		fmt.Fprintln(c.out, status.String())
+		for _, worker := range status.Workers {
+			fmt.Fprintf(c.out, "%s\t%s\t%s\t%s\t%s\n", worker.ID, worker.Status, worker.Engine, worker.ThreadID, short(worker.Prompt, 60))
+		}
+		return nil
 	}
 
 	workers, err := store.NewJSONStore(*statePath).ListWorkers()
