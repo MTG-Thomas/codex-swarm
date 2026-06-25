@@ -34,12 +34,15 @@ The current MVP can drive a real `codex app-server` thread and keeps a determini
 go run ./cmd/cs spawn --engine appserver --repo . --prompt "reply with exactly: codex-swarm-ok"
 go run ./cmd/cs spawn --repo . --prompt "isolated mock worker" --worktree
 go run ./cmd/cs spawn --repo . --role reviewer --parent <worker-id> --prompt "review this worker"
+go run ./cmd/cs spawn --repo . --issue MTG-Thomas/codex-swarm#42 --prompt "work this issue"
 go run ./cmd/cs status
 go run ./cmd/cs doctor
 go run ./cmd/cs doctor --appserver
 go run ./cmd/cs send <worker-id> "continue with tests and docs"
 go run ./cmd/cs message <from-worker-id> <to-worker-id> "please review this"
 go run ./cmd/cs handoff <from-worker-id> <to-worker-id> "ready for review"
+go run ./cmd/cs schedule add --repo . --cron "0 8 * * 1" --prompt "weekly repo check"
+go run ./cmd/cs schedule list
 go run ./cmd/cs resume <worker-id>
 go run ./cmd/cs inspect-thread <worker-id>
 go run ./cmd/cs show <worker-id>
@@ -53,6 +56,8 @@ State is written to `.codex-swarm/state.json` by default. Use `--state <path>` o
 Pass `--worktree` to create a Git branch and worktree for the worker. The worktree path and branch are recorded on the worker and shown in command output.
 
 Pass `--role` and `--parent` to record simple local swarm relationships. Use `message` and `handoff` to write directed communication events into both workers' local timelines without routing routine interagent traffic through MCP.
+
+Pass `--issue owner/repo#123` to link a worker to a GitHub issue. Scheduling is currently a persisted control-plane record only; `schedule add` and `schedule list` do not execute scheduled workers yet.
 
 Use `--engine mock` when the demo needs to avoid live Codex calls:
 

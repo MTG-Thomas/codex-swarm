@@ -14,6 +14,7 @@ import (
 
 	"github.com/MTG-Thomas/codex-swarm/internal/appserver"
 	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
+	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 	"github.com/MTG-Thomas/codex-swarm/internal/worktree"
 )
@@ -55,6 +56,8 @@ func (c cli) run(args []string) error {
 		return c.message(args[1:])
 	case "handoff":
 		return c.handoff(args[1:])
+	case "schedule":
+		return c.schedule(args[1:])
 	case "report":
 		return c.report(args[1:])
 	case "resume":
@@ -192,6 +195,7 @@ func (c cli) spawn(args []string) error {
 	engine := fs.String("engine", "mock", "worker engine: mock or appserver")
 	role := fs.String("role", "", "worker role, for example implementer, reviewer, tester, or docs")
 	parentID := fs.String("parent", "", "parent worker id")
+	issueValue := fs.String("issue", "", "GitHub issue reference, for example owner/repo#123")
 	createWorktree := fs.Bool("worktree", false, "create the worker Git worktree")
 	timeout := fs.Duration("timeout", 2*time.Minute, "app-server request timeout")
 	if err := fs.Parse(args); err != nil {
@@ -209,6 +213,14 @@ func (c cli) spawn(args []string) error {
 	id := fmt.Sprintf("w-%s", now.Format("20060102-150405"))
 	if *engine != "mock" && *engine != "appserver" {
 		return fmt.Errorf("unknown engine %q", *engine)
+	}
+	issue := ""
+	if strings.TrimSpace(*issueValue) != "" {
+		ref, err := gh.ParseIssueRef(*issueValue)
+		if err != nil {
+			return err
+		}
+		issue = ref.String()
 	}
 
 	threadID := fmt.Sprintf("mock-thread-%s", id)
@@ -236,6 +248,7 @@ func (c cli) spawn(args []string) error {
 		ID:          id,
 		ParentID:    *parentID,
 		Role:        *role,
+		Issue:       issue,
 		ProjectRoot: repoRoot,
 		Worktree:    filepath.Join(repoRoot, ".codex-swarm", "worktrees", id),
 		Branch:      "cs/" + id,
@@ -270,6 +283,9 @@ func (c cli) spawn(args []string) error {
 	if worker.Role != "" || worker.ParentID != "" {
 		fmt.Fprintf(c.out, "swarm: role=%s parent=%s\n", emptyDash(worker.Role), emptyDash(worker.ParentID))
 	}
+	if worker.Issue != "" {
+		fmt.Fprintf(c.out, "issue: %s\n", worker.Issue)
+	}
 	fmt.Fprintf(c.out, "%s\n", worker.LastMessage)
 	if worker.Engine == "appserver" {
 		fmt.Fprintf(c.out, "codex thread: %s\n", worker.ThreadID)
@@ -278,6 +294,73 @@ func (c cli) spawn(args []string) error {
 	}
 	if *createWorktree {
 		fmt.Fprintf(c.out, "worktree: %s branch=%s\n", worker.Worktree, worker.Branch)
+	}
+	return nil
+}
+
+func (c cli) schedule(args []string) error {
+	if len(args) == 0 {
+		return errors.New("schedule requires <add|list>")
+	}
+	switch args[0] {
+	case "add":
+		return c.scheduleAdd(args[1:])
+	case "list":
+		return c.scheduleList(args[1:])
+	default:
+		return fmt.Errorf("unknown schedule command %q", args[0])
+	}
+}
+
+func (c cli) scheduleAdd(args []string) error {
+	fs := c.flagSet("schedule add")
+	statePath := fs.String("state", defaultStatePath(), "state file path")
+	repo := fs.String("repo", ".", "repository root")
+	prompt := fs.String("prompt", "", "scheduled prompt")
+	cron := fs.String("cron", "", "cron expression")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*prompt) == "" {
+		return errors.New("schedule add requires --prompt")
+	}
+	if strings.TrimSpace(*cron) == "" {
+		return errors.New("schedule add requires --cron")
+	}
+	repoRoot, err := filepath.Abs(*repo)
+	if err != nil {
+		return fmt.Errorf("resolve repo: %w", err)
+	}
+	now := c.now().UTC()
+	schedule := store.Schedule{
+		ID:        fmt.Sprintf("s-%s", now.Format("20060102-150405")),
+		Repo:      repoRoot,
+		Prompt:    *prompt,
+		Cron:      *cron,
+		Enabled:   true,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := store.NewJSONStore(*statePath).SaveSchedule(schedule); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "schedule %s cron=%q repo=%s\n", schedule.ID, schedule.Cron, schedule.Repo)
+	return nil
+}
+
+func (c cli) scheduleList(args []string) error {
+	fs := c.flagSet("schedule list")
+	statePath := fs.String("state", defaultStatePath(), "state file path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	schedules, err := store.NewJSONStore(*statePath).ListSchedules()
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "schedules=%d state=%s\n", len(schedules), *statePath)
+	for _, schedule := range schedules {
+		fmt.Fprintf(c.out, "%s\tenabled=%t\t%s\t%s\n", schedule.ID, schedule.Enabled, schedule.Cron, short(schedule.Prompt, 60))
 	}
 	return nil
 }
@@ -539,6 +622,9 @@ func (c cli) show(args []string) error {
 	if worker.ParentID != "" {
 		fmt.Fprintf(c.out, "parent=%s\n", worker.ParentID)
 	}
+	if worker.Issue != "" {
+		fmt.Fprintf(c.out, "issue=%s\n", worker.Issue)
+	}
 	if worker.TurnID != "" {
 		fmt.Fprintf(c.out, "turn=%s\n", worker.TurnID)
 	}
@@ -584,6 +670,7 @@ Usage:
   cs status
   cs spawn --repo . --prompt "inspect this repo"
   cs spawn --engine appserver --repo . --prompt "summarize this repo in one sentence"
+  cs spawn --issue owner/repo#123 --repo . --prompt "work this issue"
   cs doctor --appserver
   cs send <worker> "continue with tests"
   cs message <from-worker> <to-worker> "note"
@@ -591,6 +678,8 @@ Usage:
   cs resume <worker>
   cs inspect-thread <worker>
   cs show <worker>
+  cs schedule add --repo . --cron "0 8 * * 1" --prompt "weekly repo check"
+  cs schedule list
   cs report --note "summary" <worker> done`)
 }
 

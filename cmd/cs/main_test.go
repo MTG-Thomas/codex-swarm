@@ -19,11 +19,14 @@ func TestCLIWorkflow(t *testing.T) {
 	}
 	state := filepath.Join(t.TempDir(), "state.json")
 
-	if err := c.run([]string{"spawn", "--state", state, "--repo", ".", "--role", "implementer", "--prompt", "inspect repo and report"}); err != nil {
+	if err := c.run([]string{"spawn", "--state", state, "--repo", ".", "--role", "implementer", "--issue", "MTG-Thomas/codex-swarm#42", "--prompt", "inspect repo and report"}); err != nil {
 		t.Fatalf("spawn error = %v", err)
 	}
 	if !strings.Contains(out.String(), "spawned w-20260624-120000") {
 		t.Fatalf("spawn output = %q", out.String())
+	}
+	if !strings.Contains(out.String(), "issue: MTG-Thomas/codex-swarm#42") {
+		t.Fatalf("spawn issue output = %q", out.String())
 	}
 
 	now = now.Add(time.Second)
@@ -54,6 +57,23 @@ func TestCLIWorkflow(t *testing.T) {
 	}
 
 	now = now.Add(time.Second)
+	out.Reset()
+	if err := c.run([]string{"schedule", "add", "--state", state, "--repo", ".", "--cron", "0 8 * * 1", "--prompt", "weekly repo check"}); err != nil {
+		t.Fatalf("schedule add error = %v", err)
+	}
+	if !strings.Contains(out.String(), "schedule s-20260624-120004") {
+		t.Fatalf("schedule add output = %q", out.String())
+	}
+
+	now = now.Add(time.Second)
+	out.Reset()
+	if err := c.run([]string{"schedule", "list", "--state", state}); err != nil {
+		t.Fatalf("schedule list error = %v", err)
+	}
+	if !strings.Contains(out.String(), "schedules=1") || !strings.Contains(out.String(), "weekly repo check") {
+		t.Fatalf("schedule list output = %q", out.String())
+	}
+
 	out.Reset()
 	if err := c.run([]string{"send", "--state", state, "w-20260624-120000", "continue with tests"}); err != nil {
 		t.Fatalf("send error = %v", err)

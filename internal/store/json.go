@@ -17,7 +17,8 @@ type JSONStore struct {
 }
 
 type stateFile struct {
-	Workers []Worker `json:"workers"`
+	Workers   []Worker   `json:"workers"`
+	Schedules []Schedule `json:"schedules,omitempty"`
 }
 
 func NewJSONStore(path string) *JSONStore {
@@ -77,6 +78,45 @@ func (s *JSONStore) ListWorkers() ([]Worker, error) {
 		return workers[i].UpdatedAt.After(workers[j].UpdatedAt)
 	})
 	return workers, nil
+}
+
+func (s *JSONStore) SaveSchedule(schedule Schedule) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.read()
+	if err != nil {
+		return err
+	}
+
+	found := false
+	for i := range state.Schedules {
+		if state.Schedules[i].ID == schedule.ID {
+			state.Schedules[i] = schedule
+			found = true
+			break
+		}
+	}
+	if !found {
+		state.Schedules = append(state.Schedules, schedule)
+	}
+
+	return s.write(state)
+}
+
+func (s *JSONStore) ListSchedules() ([]Schedule, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.read()
+	if err != nil {
+		return nil, err
+	}
+	schedules := append([]Schedule(nil), state.Schedules...)
+	sort.Slice(schedules, func(i, j int) bool {
+		return schedules[i].UpdatedAt.After(schedules[j].UpdatedAt)
+	})
+	return schedules, nil
 }
 
 func (s *JSONStore) read() (stateFile, error) {
