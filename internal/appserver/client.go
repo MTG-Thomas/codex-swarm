@@ -255,6 +255,31 @@ func (r Runner) Resume(ctx context.Context, cwd, threadID string) (RunResult, er
 	return RunResult{ThreadID: thread.Thread.ID, Status: "resumed"}, nil
 }
 
+func (r Runner) Check(ctx context.Context, cwd string) error {
+	binary := r.Binary
+	if binary == "" {
+		binary = "codex"
+	}
+
+	cmd := exec.CommandContext(ctx, binary, "app-server")
+	cmd.Dir = cwd
+	cmd.Stderr = io.Discard
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("open app-server stdin: %w", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return fmt.Errorf("open app-server stdout: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start codex app-server: %w", err)
+	}
+	defer closeProcess(stdin, cmd)
+
+	return NewClient(stdin, stdout).Initialize(ctx)
+}
+
 func (r Runner) runTurn(ctx context.Context, cwd, threadID, prompt string) (RunResult, error) {
 	binary := r.Binary
 	if binary == "" {

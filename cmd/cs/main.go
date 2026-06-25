@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -40,6 +41,8 @@ func (c cli) run(args []string) error {
 	}
 
 	switch args[0] {
+	case "doctor":
+		return c.doctor(args[1:])
 	case "status":
 		return c.status(args[1:])
 	case "spawn":
@@ -50,12 +53,96 @@ func (c cli) run(args []string) error {
 		return c.report(args[1:])
 	case "resume":
 		return c.resume(args[1:])
+	case "inspect-thread":
+		return c.inspectThread(args[1:])
 	case "show":
 		return c.show(args[1:])
 	default:
 		c.printUsage()
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func (c cli) doctor(args []string) error {
+	fs := c.flagSet("doctor")
+	statePath := fs.String("state", defaultStatePath(), "state file path")
+	repo := fs.String("repo", ".", "repository root")
+	checkAppServer := fs.Bool("appserver", false, "start codex app-server and verify JSON-RPC initialize")
+	timeout := fs.Duration("timeout", 15*time.Second, "app-server initialization timeout")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	failures := 0
+	check := func(name string, err error, detail string) {
+		if err != nil {
+			failures++
+			fmt.Fprintf(c.out, "FAIL %s: %v\n", name, err)
+			return
+		}
+		if detail != "" {
+			fmt.Fprintf(c.out, "OK   %s: %s\n", name, detail)
+			return
+		}
+		fmt.Fprintf(c.out, "OK   %s\n", name)
+	}
+
+	if path, err := exec.LookPath("go"); err != nil {
+		check("go", err, "")
+	} else {
+		check("go", nil, path)
+	}
+	if path, err := exec.LookPath("git"); err != nil {
+		check("git", err, "")
+	} else {
+		check("git", nil, path)
+	}
+	if path, err := exec.LookPath("codex"); err != nil {
+		check("codex", err, "")
+	} else {
+		check("codex", nil, path)
+	}
+
+	stateDir := filepath.Dir(*statePath)
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		check("state", err, "")
+	} else {
+		check("state", nil, *statePath)
+	}
+
+	repoRoot := ""
+	repoOK := false
+	resolvedRepo, err := filepath.Abs(*repo)
+	if err != nil {
+		check("repo", err, "")
+	} else if info, statErr := os.Stat(resolvedRepo); statErr != nil {
+		check("repo", statErr, "")
+	} else if !info.IsDir() {
+		check("repo", fmt.Errorf("not a directory: %s", resolvedRepo), "")
+	} else {
+		repoRoot = resolvedRepo
+		repoOK = true
+		check("repo", nil, repoRoot)
+	}
+
+	if *checkAppServer && repoOK {
+		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+		defer cancel()
+		if err := (appserver.Runner{}).Check(ctx, repoRoot); err != nil {
+			check("codex app-server", err, "")
+		} else {
+			check("codex app-server", nil, "initialize succeeded")
+		}
+	} else if *checkAppServer {
+		fmt.Fprintln(c.out, "SKIP codex app-server: repo check failed")
+	} else {
+		fmt.Fprintln(c.out, "SKIP codex app-server: pass --appserver to start and initialize it")
+	}
+
+	if failures > 0 {
+		return fmt.Errorf("doctor found %d failure(s)", failures)
+	}
+	return nil
 }
 
 func (c cli) status(args []string) error {
@@ -142,6 +229,11 @@ func (c cli) spawn(args []string) error {
 	}
 	fmt.Fprintf(c.out, "spawned %s engine=%s thread=%s status=%s\n", worker.ID, worker.Engine, worker.ThreadID, worker.Status)
 	fmt.Fprintf(c.out, "%s\n", worker.LastMessage)
+	if worker.Engine == "appserver" {
+		fmt.Fprintf(c.out, "codex thread: %s\n", worker.ThreadID)
+		fmt.Fprintf(c.out, "inspect: cs inspect-thread --state %s %s\n", *statePath, worker.ID)
+		fmt.Fprintln(c.out, "note: Codex app visibility can lag briefly, especially on mobile.")
+	}
 	return nil
 }
 
@@ -251,6 +343,39 @@ func (c cli) resume(args []string) error {
 	})
 }
 
+func (c cli) inspectThread(args []string) error {
+	fs := c.flagSet("inspect-thread")
+	statePath := fs.String("state", defaultStatePath(), "state file path")
+	timeout := fs.Duration("timeout", 2*time.Minute, "app-server request timeout")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		return errors.New("inspect-thread requires <worker>")
+	}
+	worker, err := store.NewJSONStore(*statePath).GetWorker(rest[0])
+	if err != nil {
+		if errors.Is(err, store.ErrWorkerNotFound) {
+			return fmt.Errorf("worker %q not found", rest[0])
+		}
+		return err
+	}
+	if worker.Engine != "appserver" {
+		fmt.Fprintf(c.out, "worker %s uses engine=%s; no Codex app-server thread to inspect\n", worker.ID, worker.Engine)
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+	defer cancel()
+	result, err := (appserver.Runner{}).Resume(ctx, worker.ProjectRoot, worker.ThreadID)
+	if err != nil {
+		return fmt.Errorf("inspect app-server thread %s: %w", worker.ThreadID, err)
+	}
+	fmt.Fprintf(c.out, "thread=%s status=%s worker=%s\n", result.ThreadID, result.Status, worker.ID)
+	fmt.Fprintln(c.out, "Codex app visibility can lag briefly after thread creation or updates.")
+	return nil
+}
+
 func (c cli) show(args []string) error {
 	fs := c.flagSet("show")
 	statePath := fs.String("state", defaultStatePath(), "state file path")
@@ -314,8 +439,10 @@ Usage:
   cs status
   cs spawn --repo . --prompt "inspect this repo"
   cs spawn --engine appserver --repo . --prompt "summarize this repo in one sentence"
+  cs doctor --appserver
   cs send <worker> "continue with tests"
   cs resume <worker>
+  cs inspect-thread <worker>
   cs show <worker>
   cs report --note "summary" <worker> done`)
 }

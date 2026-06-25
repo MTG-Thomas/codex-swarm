@@ -33,13 +33,18 @@ The current MVP can drive a real `codex app-server` thread and keeps a determini
 ```powershell
 go run ./cmd/cs spawn --engine appserver --repo . --prompt "reply with exactly: codex-swarm-ok"
 go run ./cmd/cs status
+go run ./cmd/cs doctor
+go run ./cmd/cs doctor --appserver
 go run ./cmd/cs send <worker-id> "continue with tests and docs"
 go run ./cmd/cs resume <worker-id>
+go run ./cmd/cs inspect-thread <worker-id>
 go run ./cmd/cs show <worker-id>
 go run ./cmd/cs report --note "demo completed" <worker-id> done
 ```
 
 State is written to `.codex-swarm/state.json` by default. Use `--state <path>` or `CODEX_SWARM_STATE` for disposable demos and tests.
+
+`spawn --engine appserver` prints the Codex thread ID and a recovery command. Codex app visibility can lag briefly, especially on mobile; use `inspect-thread` to verify that the stored thread can still be resumed through app-server.
 
 Use `--engine mock` when the demo needs to avoid live Codex calls:
 
