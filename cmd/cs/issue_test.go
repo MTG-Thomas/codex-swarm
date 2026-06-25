@@ -58,9 +58,11 @@ func TestLatestClaimSnapshotUsesNewestMarker(t *testing.T) {
 	raw, err := json.Marshal(ghIssueView{
 		Body: oldBody,
 		Comments: []struct {
+			ID        string    `json:"id"`
 			Body      string    `json:"body"`
 			CreatedAt time.Time `json:"createdAt"`
 		}{{
+			ID:        "new-id",
 			Body:      newBody,
 			CreatedAt: time.Date(2026, 6, 24, 12, 5, 0, 0, time.UTC),
 		}},
@@ -74,6 +76,38 @@ func TestLatestClaimSnapshotUsesNewestMarker(t *testing.T) {
 	}
 	if len(snapshot.Claims) != 1 || snapshot.Claims[0].ID != "new" {
 		t.Fatalf("snapshot = %#v", snapshot)
+	}
+}
+
+func TestLatestMarkerCommentID(t *testing.T) {
+	oldBody, err := claimIssueMarkerMarkdown("MTG-Thomas/codex-swarm#42", nil, time.Date(2026, 6, 24, 10, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("old marker error = %v", err)
+	}
+	newBody, err := claimIssueMarkerMarkdown("MTG-Thomas/codex-swarm#42", nil, time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("new marker error = %v", err)
+	}
+	raw, err := json.Marshal(ghIssueView{
+		Comments: []struct {
+			ID        string    `json:"id"`
+			Body      string    `json:"body"`
+			CreatedAt time.Time `json:"createdAt"`
+		}{
+			{ID: "old-id", Body: oldBody, CreatedAt: time.Date(2026, 6, 24, 10, 5, 0, 0, time.UTC)},
+			{ID: "noise-id", Body: "ordinary comment", CreatedAt: time.Date(2026, 6, 24, 13, 0, 0, 0, time.UTC)},
+			{ID: "new-id", Body: newBody, CreatedAt: time.Date(2026, 6, 24, 12, 5, 0, 0, time.UTC)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal issue view: %v", err)
+	}
+	got, err := latestMarkerCommentID(raw)
+	if err != nil {
+		t.Fatalf("latestMarkerCommentID error = %v", err)
+	}
+	if got != "new-id" {
+		t.Fatalf("latestMarkerCommentID() = %q, want new-id", got)
 	}
 }
 

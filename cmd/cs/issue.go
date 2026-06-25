@@ -87,10 +87,11 @@ func (c cli) issueSync(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := postIssueComment(context.Background(), issue, body); err != nil {
+	updated, err := upsertIssueMarkerComment(context.Background(), issue, body)
+	if err != nil {
 		return err
 	}
-	fmt.Fprintf(c.out, "synced issue=%s claims=%d\n", issue, len(claimsForIssue))
+	fmt.Fprintf(c.out, "synced issue=%s claims=%d mode=%s\n", issue, len(claimsForIssue), updated)
 	return nil
 }
 
@@ -218,6 +219,7 @@ func workerIssueReportMarkdown(issue string, worker store.Worker, note string, n
 type ghIssueView struct {
 	Body     string `json:"body"`
 	Comments []struct {
+		ID        string    `json:"id"`
 		Body      string    `json:"body"`
 		CreatedAt time.Time `json:"createdAt"`
 	} `json:"comments"`
@@ -294,4 +296,69 @@ func fetchIssueJSON(ctx context.Context, issue string) ([]byte, error) {
 		return nil, fmt.Errorf("read GitHub issue: %s", message)
 	}
 	return stdout.Bytes(), nil
+}
+
+func upsertIssueMarkerComment(ctx context.Context, issue, body string) (string, error) {
+	raw, err := fetchIssueJSON(ctx, issue)
+	if err != nil {
+		return "", err
+	}
+	commentID, err := latestMarkerCommentID(raw)
+	if err != nil {
+		return "", err
+	}
+	if commentID == "" {
+		if err := postIssueComment(ctx, issue, body); err != nil {
+			return "", err
+		}
+		return "created", nil
+	}
+	if err := updateIssueComment(ctx, commentID, body); err != nil {
+		return "", err
+	}
+	return "updated", nil
+}
+
+func latestMarkerCommentID(raw []byte) (string, error) {
+	var view ghIssueView
+	if err := json.Unmarshal(raw, &view); err != nil {
+		return "", fmt.Errorf("parse GitHub issue JSON: %w", err)
+	}
+	var latestID string
+	var latestAt time.Time
+	for _, comment := range view.Comments {
+		if !strings.Contains(comment.Body, claimMarkerStart) {
+			continue
+		}
+		if latestID == "" || comment.CreatedAt.After(latestAt) {
+			latestID = comment.ID
+			latestAt = comment.CreatedAt
+		}
+	}
+	return latestID, nil
+}
+
+func updateIssueComment(ctx context.Context, commentID, body string) error {
+	cmd := exec.CommandContext(
+		ctx,
+		"gh",
+		"api",
+		"graphql",
+		"-f",
+		"id="+commentID,
+		"-f",
+		"body="+body,
+		"-f",
+		"query=mutation($id:ID!,$body:String!){updateIssueComment(input:{id:$id,body:$body}){issueComment{id}}}",
+	)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return fmt.Errorf("update GitHub issue comment: %s", message)
+	}
+	return nil
 }
