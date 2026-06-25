@@ -15,6 +15,7 @@ import (
 	"github.com/MTG-Thomas/codex-swarm/internal/appserver"
 	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
+	"github.com/MTG-Thomas/codex-swarm/internal/worktree"
 )
 
 type cli struct {
@@ -185,6 +186,7 @@ func (c cli) spawn(args []string) error {
 	repo := fs.String("repo", ".", "repository root")
 	prompt := fs.String("prompt", "", "worker prompt")
 	engine := fs.String("engine", "mock", "worker engine: mock or appserver")
+	createWorktree := fs.Bool("worktree", false, "create the worker Git worktree")
 	timeout := fs.Duration("timeout", 2*time.Minute, "app-server request timeout")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -240,6 +242,19 @@ func (c cli) spawn(args []string) error {
 		Events:      events,
 	}
 
+	if *createWorktree {
+		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+		defer cancel()
+		if err := (worktree.Git{}).Create(ctx, worktree.Spec{
+			RepoRoot: repoRoot,
+			Branch:   worker.Branch,
+			Path:     worker.Worktree,
+		}); err != nil {
+			return fmt.Errorf("create worktree: %w", err)
+		}
+		worker.Events = append(worker.Events, store.Event{At: now, Type: "worktree.created", Message: worker.Worktree})
+	}
+
 	if err := store.NewJSONStore(*statePath).SaveWorker(worker); err != nil {
 		return err
 	}
@@ -249,6 +264,9 @@ func (c cli) spawn(args []string) error {
 		fmt.Fprintf(c.out, "codex thread: %s\n", worker.ThreadID)
 		fmt.Fprintf(c.out, "inspect: cs inspect-thread --state %s %s\n", *statePath, worker.ID)
 		fmt.Fprintln(c.out, "note: Codex app visibility can lag briefly, especially on mobile.")
+	}
+	if *createWorktree {
+		fmt.Fprintf(c.out, "worktree: %s branch=%s\n", worker.Worktree, worker.Branch)
 	}
 	return nil
 }
