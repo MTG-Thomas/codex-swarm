@@ -5,7 +5,10 @@ import (
 	"time"
 )
 
-var ErrWorkerNotFound = errors.New("worker not found")
+var (
+	ErrWorkerNotFound = errors.New("worker not found")
+	ErrClaimNotFound  = errors.New("claim not found")
+)
 
 type WorkerStatus string
 
@@ -51,6 +54,29 @@ type Schedule struct {
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+}
+
+type ClaimStatus string
+
+const (
+	ClaimActive   ClaimStatus = "active"
+	ClaimReleased ClaimStatus = "released"
+	ClaimBlocked  ClaimStatus = "blocked"
+)
+
+type Claim struct {
+	ID        string      `json:"id"`
+	WorkerID  string      `json:"worker_id,omitempty"`
+	Repo      string      `json:"repo"`
+	Scope     string      `json:"scope"`
+	Issue     string      `json:"issue,omitempty"`
+	Status    ClaimStatus `json:"status"`
+	Note      string      `json:"note,omitempty"`
+	Blocker   string      `json:"blocker,omitempty"`
+	Next      string      `json:"next,omitempty"`
+	ExpiresAt time.Time   `json:"expires_at"`
+	CreatedAt time.Time   `json:"created_at"`
+	UpdatedAt time.Time   `json:"updated_at"`
 }
 
 type Store interface {

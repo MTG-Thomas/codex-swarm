@@ -19,6 +19,7 @@ type JSONStore struct {
 type stateFile struct {
 	Workers   []Worker   `json:"workers"`
 	Schedules []Schedule `json:"schedules,omitempty"`
+	Claims    []Claim    `json:"claims,omitempty"`
 }
 
 func NewJSONStore(path string) *JSONStore {
@@ -117,6 +118,61 @@ func (s *JSONStore) ListSchedules() ([]Schedule, error) {
 		return schedules[i].UpdatedAt.After(schedules[j].UpdatedAt)
 	})
 	return schedules, nil
+}
+
+func (s *JSONStore) SaveClaim(claim Claim) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.read()
+	if err != nil {
+		return err
+	}
+
+	found := false
+	for i := range state.Claims {
+		if state.Claims[i].ID == claim.ID {
+			state.Claims[i] = claim
+			found = true
+			break
+		}
+	}
+	if !found {
+		state.Claims = append(state.Claims, claim)
+	}
+
+	return s.write(state)
+}
+
+func (s *JSONStore) GetClaim(id string) (Claim, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.read()
+	if err != nil {
+		return Claim{}, err
+	}
+	for _, claim := range state.Claims {
+		if claim.ID == id {
+			return claim, nil
+		}
+	}
+	return Claim{}, ErrClaimNotFound
+}
+
+func (s *JSONStore) ListClaims() ([]Claim, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.read()
+	if err != nil {
+		return nil, err
+	}
+	claims := append([]Claim(nil), state.Claims...)
+	sort.Slice(claims, func(i, j int) bool {
+		return claims[i].UpdatedAt.After(claims[j].UpdatedAt)
+	})
+	return claims, nil
 }
 
 func (s *JSONStore) read() (stateFile, error) {

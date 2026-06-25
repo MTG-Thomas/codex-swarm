@@ -40,6 +40,48 @@ func TestCLIWorkflow(t *testing.T) {
 
 	now = now.Add(time.Second)
 	out.Reset()
+	if err := c.run([]string{"claim", "create", "--state", state, "--repo", ".", "--scope", "internal/store", "--worker", "w-20260624-120000", "--issue", "MTG-Thomas/codex-swarm#42", "--note", "editing store claims"}); err != nil {
+		t.Fatalf("claim create error = %v", err)
+	}
+	if !strings.Contains(out.String(), "claim c-20260624-120002") || !strings.Contains(out.String(), "conflicts=0") {
+		t.Fatalf("claim create output = %q", out.String())
+	}
+
+	now = now.Add(time.Second)
+	out.Reset()
+	if err := c.run([]string{"claim", "conflicts", "--state", state, "--repo", ".", "--scope", "internal/store/json.go"}); err != nil {
+		t.Fatalf("claim conflicts error = %v", err)
+	}
+	if !strings.Contains(out.String(), "conflicts=1") || !strings.Contains(out.String(), "c-20260624-120002") {
+		t.Fatalf("claim conflicts output = %q", out.String())
+	}
+
+	out.Reset()
+	if err := c.run([]string{"claim", "export", "--state", state, "--issue", "MTG-Thomas/codex-swarm#42"}); err != nil {
+		t.Fatalf("claim export error = %v", err)
+	}
+	if !strings.Contains(out.String(), "codex-swarm claims for `MTG-Thomas/codex-swarm#42`") || !strings.Contains(out.String(), "c-20260624-120002") {
+		t.Fatalf("claim export output = %q", out.String())
+	}
+
+	out.Reset()
+	if err := c.run([]string{"claim", "block", "--state", state, "--reason", "waiting on review", "--next", "reviewer checks json store", "c-20260624-120002"}); err != nil {
+		t.Fatalf("claim block error = %v", err)
+	}
+	if !strings.Contains(out.String(), "blocked c-20260624-120002") {
+		t.Fatalf("claim block output = %q", out.String())
+	}
+
+	out.Reset()
+	if err := c.run([]string{"claim", "release", "--state", state, "--note", "done", "c-20260624-120002"}); err != nil {
+		t.Fatalf("claim release error = %v", err)
+	}
+	if !strings.Contains(out.String(), "released c-20260624-120002") {
+		t.Fatalf("claim release output = %q", out.String())
+	}
+
+	now = now.Add(time.Second)
+	out.Reset()
 	if err := c.run([]string{"message", "--state", state, "w-20260624-120000", "w-20260624-120001", "please review the store changes"}); err != nil {
 		t.Fatalf("message error = %v", err)
 	}
@@ -61,7 +103,7 @@ func TestCLIWorkflow(t *testing.T) {
 	if err := c.run([]string{"schedule", "add", "--state", state, "--repo", ".", "--cron", "0 8 * * 1", "--prompt", "weekly repo check"}); err != nil {
 		t.Fatalf("schedule add error = %v", err)
 	}
-	if !strings.Contains(out.String(), "schedule s-20260624-120004") {
+	if !strings.Contains(out.String(), "schedule s-20260624-120006") {
 		t.Fatalf("schedule add output = %q", out.String())
 	}
 

@@ -54,6 +54,29 @@ func TestJSONStoreRoundTrip(t *testing.T) {
 	if len(schedules) != 1 || schedules[0].ID != schedule.ID || schedules[0].Cron != schedule.Cron {
 		t.Fatalf("ListSchedules() = %#v", schedules)
 	}
+
+	claim := Claim{
+		ID:        "c-test",
+		WorkerID:  "w-test",
+		Repo:      "/repo",
+		Scope:     "internal/store",
+		Issue:     "MTG-Thomas/codex-swarm#42",
+		Status:    ClaimActive,
+		Note:      "working",
+		ExpiresAt: now.Add(time.Hour),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := s.SaveClaim(claim); err != nil {
+		t.Fatalf("SaveClaim() error = %v", err)
+	}
+	gotClaim, err := s.GetClaim("c-test")
+	if err != nil {
+		t.Fatalf("GetClaim() error = %v", err)
+	}
+	if gotClaim.ID != claim.ID || gotClaim.Scope != claim.Scope || gotClaim.Issue != claim.Issue {
+		t.Fatalf("GetClaim() = %#v, want %#v", gotClaim, claim)
+	}
 }
 
 func TestJSONStoreNotFound(t *testing.T) {

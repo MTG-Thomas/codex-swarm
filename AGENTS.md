@@ -26,6 +26,7 @@ Do not install upstream skill packs globally for this repo. Use `docs/skills.md`
 - Keep local daemon APIs narrow and treat them as privileged, even on loopback.
 - Preserve worker/thread IDs, repo paths, worktree paths, and issue refs in errors and handoffs.
 - Do not mutate GitHub, schedules, worktrees, branches, or Codex sessions unless the command name and user intent are explicit.
+- Treat `cs claim` records as warning-only coordination, not hard locks.
 - Do not copy broad architecture from mature projects. Borrow small release, CI, service, and operator UX patterns only when `codex-swarm` has reached that complexity.
 
 ## Verification

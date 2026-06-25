@@ -41,6 +41,9 @@ go run ./cmd/cs doctor --appserver
 go run ./cmd/cs send <worker-id> "continue with tests and docs"
 go run ./cmd/cs message <from-worker-id> <to-worker-id> "please review this"
 go run ./cmd/cs handoff <from-worker-id> <to-worker-id> "ready for review"
+go run ./cmd/cs claim create --repo . --scope internal/store --worker <worker-id> --issue MTG-Thomas/codex-swarm#42 --note "editing store claims"
+go run ./cmd/cs claim conflicts --repo . --scope internal/store/json.go
+go run ./cmd/cs claim export --issue MTG-Thomas/codex-swarm#42
 go run ./cmd/cs schedule add --repo . --cron "0 8 * * 1" --prompt "weekly repo check"
 go run ./cmd/cs schedule list
 go run ./cmd/cs resume <worker-id>
@@ -58,6 +61,8 @@ Pass `--worktree` to create a Git branch and worktree for the worker. The worktr
 Pass `--role` and `--parent` to record simple local swarm relationships. Use `message` and `handoff` to write directed communication events into both workers' local timelines without routing routine interagent traffic through MCP.
 
 Pass `--issue owner/repo#123` to link a worker to a GitHub issue. Scheduling is currently a persisted control-plane record only; `schedule add` and `schedule list` do not execute scheduled workers yet.
+
+Use `claim create`, `claim list`, `claim conflicts`, `claim show`, `claim block`, and `claim release` for warning-only coordination claims. Use `claim export --issue owner/repo#123` to print GitHub-ready claim markdown. Use `claim push --issue owner/repo#123` only when you intentionally want to post the current local claim summary as a GitHub issue comment through `gh`.
 
 Use `--engine mock` when the demo needs to avoid live Codex calls:
 

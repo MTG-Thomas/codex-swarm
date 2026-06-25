@@ -56,6 +56,8 @@ func (c cli) run(args []string) error {
 		return c.message(args[1:])
 	case "handoff":
 		return c.handoff(args[1:])
+	case "claim":
+		return c.claim(args[1:])
 	case "schedule":
 		return c.schedule(args[1:])
 	case "report":
@@ -675,6 +677,9 @@ Usage:
   cs send <worker> "continue with tests"
   cs message <from-worker> <to-worker> "note"
   cs handoff <from-worker> <to-worker> "summary"
+  cs claim create --repo . --scope internal/store --worker <worker>
+  cs claim conflicts --repo . --scope internal/store
+  cs claim push --issue owner/repo#123
   cs resume <worker>
   cs inspect-thread <worker>
   cs show <worker>

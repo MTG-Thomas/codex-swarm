@@ -44,6 +44,8 @@ Exit criteria: one operator command can start a small set of role-based workers 
 
 - Import issue metadata through `gh` first.
 - Link workers to issues and PRs.
+- Link warning-only claims to GitHub issues.
+- Export or explicitly push claim summaries as issue comments.
 - Post reports or status comments only on explicit commands.
 - Add optional labels for running, blocked, and done states.
 
