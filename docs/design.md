@@ -41,22 +41,24 @@ cs report <worker> done
 
 ## MVP slice
 
-The first demoable slice intentionally uses a mock worker behind the same operator commands:
+The first demoable slice supports both a deterministic mock worker and a real `codex app-server` engine behind the same operator commands:
 
-- `spawn` creates a worker record, thread placeholder, branch/worktree plan, and first mock event.
-- `send` appends a message and mock completion event.
+- `spawn --engine appserver` initializes `codex app-server`, starts a thread, sends the first turn, waits for `turn/completed`, and stores the real thread and turn IDs.
+- `send` resumes the stored app-server thread, starts another turn, waits for completion, and appends the event.
+- `resume` verifies that the stored app-server thread can be reattached.
 - `show` prints worker details and the event timeline.
 - `report` records done/failed/idle state and a human-readable report.
 - `status` lists current workers from local durable state.
+- `--engine mock` uses the same state model without live Codex calls.
 
-This proves the operator workflow, persistence shape, and CLI contract before the daemon owns a long-running Codex app-server process.
+This proves the operator workflow, persistence shape, real app-server protocol boundary, and CLI contract before the daemon owns a long-running app-server process.
 
 Next real-worker slice:
 
-1. Add an app-server runner that starts `codex app-server`.
-2. Map `spawn` to `thread/start` plus `turn/start`.
-3. Stream events into the same worker event model.
-4. Keep `--mock` available for deterministic tests and demos.
+1. Keep a daemon-owned app-server process alive instead of one-shot startup per command.
+2. Stream assistant deltas and item events into the worker event model.
+3. Add worktree creation and branch isolation.
+4. Add GitHub issue linkage.
 
 ## Dependency policy
 

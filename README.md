@@ -28,17 +28,24 @@ go run ./cmd/csd
 
 ## Friend-demo MVP
 
-The current MVP uses a deterministic mock worker so the operator flow is easy to demo without depending on a live Codex app-server session.
+The current MVP can drive a real `codex app-server` thread and keeps a deterministic mock engine for tests or offline demos.
 
 ```powershell
-go run ./cmd/cs spawn --repo . --prompt "inspect this repo and suggest the next useful slice"
+go run ./cmd/cs spawn --engine appserver --repo . --prompt "reply with exactly: codex-swarm-ok"
 go run ./cmd/cs status
 go run ./cmd/cs send <worker-id> "continue with tests and docs"
+go run ./cmd/cs resume <worker-id>
 go run ./cmd/cs show <worker-id>
 go run ./cmd/cs report --note "demo completed" <worker-id> done
 ```
 
 State is written to `.codex-swarm/state.json` by default. Use `--state <path>` or `CODEX_SWARM_STATE` for disposable demos and tests.
+
+Use `--engine mock` when the demo needs to avoid live Codex calls:
+
+```powershell
+go run ./cmd/cs spawn --engine mock --repo . --prompt "inspect this repo"
+```
 
 Local maturity checks:
 

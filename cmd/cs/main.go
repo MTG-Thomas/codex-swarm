@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MTG-Thomas/codex-swarm/internal/appserver"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
 
@@ -69,7 +71,7 @@ func (c cli) status(args []string) error {
 	}
 	fmt.Fprintf(c.out, "workers=%d state=%s\n", len(workers), *statePath)
 	for _, worker := range workers {
-		fmt.Fprintf(c.out, "%s\t%s\t%s\t%s\n", worker.ID, worker.Status, worker.ThreadID, short(worker.Prompt, 60))
+		fmt.Fprintf(c.out, "%s\t%s\t%s\t%s\t%s\n", worker.ID, worker.Status, worker.Engine, worker.ThreadID, short(worker.Prompt, 60))
 	}
 	return nil
 }
@@ -79,7 +81,8 @@ func (c cli) spawn(args []string) error {
 	statePath := fs.String("state", defaultStatePath(), "state file path")
 	repo := fs.String("repo", ".", "repository root")
 	prompt := fs.String("prompt", "", "worker prompt")
-	mock := fs.Bool("mock", true, "use deterministic mock worker")
+	engine := fs.String("engine", "mock", "worker engine: mock or appserver")
+	timeout := fs.Duration("timeout", 2*time.Minute, "app-server request timeout")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -93,31 +96,51 @@ func (c cli) spawn(args []string) error {
 
 	now := c.now().UTC()
 	id := fmt.Sprintf("w-%s", now.Format("20060102-150405"))
-	threadID := fmt.Sprintf("mock-thread-%s", id)
-	if !*mock {
-		threadID = "app-server-pending"
+	if *engine != "mock" && *engine != "appserver" {
+		return fmt.Errorf("unknown engine %q", *engine)
 	}
+
+	threadID := fmt.Sprintf("mock-thread-%s", id)
+	turnID := ""
+	lastMessage := mockSummary(*prompt)
+	status := store.WorkerIdle
+	events := []store.Event{{At: now, Type: "spawned", Message: "worker created"}}
+	if *engine == "appserver" {
+		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+		defer cancel()
+		result, err := (appserver.Runner{}).RunTurn(ctx, repoRoot, *prompt)
+		if err != nil {
+			return fmt.Errorf("run app-server worker: %w", err)
+		}
+		threadID = result.ThreadID
+		turnID = result.TurnID
+		status = workerStatusFromTurn(result.Status)
+		lastMessage = fmt.Sprintf("app-server turn submitted: thread=%s turn=%s status=%s", result.ThreadID, result.TurnID, result.Status)
+		events = append(events, store.Event{At: now, Type: "appserver.turn.started", Message: lastMessage})
+	} else {
+		events = append(events, store.Event{At: now, Type: "mock.turn.completed", Message: lastMessage})
+	}
+
 	worker := store.Worker{
 		ID:          id,
 		ProjectRoot: repoRoot,
 		Worktree:    filepath.Join(repoRoot, ".codex-swarm", "worktrees", id),
 		Branch:      "cs/" + id,
 		ThreadID:    threadID,
-		Status:      store.WorkerIdle,
+		TurnID:      turnID,
+		Engine:      *engine,
+		Status:      status,
 		Prompt:      *prompt,
-		LastMessage: mockSummary(*prompt),
+		LastMessage: lastMessage,
 		CreatedAt:   now,
 		UpdatedAt:   now,
-		Events: []store.Event{
-			{At: now, Type: "spawned", Message: "worker created"},
-			{At: now, Type: "mock.turn.completed", Message: mockSummary(*prompt)},
-		},
+		Events:      events,
 	}
 
 	if err := store.NewJSONStore(*statePath).SaveWorker(worker); err != nil {
 		return err
 	}
-	fmt.Fprintf(c.out, "spawned %s thread=%s status=%s\n", worker.ID, worker.ThreadID, worker.Status)
+	fmt.Fprintf(c.out, "spawned %s engine=%s thread=%s status=%s\n", worker.ID, worker.Engine, worker.ThreadID, worker.Status)
 	fmt.Fprintf(c.out, "%s\n", worker.LastMessage)
 	return nil
 }
@@ -125,6 +148,7 @@ func (c cli) spawn(args []string) error {
 func (c cli) send(args []string) error {
 	fs := c.flagSet("send")
 	statePath := fs.String("state", defaultStatePath(), "state file path")
+	timeout := fs.Duration("timeout", 2*time.Minute, "app-server request timeout")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -135,12 +159,26 @@ func (c cli) send(args []string) error {
 	id := rest[0]
 	message := strings.Join(rest[1:], " ")
 	return c.updateWorker(*statePath, id, func(worker *store.Worker, now time.Time) {
+		worker.Events = append(worker.Events, store.Event{At: now, Type: "message.sent", Message: message})
+		if worker.Engine == "appserver" {
+			ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+			defer cancel()
+			result, err := (appserver.Runner{}).SendTurn(ctx, worker.ProjectRoot, worker.ThreadID, message)
+			if err != nil {
+				worker.Status = store.WorkerFailed
+				worker.LastMessage = "app-server send failed: " + err.Error()
+				worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.turn.failed", Message: worker.LastMessage})
+				return
+			}
+			worker.TurnID = result.TurnID
+			worker.Status = workerStatusFromTurn(result.Status)
+			worker.LastMessage = fmt.Sprintf("app-server turn submitted: thread=%s turn=%s status=%s", result.ThreadID, result.TurnID, result.Status)
+			worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.turn.started", Message: worker.LastMessage})
+			return
+		}
 		worker.Status = store.WorkerIdle
 		worker.LastMessage = mockSummary(message)
-		worker.Events = append(worker.Events,
-			store.Event{At: now, Type: "message.sent", Message: message},
-			store.Event{At: now, Type: "mock.turn.completed", Message: worker.LastMessage},
-		)
+		worker.Events = append(worker.Events, store.Event{At: now, Type: "mock.turn.completed", Message: worker.LastMessage})
 	}, func(worker store.Worker) {
 		fmt.Fprintf(c.out, "sent %s status=%s\n%s\n", worker.ID, worker.Status, worker.LastMessage)
 	})
@@ -181,6 +219,7 @@ func (c cli) report(args []string) error {
 func (c cli) resume(args []string) error {
 	fs := c.flagSet("resume")
 	statePath := fs.String("state", defaultStatePath(), "state file path")
+	timeout := fs.Duration("timeout", 2*time.Minute, "app-server request timeout")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -189,6 +228,22 @@ func (c cli) resume(args []string) error {
 		return errors.New("resume requires <worker>")
 	}
 	return c.updateWorker(*statePath, rest[0], func(worker *store.Worker, now time.Time) {
+		if worker.Engine == "appserver" {
+			ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+			defer cancel()
+			result, err := (appserver.Runner{}).Resume(ctx, worker.ProjectRoot, worker.ThreadID)
+			if err != nil {
+				worker.Status = store.WorkerFailed
+				worker.LastMessage = "app-server resume failed: " + err.Error()
+				worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.resume.failed", Message: worker.LastMessage})
+				return
+			}
+			worker.ThreadID = result.ThreadID
+			worker.Status = store.WorkerIdle
+			worker.LastMessage = "app-server thread resumed: " + result.ThreadID
+			worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.thread.resumed", Message: worker.LastMessage})
+			return
+		}
 		worker.Status = store.WorkerIdle
 		worker.Events = append(worker.Events, store.Event{At: now, Type: "resume.requested", Message: "resume requested"})
 	}, func(worker store.Worker) {
@@ -213,7 +268,11 @@ func (c cli) show(args []string) error {
 		}
 		return err
 	}
-	fmt.Fprintf(c.out, "id=%s\nstatus=%s\nthread=%s\nrepo=%s\nprompt=%s\n", worker.ID, worker.Status, worker.ThreadID, worker.ProjectRoot, worker.Prompt)
+	fmt.Fprintf(c.out, "id=%s\nstatus=%s\nengine=%s\nthread=%s\n", worker.ID, worker.Status, worker.Engine, worker.ThreadID)
+	if worker.TurnID != "" {
+		fmt.Fprintf(c.out, "turn=%s\n", worker.TurnID)
+	}
+	fmt.Fprintf(c.out, "repo=%s\nprompt=%s\n", worker.ProjectRoot, worker.Prompt)
 	if worker.Report != "" {
 		fmt.Fprintf(c.out, "report=%s\n", worker.Report)
 	}
@@ -254,6 +313,7 @@ func (c cli) printUsage() {
 Usage:
   cs status
   cs spawn --repo . --prompt "inspect this repo"
+  cs spawn --engine appserver --repo . --prompt "summarize this repo in one sentence"
   cs send <worker> "continue with tests"
   cs resume <worker>
   cs show <worker>
@@ -269,6 +329,17 @@ func defaultStatePath() string {
 
 func mockSummary(prompt string) string {
 	return "mock worker accepted: " + short(prompt, 96)
+}
+
+func workerStatusFromTurn(status string) store.WorkerStatus {
+	switch status {
+	case "inProgress":
+		return store.WorkerRunning
+	case "failed":
+		return store.WorkerFailed
+	default:
+		return store.WorkerIdle
+	}
 }
 
 func short(value string, max int) string {

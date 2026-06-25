@@ -23,6 +23,8 @@ type Worker struct {
 	Worktree    string       `json:"worktree"`
 	Branch      string       `json:"branch"`
 	ThreadID    string       `json:"thread_id"`
+	TurnID      string       `json:"turn_id,omitempty"`
+	Engine      string       `json:"engine"`
 	Status      WorkerStatus `json:"status"`
 	Prompt      string       `json:"prompt"`
 	LastMessage string       `json:"last_message,omitempty"`
