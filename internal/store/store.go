@@ -19,6 +19,8 @@ const (
 
 type Worker struct {
 	ID          string       `json:"id"`
+	ParentID    string       `json:"parent_id,omitempty"`
+	Role        string       `json:"role,omitempty"`
 	ProjectRoot string       `json:"project_root"`
 	Worktree    string       `json:"worktree"`
 	Branch      string       `json:"branch"`

@@ -51,6 +51,10 @@ func (c cli) run(args []string) error {
 		return c.spawn(args[1:])
 	case "send":
 		return c.send(args[1:])
+	case "message":
+		return c.message(args[1:])
+	case "handoff":
+		return c.handoff(args[1:])
 	case "report":
 		return c.report(args[1:])
 	case "resume":
@@ -186,6 +190,8 @@ func (c cli) spawn(args []string) error {
 	repo := fs.String("repo", ".", "repository root")
 	prompt := fs.String("prompt", "", "worker prompt")
 	engine := fs.String("engine", "mock", "worker engine: mock or appserver")
+	role := fs.String("role", "", "worker role, for example implementer, reviewer, tester, or docs")
+	parentID := fs.String("parent", "", "parent worker id")
 	createWorktree := fs.Bool("worktree", false, "create the worker Git worktree")
 	timeout := fs.Duration("timeout", 2*time.Minute, "app-server request timeout")
 	if err := fs.Parse(args); err != nil {
@@ -228,6 +234,8 @@ func (c cli) spawn(args []string) error {
 
 	worker := store.Worker{
 		ID:          id,
+		ParentID:    *parentID,
+		Role:        *role,
 		ProjectRoot: repoRoot,
 		Worktree:    filepath.Join(repoRoot, ".codex-swarm", "worktrees", id),
 		Branch:      "cs/" + id,
@@ -259,6 +267,9 @@ func (c cli) spawn(args []string) error {
 		return err
 	}
 	fmt.Fprintf(c.out, "spawned %s engine=%s thread=%s status=%s\n", worker.ID, worker.Engine, worker.ThreadID, worker.Status)
+	if worker.Role != "" || worker.ParentID != "" {
+		fmt.Fprintf(c.out, "swarm: role=%s parent=%s\n", emptyDash(worker.Role), emptyDash(worker.ParentID))
+	}
 	fmt.Fprintf(c.out, "%s\n", worker.LastMessage)
 	if worker.Engine == "appserver" {
 		fmt.Fprintf(c.out, "codex thread: %s\n", worker.ThreadID)
@@ -268,6 +279,100 @@ func (c cli) spawn(args []string) error {
 	if *createWorktree {
 		fmt.Fprintf(c.out, "worktree: %s branch=%s\n", worker.Worktree, worker.Branch)
 	}
+	return nil
+}
+
+func (c cli) message(args []string) error {
+	fs := c.flagSet("message")
+	statePath := fs.String("state", defaultStatePath(), "state file path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) < 3 {
+		return errors.New("message requires <from-worker> <to-worker> <message>")
+	}
+	fromID := rest[0]
+	toID := rest[1]
+	text := strings.Join(rest[2:], " ")
+	if strings.TrimSpace(text) == "" {
+		return errors.New("message text is required")
+	}
+	s := store.NewJSONStore(*statePath)
+	from, err := s.GetWorker(fromID)
+	if err != nil {
+		if errors.Is(err, store.ErrWorkerNotFound) {
+			return fmt.Errorf("from worker %q not found", fromID)
+		}
+		return err
+	}
+	to, err := s.GetWorker(toID)
+	if err != nil {
+		if errors.Is(err, store.ErrWorkerNotFound) {
+			return fmt.Errorf("to worker %q not found", toID)
+		}
+		return err
+	}
+	now := c.now().UTC()
+	from.Events = append(from.Events, store.Event{At: now, Type: "message.sent", Message: fmt.Sprintf("to=%s %s", to.ID, text)})
+	from.UpdatedAt = now
+	to.Events = append(to.Events, store.Event{At: now, Type: "message.received", Message: fmt.Sprintf("from=%s %s", from.ID, text)})
+	to.UpdatedAt = now
+	if err := s.SaveWorker(from); err != nil {
+		return err
+	}
+	if err := s.SaveWorker(to); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "message %s -> %s\n", from.ID, to.ID)
+	return nil
+}
+
+func (c cli) handoff(args []string) error {
+	fs := c.flagSet("handoff")
+	statePath := fs.String("state", defaultStatePath(), "state file path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) < 3 {
+		return errors.New("handoff requires <from-worker> <to-worker> <summary>")
+	}
+	fromID := rest[0]
+	toID := rest[1]
+	summary := strings.Join(rest[2:], " ")
+	if strings.TrimSpace(summary) == "" {
+		return errors.New("handoff summary is required")
+	}
+	s := store.NewJSONStore(*statePath)
+	from, err := s.GetWorker(fromID)
+	if err != nil {
+		if errors.Is(err, store.ErrWorkerNotFound) {
+			return fmt.Errorf("from worker %q not found", fromID)
+		}
+		return err
+	}
+	to, err := s.GetWorker(toID)
+	if err != nil {
+		if errors.Is(err, store.ErrWorkerNotFound) {
+			return fmt.Errorf("to worker %q not found", toID)
+		}
+		return err
+	}
+	now := c.now().UTC()
+	from.Status = store.WorkerIdle
+	from.Report = "handoff to " + to.ID + ": " + summary
+	from.Events = append(from.Events, store.Event{At: now, Type: "handoff.sent", Message: from.Report})
+	from.UpdatedAt = now
+	to.Events = append(to.Events, store.Event{At: now, Type: "handoff.received", Message: fmt.Sprintf("from=%s %s", from.ID, summary)})
+	to.UpdatedAt = now
+	if err := s.SaveWorker(from); err != nil {
+		return err
+	}
+	if err := s.SaveWorker(to); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "handoff %s -> %s\n", from.ID, to.ID)
 	return nil
 }
 
@@ -428,6 +533,12 @@ func (c cli) show(args []string) error {
 		return err
 	}
 	fmt.Fprintf(c.out, "id=%s\nstatus=%s\nengine=%s\nthread=%s\n", worker.ID, worker.Status, worker.Engine, worker.ThreadID)
+	if worker.Role != "" {
+		fmt.Fprintf(c.out, "role=%s\n", worker.Role)
+	}
+	if worker.ParentID != "" {
+		fmt.Fprintf(c.out, "parent=%s\n", worker.ParentID)
+	}
 	if worker.TurnID != "" {
 		fmt.Fprintf(c.out, "turn=%s\n", worker.TurnID)
 	}
@@ -475,10 +586,19 @@ Usage:
   cs spawn --engine appserver --repo . --prompt "summarize this repo in one sentence"
   cs doctor --appserver
   cs send <worker> "continue with tests"
+  cs message <from-worker> <to-worker> "note"
+  cs handoff <from-worker> <to-worker> "summary"
   cs resume <worker>
   cs inspect-thread <worker>
   cs show <worker>
   cs report --note "summary" <worker> done`)
+}
+
+func emptyDash(value string) string {
+	if value == "" {
+		return "-"
+	}
+	return value
 }
 
 func defaultStatePath() string {

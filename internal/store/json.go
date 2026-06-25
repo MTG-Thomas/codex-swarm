@@ -111,6 +111,10 @@ func (s *JSONStore) write(state stateFile) error {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return fmt.Errorf("write temp state: %w", err)
 	}
+	if err := os.Remove(s.path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("remove old state: %w", err)
+	}
 	if err := os.Rename(tmp, s.path); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("replace state: %w", err)
