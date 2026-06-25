@@ -77,6 +77,25 @@ func TestJSONStoreRoundTrip(t *testing.T) {
 	if gotClaim.ID != claim.ID || gotClaim.Scope != claim.Scope || gotClaim.Issue != claim.Issue {
 		t.Fatalf("GetClaim() = %#v, want %#v", gotClaim, claim)
 	}
+
+	agent := Agent{
+		ID:        "a-test",
+		Name:      "test-agent",
+		Role:      "tester",
+		Current:   true,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := s.SaveAgent(agent); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	current, err := s.CurrentAgent()
+	if err != nil {
+		t.Fatalf("CurrentAgent() error = %v", err)
+	}
+	if current.ID != agent.ID || current.Name != agent.Name {
+		t.Fatalf("CurrentAgent() = %#v", current)
+	}
 }
 
 func TestJSONStoreNotFound(t *testing.T) {

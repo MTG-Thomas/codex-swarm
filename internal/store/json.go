@@ -20,6 +20,7 @@ type stateFile struct {
 	Workers   []Worker   `json:"workers"`
 	Schedules []Schedule `json:"schedules,omitempty"`
 	Claims    []Claim    `json:"claims,omitempty"`
+	Agents    []Agent    `json:"agents,omitempty"`
 }
 
 func NewJSONStore(path string) *JSONStore {
@@ -173,6 +174,84 @@ func (s *JSONStore) ListClaims() ([]Claim, error) {
 		return claims[i].UpdatedAt.After(claims[j].UpdatedAt)
 	})
 	return claims, nil
+}
+
+func (s *JSONStore) SaveAgent(agent Agent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.read()
+	if err != nil {
+		return err
+	}
+
+	found := false
+	for i := range state.Agents {
+		if state.Agents[i].ID == agent.ID {
+			state.Agents[i] = agent
+			found = true
+			break
+		}
+	}
+	if !found {
+		state.Agents = append(state.Agents, agent)
+	}
+	if agent.Current {
+		for i := range state.Agents {
+			if state.Agents[i].ID != agent.ID {
+				state.Agents[i].Current = false
+			}
+		}
+	}
+
+	return s.write(state)
+}
+
+func (s *JSONStore) GetAgent(id string) (Agent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.read()
+	if err != nil {
+		return Agent{}, err
+	}
+	for _, agent := range state.Agents {
+		if agent.ID == id {
+			return agent, nil
+		}
+	}
+	return Agent{}, ErrAgentNotFound
+}
+
+func (s *JSONStore) CurrentAgent() (Agent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.read()
+	if err != nil {
+		return Agent{}, err
+	}
+	for _, agent := range state.Agents {
+		if agent.Current {
+			return agent, nil
+		}
+	}
+	return Agent{}, ErrAgentNotFound
+}
+
+func (s *JSONStore) ListAgents() ([]Agent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.read()
+	if err != nil {
+		return nil, err
+	}
+	agents := append([]Agent(nil), state.Agents...)
+	sort.Slice(agents, func(i, j int) bool {
+		return agents[i].UpdatedAt.After(agents[j].UpdatedAt)
+	})
+	return agents, nil
 }
 
 func (s *JSONStore) read() (stateFile, error) {

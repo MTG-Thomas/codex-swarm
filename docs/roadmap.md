@@ -7,6 +7,9 @@
 - Make app-server thread IDs and recovery commands obvious in command output.
 - Add `cs doctor` for local prerequisites: Go, Git, Codex CLI, writable state path, and optional app-server initialization.
 - Add `cs inspect-thread <worker>` to prove a stored app-server thread can still be resumed.
+- Default state to a machine-global user config path, with `CODEX_SWARM_STATE` for isolated ledgers.
+- Add `cs agent register/current/list` for durable local agent identity.
+- Add `cs legacy import-coordinator` to migrate active PowerShell coordinator claims into `codex-swarm`.
 - Keep the mock engine deterministic for tests and demos.
 
 Exit criteria: a new user can spawn a real Codex worker, find the thread in the Codex app, resume it, and diagnose local setup failures without reading source.
@@ -15,6 +18,9 @@ Exit criteria: a new user can spawn a real Codex worker, find the thread in the 
 
 - Move app-server process ownership into `csd`.
 - Let `cs` call the daemon for status, spawn, send, resume, and report.
+- Use `CODEX_SWARM_DAEMON_URL` to opt `cs` into daemon-first status checks.
+- Keep `csd serve` and `csd status` as the current daemon contract.
+- Keep `csd install` and `csd uninstall` as explicit stubs until platform-specific service helpers exist.
 - Keep direct CLI state mode available until daemon mode is proven.
 - Persist daemon events in the same worker event model.
 - Recover cleanly after daemon restart.
@@ -46,6 +52,7 @@ Exit criteria: one operator command can start a small set of role-based workers 
 - Link workers to issues and PRs.
 - Link warning-only claims to GitHub issues.
 - Export or explicitly push claim summaries as issue comments.
+- Use `cs issue export/sync/pull` marker blocks to exchange claim state through GitHub issues across machines.
 - Post reports or status comments only on explicit commands.
 - Add optional labels for running, blocked, and done states.
 

@@ -58,6 +58,12 @@ func (c cli) run(args []string) error {
 		return c.handoff(args[1:])
 	case "claim":
 		return c.claim(args[1:])
+	case "issue":
+		return c.issue(args[1:])
+	case "agent":
+		return c.agent(args[1:])
+	case "legacy":
+		return c.legacy(args[1:])
 	case "schedule":
 		return c.schedule(args[1:])
 	case "report":
@@ -164,6 +170,9 @@ func (c cli) status(args []string) error {
 		return err
 	}
 
+	if *daemonURL == "" {
+		*daemonURL = os.Getenv("CODEX_SWARM_DAEMON_URL")
+	}
 	if *daemonURL != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -680,6 +689,12 @@ Usage:
   cs claim create --repo . --scope internal/store --worker <worker>
   cs claim conflicts --repo . --scope internal/store
   cs claim push --issue owner/repo#123
+  cs issue export --issue owner/repo#123
+  cs issue pull --issue owner/repo#123
+  cs issue sync --issue owner/repo#123
+  cs agent register --name "codex-thread" --role implementer
+  cs agent current
+  cs legacy import-coordinator
   cs resume <worker>
   cs inspect-thread <worker>
   cs show <worker>
@@ -698,6 +713,12 @@ func emptyDash(value string) string {
 func defaultStatePath() string {
 	if value := os.Getenv("CODEX_SWARM_STATE"); value != "" {
 		return value
+	}
+	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
+		return filepath.Join(dir, "codex-swarm", "state.json")
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".codex-swarm", "state.json")
 	}
 	return filepath.Join(".codex-swarm", "state.json")
 }

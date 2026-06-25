@@ -19,6 +19,25 @@ func TestCLIWorkflow(t *testing.T) {
 	}
 	state := filepath.Join(t.TempDir(), "state.json")
 
+	if got := defaultStatePath(); strings.Contains(got, ".codex-swarm"+string(filepath.Separator)+"state.json") {
+		t.Fatalf("defaultStatePath() = %q, want machine-level config path", got)
+	}
+
+	if err := c.run([]string{"agent", "register", "--state", state, "--name", "test-thread", "--role", "implementer"}); err != nil {
+		t.Fatalf("agent register error = %v", err)
+	}
+	if !strings.Contains(out.String(), "agent a-20260624-120000") {
+		t.Fatalf("agent register output = %q", out.String())
+	}
+	out.Reset()
+	if err := c.run([]string{"agent", "current", "--state", state}); err != nil {
+		t.Fatalf("agent current error = %v", err)
+	}
+	if !strings.Contains(out.String(), "test-thread") || !strings.Contains(out.String(), "current=true") {
+		t.Fatalf("agent current output = %q", out.String())
+	}
+
+	out.Reset()
 	if err := c.run([]string{"spawn", "--state", state, "--repo", ".", "--role", "implementer", "--issue", "MTG-Thomas/codex-swarm#42", "--prompt", "inspect repo and report"}); err != nil {
 		t.Fatalf("spawn error = %v", err)
 	}

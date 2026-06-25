@@ -9,7 +9,7 @@ The first implementation target is deliberately narrow:
 - wrap `codex app-server` over local JSON-RPC
 - track workers, thread IDs, worktree paths, and task status
 - expose a small CLI for spawn, send, resume, report, and status
-- leave GitHub, scheduling, and daemon service installation behind explicit package boundaries
+- keep GitHub, scheduling, and daemon service installation behind explicit commands and package boundaries
 
 ## Commands
 
@@ -44,6 +44,11 @@ go run ./cmd/cs handoff <from-worker-id> <to-worker-id> "ready for review"
 go run ./cmd/cs claim create --repo . --scope internal/store --worker <worker-id> --issue MTG-Thomas/codex-swarm#42 --note "editing store claims"
 go run ./cmd/cs claim conflicts --repo . --scope internal/store/json.go
 go run ./cmd/cs claim export --issue MTG-Thomas/codex-swarm#42
+go run ./cmd/cs issue export --issue MTG-Thomas/codex-swarm#42
+go run ./cmd/cs issue sync --issue MTG-Thomas/codex-swarm#42
+go run ./cmd/cs issue pull --issue MTG-Thomas/codex-swarm#42
+go run ./cmd/cs agent register --name "codex-thread" --role implementer
+go run ./cmd/cs legacy import-coordinator
 go run ./cmd/cs schedule add --repo . --cron "0 8 * * 1" --prompt "weekly repo check"
 go run ./cmd/cs schedule list
 go run ./cmd/cs resume <worker-id>
@@ -52,7 +57,7 @@ go run ./cmd/cs show <worker-id>
 go run ./cmd/cs report --note "demo completed" <worker-id> done
 ```
 
-State is written to `.codex-swarm/state.json` by default. Use `--state <path>` or `CODEX_SWARM_STATE` for disposable demos and tests.
+State is written to a machine-global user config path by default, for example `%AppData%\codex-swarm\state.json` on Windows. Use `--state <path>` or `CODEX_SWARM_STATE` for disposable demos and tests.
 
 `spawn --engine appserver` prints the Codex thread ID and a recovery command. Codex app visibility can lag briefly, especially on mobile; use `inspect-thread` to verify that the stored thread can still be resumed through app-server.
 
@@ -63,6 +68,12 @@ Pass `--role` and `--parent` to record simple local swarm relationships. Use `me
 Pass `--issue owner/repo#123` to link a worker to a GitHub issue. Scheduling is currently a persisted control-plane record only; `schedule add` and `schedule list` do not execute scheduled workers yet.
 
 Use `claim create`, `claim list`, `claim conflicts`, `claim show`, `claim block`, and `claim release` for warning-only coordination claims. Use `claim export --issue owner/repo#123` to print GitHub-ready claim markdown. Use `claim push --issue owner/repo#123` only when you intentionally want to post the current local claim summary as a GitHub issue comment through `gh`.
+
+Use `issue export --issue owner/repo#123` to include a hidden `codex-swarm:claims:v1` JSON marker that other machines can parse. Use `issue sync --issue owner/repo#123` only when you intentionally want to post that marker comment through `gh`. Use `issue pull --issue owner/repo#123` to import the latest marker-backed claim set from GitHub into local state.
+
+Use `agent register --name <name> --role <role>` to record the current local agent identity. Use `legacy import-coordinator` once per machine, or with `--include-expired` for audit work, to import active warning-only claims from the old PowerShell coordinator.
+
+Set `CODEX_SWARM_DAEMON_URL=http://127.0.0.1:8787` to make `cs status` prefer a running daemon. `csd serve` starts the daemon, `csd status` checks it, and `csd install` / `csd uninstall` are explicit service-manager stubs until platform-specific installers are added.
 
 Use `--engine mock` when the demo needs to avoid live Codex calls:
 

@@ -8,6 +8,7 @@ import (
 var (
 	ErrWorkerNotFound = errors.New("worker not found")
 	ErrClaimNotFound  = errors.New("claim not found")
+	ErrAgentNotFound  = errors.New("agent not found")
 )
 
 type WorkerStatus string
@@ -77,6 +78,15 @@ type Claim struct {
 	ExpiresAt time.Time   `json:"expires_at"`
 	CreatedAt time.Time   `json:"created_at"`
 	UpdatedAt time.Time   `json:"updated_at"`
+}
+
+type Agent struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Role      string    `json:"role,omitempty"`
+	Current   bool      `json:"current,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type Store interface {

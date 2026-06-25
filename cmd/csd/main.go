@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
@@ -17,11 +21,50 @@ func main() {
 }
 
 func run() error {
+	args := os.Args[1:]
+	if len(args) > 0 {
+		switch args[0] {
+		case "serve":
+			return serve()
+		case "status":
+			return status()
+		case "install":
+			return serviceStub("install")
+		case "uninstall":
+			return serviceStub("uninstall")
+		default:
+			return fmt.Errorf("unknown command %q", args[0])
+		}
+	}
+	return serve()
+}
+
+func serve() error {
 	addr := envDefault("CODEX_SWARM_DAEMON_ADDR", "127.0.0.1:8787")
-	statePath := envDefault("CODEX_SWARM_STATE", ".codex-swarm/state.json")
+	statePath := envDefault("CODEX_SWARM_STATE", defaultStatePath())
 	server := daemon.NewServer(statePath, store.NewJSONStore(statePath))
 	fmt.Printf("csd listening addr=%s state=%s\n", addr, statePath)
 	return http.ListenAndServe(addr, server.Handler())
+}
+
+func status() error {
+	baseURL := envDefault("CODEX_SWARM_DAEMON_URL", "http://127.0.0.1:8787")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	status, err := (daemon.Client{BaseURL: baseURL}).Status(ctx)
+	if err != nil {
+		return fmt.Errorf("daemon status: %w", err)
+	}
+	fmt.Println(status.String())
+	return nil
+}
+
+func serviceStub(action string) error {
+	if action == "" {
+		return errors.New("service action is required")
+	}
+	fmt.Printf("service %s is not implemented yet; run `csd serve` or install it with your OS service manager\n", action)
+	return nil
 }
 
 func envDefault(name, fallback string) string {
@@ -29,4 +72,14 @@ func envDefault(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func defaultStatePath() string {
+	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
+		return filepath.Join(dir, "codex-swarm", "state.json")
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".codex-swarm", "state.json")
+	}
+	return filepath.Join(".codex-swarm", "state.json")
 }
