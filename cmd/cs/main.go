@@ -186,13 +186,18 @@ func (c cli) status(args []string) error {
 	if *daemonURL != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		status, err := (daemon.Client{BaseURL: *daemonURL}).Status(ctx)
+		client := daemon.Client{BaseURL: *daemonURL}
+		status, err := client.Status(ctx)
 		if err != nil {
 			return fmt.Errorf("daemon status: %w", err)
 		}
 		fmt.Fprintln(c.out, status.String())
-		for _, worker := range status.Workers {
-			fmt.Fprintf(c.out, "%s\t%s\t%s\t%s\t%s\n", worker.ID, displayWorkerStatus(worker), worker.Engine, worker.ThreadID, short(worker.Prompt, 60))
+		workers, err := client.Workers(ctx)
+		if err != nil {
+			return fmt.Errorf("daemon workers: %w", err)
+		}
+		for _, worker := range workers.Workers {
+			fmt.Fprintf(c.out, "%s\t%s\t%s\t%s\t%s\n", worker.ID, worker.Status, emptyDash(worker.Issue), emptyDash(worker.Worktree), emptyDash(worker.ThreadID))
 		}
 		return nil
 	}

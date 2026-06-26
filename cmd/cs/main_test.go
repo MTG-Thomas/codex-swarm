@@ -5,12 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/MTG-Thomas/codex-swarm/internal/appserver"
+	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
 	"github.com/MTG-Thomas/codex-swarm/internal/lifecycle"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
@@ -522,6 +524,72 @@ func TestCLIDisplaysLifecycleStatusForStaleWorkers(t *testing.T) {
 	body := workerIssueReportMarkdown("MTG-Thomas/codex-swarm#42", mustGetWorker(t, state, "w-stale"), "", now)
 	if !strings.Contains(body, "- Status: `stale`") {
 		t.Fatalf("worker report markdown = %q, want stale display status", body)
+	}
+}
+
+func TestCLIStatusPrefersDaemonWithLifecycleAndConflictCounts(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 26, 15, 30, 0, 0, time.UTC)
+	state := filepath.Join(t.TempDir(), "state.json")
+	st := store.NewJSONStore(state)
+	staleLifecycle := lifecycle.NewWorkerLifecycle()
+	staleLifecycle.Runtime.State = lifecycle.RuntimeDead
+	staleLifecycle.Runtime.Reason = lifecycle.ReasonRuntimeLost
+	if err := st.SaveWorker(store.Worker{
+		ID:          "w-stale",
+		ProjectRoot: "/repo",
+		Worktree:    "/repo/.codex-swarm/worktrees/w-stale",
+		ThreadID:    "thread-stale",
+		Engine:      "mock",
+		Status:      store.WorkerRunning,
+		Lifecycle:   &staleLifecycle,
+		Issue:       "MTG-Thomas/codex-swarm#42",
+		Prompt:      "stale worker",
+		CreatedAt:   now.Add(-time.Hour),
+		UpdatedAt:   now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveWorker() error = %v", err)
+	}
+	for _, claim := range []store.Claim{
+		{
+			ID:        "c-parent",
+			WorkerID:  "w-stale",
+			Repo:      "/repo",
+			Scope:     "internal",
+			Status:    store.ClaimActive,
+			ExpiresAt: now.Add(time.Hour),
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		{
+			ID:        "c-child",
+			WorkerID:  "w-other",
+			Repo:      "/repo",
+			Scope:     "internal/daemon",
+			Status:    store.ClaimActive,
+			ExpiresAt: now.Add(time.Hour),
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+	} {
+		if err := st.SaveClaim(claim); err != nil {
+			t.Fatalf("SaveClaim(%s) error = %v", claim.ID, err)
+		}
+	}
+	server := httptest.NewServer(daemon.NewServer(state, st).Handler())
+	defer server.Close()
+
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+	if err := c.run([]string{"status", "--daemon", server.URL, "--state", filepath.Join(t.TempDir(), "ignored.json")}); err != nil {
+		t.Fatalf("status --daemon error = %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "daemon=running") || !strings.Contains(got, "workers=1") || !strings.Contains(got, "claims=2") || !strings.Contains(got, "conflicts=1") || !strings.Contains(got, "state="+state) {
+		t.Fatalf("status daemon summary = %q", got)
+	}
+	if !strings.Contains(got, "w-stale\tstale\tMTG-Thomas/codex-swarm#42\t/repo/.codex-swarm/worktrees/w-stale\tthread-stale") {
+		t.Fatalf("status daemon worker line = %q", got)
 	}
 }
 

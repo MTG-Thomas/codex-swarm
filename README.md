@@ -23,6 +23,7 @@ Current scaffold:
 ```powershell
 go test ./...
 go run ./cmd/cs status
+go run ./cmd/cs status --daemon http://127.0.0.1:8787
 go run ./cmd/csd
 ```
 
@@ -80,7 +81,9 @@ Use `issue report --issue owner/repo#123 --worker <worker-id>` only when you int
 
 Use `agent register --name <name> --role <role>` to record the current local agent identity. Use `legacy import-coordinator` once per machine, or with `--include-expired` for audit work, to import active warning-only claims from the old PowerShell coordinator.
 
-Set `CODEX_SWARM_DAEMON_URL=http://127.0.0.1:8787` to make `cs status` prefer a running daemon. `csd serve` starts the daemon, `csd status` checks it, and `csd install` / `csd uninstall` are explicit service-manager stubs until platform-specific installers are added.
+Set `CODEX_SWARM_DAEMON_URL=http://127.0.0.1:8787` or pass `cs status --daemon http://127.0.0.1:8787` to make `cs status` prefer a running daemon. Daemon-backed status prints the daemon version, state path, worker count, claim count, conflict count, and read-only worker lines with lifecycle status, issue, worktree, and thread ID.
+
+`csd serve` starts the daemon, `csd status` checks it, and `csd install` / `csd uninstall` are explicit service-manager stubs until platform-specific installers are added. The daemon exposes only read-only HTTP status surfaces in this task: `GET /status`, `GET /workers`, and `GET /claims`. Use the `cs` CLI for worker, claim, issue, and schedule mutations.
 
 Use `--engine mock` when the demo needs to avoid live Codex calls:
 
