@@ -111,6 +111,84 @@ func TestLatestMarkerCommentID(t *testing.T) {
 	}
 }
 
+func TestImportClaimSnapshotSkipsNewerLocalByDefault(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	st := store.NewJSONStore(state)
+	localUpdated := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	remoteUpdated := localUpdated.Add(-time.Hour)
+	if err := st.SaveClaim(store.Claim{
+		ID:        "c-1",
+		Issue:     "MTG-Thomas/codex-swarm#42",
+		Status:    store.ClaimActive,
+		Note:      "newer local",
+		UpdatedAt: localUpdated,
+	}); err != nil {
+		t.Fatalf("save local claim: %v", err)
+	}
+
+	imported, skipped, err := importClaimSnapshot(st, "MTG-Thomas/codex-swarm#42", issueClaimSnapshot{
+		Issue: "MTG-Thomas/codex-swarm#42",
+		Claims: []store.Claim{{
+			ID:        "c-1",
+			Status:    store.ClaimReleased,
+			Note:      "older remote",
+			UpdatedAt: remoteUpdated,
+		}},
+	}, false)
+	if err != nil {
+		t.Fatalf("importClaimSnapshot error = %v", err)
+	}
+	if imported != 0 || skipped != 1 {
+		t.Fatalf("imported=%d skipped=%d, want 0/1", imported, skipped)
+	}
+	got, err := st.GetClaim("c-1")
+	if err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	if got.Note != "newer local" || got.Status != store.ClaimActive {
+		t.Fatalf("claim was overwritten: %#v", got)
+	}
+}
+
+func TestImportClaimSnapshotForceOverwritesNewerLocal(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	st := store.NewJSONStore(state)
+	localUpdated := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	remoteUpdated := localUpdated.Add(-time.Hour)
+	if err := st.SaveClaim(store.Claim{
+		ID:        "c-1",
+		Issue:     "MTG-Thomas/codex-swarm#42",
+		Status:    store.ClaimActive,
+		Note:      "newer local",
+		UpdatedAt: localUpdated,
+	}); err != nil {
+		t.Fatalf("save local claim: %v", err)
+	}
+
+	imported, skipped, err := importClaimSnapshot(st, "MTG-Thomas/codex-swarm#42", issueClaimSnapshot{
+		Issue: "MTG-Thomas/codex-swarm#42",
+		Claims: []store.Claim{{
+			ID:        "c-1",
+			Status:    store.ClaimReleased,
+			Note:      "forced remote",
+			UpdatedAt: remoteUpdated,
+		}},
+	}, true)
+	if err != nil {
+		t.Fatalf("importClaimSnapshot error = %v", err)
+	}
+	if imported != 1 || skipped != 0 {
+		t.Fatalf("imported=%d skipped=%d, want 1/0", imported, skipped)
+	}
+	got, err := st.GetClaim("c-1")
+	if err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	if got.Note != "forced remote" || got.Status != store.ClaimReleased {
+		t.Fatalf("claim was not overwritten: %#v", got)
+	}
+}
+
 func TestWorkerIssueReportMarkdownUsesWorkerReport(t *testing.T) {
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
 	body := workerIssueReportMarkdown("MTG-Thomas/codex-swarm#42", store.Worker{

@@ -99,6 +99,7 @@ func (c cli) issuePull(args []string) error {
 	fs := c.flagSet("issue pull")
 	statePath := fs.String("state", defaultStatePath(), "state file path")
 	issueValue := fs.String("issue", "", "GitHub issue reference")
+	force := fs.Bool("force", false, "overwrite newer local claims with issue marker claims")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -117,18 +118,11 @@ func (c cli) issuePull(args []string) error {
 	if snapshot.Issue != issue {
 		return fmt.Errorf("latest claim marker is for %s, expected %s", snapshot.Issue, issue)
 	}
-	st := store.NewJSONStore(*statePath)
-	imported := 0
-	for _, claim := range snapshot.Claims {
-		if claim.Issue == "" {
-			claim.Issue = issue
-		}
-		if err := st.SaveClaim(claim); err != nil {
-			return err
-		}
-		imported++
+	imported, skippedNewerLocal, err := importClaimSnapshot(store.NewJSONStore(*statePath), issue, snapshot, *force)
+	if err != nil {
+		return err
 	}
-	fmt.Fprintf(c.out, "pulled issue=%s claims=%d state=%s\n", issue, imported, *statePath)
+	fmt.Fprintf(c.out, "pulled issue=%s imported=%d skipped_newer_local=%d state=%s\n", issue, imported, skippedNewerLocal, *statePath)
 	return nil
 }
 
@@ -186,6 +180,29 @@ func claimIssueMarkerMarkdown(issue string, all []store.Claim, now time.Time) (s
 		return "", fmt.Errorf("encode claim snapshot: %w", err)
 	}
 	return claimMarkerStart + "\n" + string(payload) + "\n" + claimMarkerEnd + "\n\n" + claimIssueMarkdown(issue, all, now), nil
+}
+
+func importClaimSnapshot(st *store.JSONStore, issue string, snapshot issueClaimSnapshot, force bool) (int, int, error) {
+	imported := 0
+	skippedNewerLocal := 0
+	for _, claim := range snapshot.Claims {
+		if claim.Issue == "" {
+			claim.Issue = issue
+		}
+		local, err := st.GetClaim(claim.ID)
+		if err != nil && !errors.Is(err, store.ErrClaimNotFound) {
+			return imported, skippedNewerLocal, err
+		}
+		if err == nil && !force && local.UpdatedAt.After(claim.UpdatedAt) {
+			skippedNewerLocal++
+			continue
+		}
+		if err := st.SaveClaim(claim); err != nil {
+			return imported, skippedNewerLocal, err
+		}
+		imported++
+	}
+	return imported, skippedNewerLocal, nil
 }
 
 func workerIssueReportMarkdown(issue string, worker store.Worker, note string, now time.Time) string {
