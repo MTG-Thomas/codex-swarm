@@ -74,12 +74,14 @@ type Thread struct {
 }
 
 type Turn struct {
-	ID     string `json:"id"`
-	Status string `json:"status"`
+	ID     string          `json:"id"`
+	Status string          `json:"status"`
+	Usage  json.RawMessage `json:"usage,omitempty"`
 }
 
 type RunResult struct {
 	ThreadID string
 	TurnID   string
 	Status   string
+	Warnings []string
 }

@@ -264,6 +264,7 @@ func (c cli) spawn(args []string) error {
 		status = workerStatusFromTurn(result.Status)
 		lastMessage = fmt.Sprintf("app-server turn submitted: thread=%s turn=%s status=%s", result.ThreadID, result.TurnID, result.Status)
 		events = append(events, store.Event{At: now, Type: "appserver.turn.started", Message: lastMessage})
+		events = appendAppserverWarnings(events, now, result.Warnings)
 	} else {
 		events = append(events, store.Event{At: now, Type: "mock.turn.completed", Message: lastMessage})
 	}
@@ -325,6 +326,7 @@ func (c cli) spawn(args []string) error {
 		fmt.Fprintf(c.out, "codex thread: %s\n", worker.ThreadID)
 		fmt.Fprintf(c.out, "inspect: cs inspect-thread --state %s %s\n", *statePath, worker.ID)
 		fmt.Fprintln(c.out, "note: Codex app visibility can lag briefly, especially on mobile.")
+		printWarnings(c.out, appserverWarnings(worker.Events))
 	}
 	if *createWorktree {
 		fmt.Fprintf(c.out, "worktree: %s branch=%s\n", worker.Worktree, worker.Branch)
@@ -539,6 +541,7 @@ func (c cli) send(args []string) error {
 			worker.ApplyStatusAt(workerStatusFromTurn(appserverResult.Status), now)
 			worker.LastMessage = fmt.Sprintf("app-server turn submitted: thread=%s turn=%s status=%s", appserverResult.ThreadID, appserverResult.TurnID, appserverResult.Status)
 			worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.turn.started", Message: worker.LastMessage})
+			worker.Events = appendAppserverWarnings(worker.Events, now, appserverResult.Warnings)
 			return
 		}
 		worker.ApplyStatus(store.WorkerIdle)
@@ -546,6 +549,7 @@ func (c cli) send(args []string) error {
 		worker.Events = append(worker.Events, store.Event{At: now, Type: "mock.turn.completed", Message: worker.LastMessage})
 	}, func(worker store.Worker) {
 		fmt.Fprintf(c.out, "sent %s status=%s\n%s\n", worker.ID, displayWorkerStatus(worker), worker.LastMessage)
+		printWarnings(c.out, appserverResult.Warnings)
 	})
 }
 
@@ -799,6 +803,29 @@ func workerStatusFromTurn(status string) store.WorkerStatus {
 		return store.WorkerFailed
 	default:
 		return store.WorkerIdle
+	}
+}
+
+func appendAppserverWarnings(events []store.Event, at time.Time, warnings []string) []store.Event {
+	for _, warning := range warnings {
+		events = append(events, store.Event{At: at, Type: "appserver.warning", Message: warning})
+	}
+	return events
+}
+
+func appserverWarnings(events []store.Event) []string {
+	warnings := []string(nil)
+	for _, event := range events {
+		if event.Type == "appserver.warning" {
+			warnings = append(warnings, event.Message)
+		}
+	}
+	return warnings
+}
+
+func printWarnings(out io.Writer, warnings []string) {
+	for _, warning := range warnings {
+		fmt.Fprintf(out, "warning: %s\n", warning)
 	}
 }
 

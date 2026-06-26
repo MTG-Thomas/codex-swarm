@@ -62,6 +62,8 @@ State is written to a machine-global user config path by default, for example `%
 
 `spawn --engine appserver` prints the Codex thread ID and a recovery command. Codex app visibility can lag briefly, especially on mobile; use `inspect-thread` to verify that the stored thread can still be resumed through app-server.
 
+App-server runs use the normal `turn/completed` JSON-RPC event as their completion record. The internal completion policy also supports a separate text completion signal for shell-agent style runners: after that signal appears, `cs` waits briefly for trailing turn metadata and records a warning instead of failing the worker if finalization never arrives. No extra app-server completion flags are exposed while the default signal is empty.
+
 Pass `--worktree` to create a Git branch and worktree for the worker. Managed branch names use the worker timestamp plus a random suffix, and the worktree path and branch are recorded on the worker and shown in command output.
 
 Managed worktree creation uses repo-local branch locks under `.codex-swarm/locks/`. A live lock fails fast instead of handing two workers the same managed checkout; a stale lock whose PID is gone is pruned. If the intended managed worktree already exists on the requested branch, it is reused. Dirty managed worktrees are reused without refresh and print a warning so local changes are preserved. If the branch is checked out in the main repository or an external worktree, `spawn --worktree` fails with that location instead of reusing it.
