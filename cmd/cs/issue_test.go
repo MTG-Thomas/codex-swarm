@@ -19,6 +19,18 @@ func TestIssueExportIncludesParsableClaimMarker(t *testing.T) {
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
 	var out bytes.Buffer
 	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+	if err := store.NewJSONStore(state).SaveWorker(store.Worker{
+		ID:          "w-1",
+		ProjectRoot: ".",
+		ThreadID:    "thread-1",
+		Engine:      "mock",
+		Status:      store.WorkerIdle,
+		Prompt:      "issue marker worker",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("SaveWorker() error = %v", err)
+	}
 
 	if err := c.run([]string{"claim", "create", "--state", state, "--repo", ".", "--scope", "cmd/cs", "--worker", "w-1", "--issue", "MTG-Thomas/codex-swarm#42", "--note", "testing issue marker"}); err != nil {
 		t.Fatalf("claim create error = %v", err)
@@ -216,6 +228,134 @@ func TestImportClaimSnapshotForceOverwritesNewerLocal(t *testing.T) {
 	}
 	if got.Note != "forced remote" || got.Status != store.ClaimReleased {
 		t.Fatalf("claim was not overwritten: %#v", got)
+	}
+}
+
+func TestImportClaimSnapshotMarksUnknownWorkerExternal(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	st := store.NewJSONStore(state)
+	updated := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+
+	imported, skipped, err := importClaimSnapshot(st, "MTG-Thomas/codex-swarm#42", issueClaimSnapshot{
+		Issue:     "MTG-Thomas/codex-swarm#42",
+		MachineID: "remote-machine",
+		Claims: []store.Claim{{
+			ID:        "c-remote",
+			WorkerID:  "w-remote",
+			Status:    store.ClaimActive,
+			Note:      "remote claim",
+			UpdatedAt: updated,
+		}},
+	}, false)
+	if err != nil {
+		t.Fatalf("importClaimSnapshot error = %v", err)
+	}
+	if imported != 1 || skipped != 0 {
+		t.Fatalf("imported=%d skipped=%d, want 1/0", imported, skipped)
+	}
+	got, err := st.GetClaim("c-remote")
+	if err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	if got.WorkerID != "w-remote" {
+		t.Fatalf("WorkerID = %q, want historical remote worker id", got.WorkerID)
+	}
+	if !got.ExternalWorker || got.WorkerSource != "issue:remote-machine" {
+		t.Fatalf("external provenance = external:%t source:%q, want issue remote machine", got.ExternalWorker, got.WorkerSource)
+	}
+	if got.Note != "remote claim" {
+		t.Fatalf("Note = %q, want note preserved without external marker", got.Note)
+	}
+}
+
+func TestImportClaimSnapshotKeepsKnownWorkerLocal(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	st := store.NewJSONStore(state)
+	updated := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	if err := st.SaveWorker(store.Worker{
+		ID:          "w-local",
+		ProjectRoot: "C:/repo",
+		ThreadID:    "thread-local",
+		Engine:      "mock",
+		Status:      store.WorkerIdle,
+		Prompt:      "local worker",
+		CreatedAt:   updated,
+		UpdatedAt:   updated,
+	}); err != nil {
+		t.Fatalf("SaveWorker() error = %v", err)
+	}
+
+	imported, skipped, err := importClaimSnapshot(st, "MTG-Thomas/codex-swarm#42", issueClaimSnapshot{
+		Issue:     "MTG-Thomas/codex-swarm#42",
+		MachineID: "remote-machine",
+		Claims: []store.Claim{{
+			ID:        "c-local",
+			WorkerID:  "w-local",
+			Repo:      "C:/repo",
+			Status:    store.ClaimActive,
+			Note:      "local claim",
+			UpdatedAt: updated,
+		}},
+	}, false)
+	if err != nil {
+		t.Fatalf("importClaimSnapshot error = %v", err)
+	}
+	if imported != 1 || skipped != 0 {
+		t.Fatalf("imported=%d skipped=%d, want 1/0", imported, skipped)
+	}
+	got, err := st.GetClaim("c-local")
+	if err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	if got.ExternalWorker || got.WorkerSource != "" {
+		t.Fatalf("external provenance = external:%t source:%q, want local worker", got.ExternalWorker, got.WorkerSource)
+	}
+}
+
+func TestImportClaimSnapshotMarksKnownWorkerWrongRepoExternal(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	st := store.NewJSONStore(state)
+	updated := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	if err := st.SaveWorker(store.Worker{
+		ID:          "w-local",
+		ProjectRoot: "C:/repo-a",
+		ThreadID:    "thread-local",
+		Engine:      "mock",
+		Status:      store.WorkerIdle,
+		Prompt:      "local worker",
+		CreatedAt:   updated,
+		UpdatedAt:   updated,
+	}); err != nil {
+		t.Fatalf("SaveWorker() error = %v", err)
+	}
+
+	imported, skipped, err := importClaimSnapshot(st, "MTG-Thomas/codex-swarm#42", issueClaimSnapshot{
+		Issue:     "MTG-Thomas/codex-swarm#42",
+		MachineID: "remote-machine",
+		Claims: []store.Claim{{
+			ID:        "c-wrong-repo",
+			WorkerID:  "w-local",
+			Repo:      "C:/repo-b",
+			Status:    store.ClaimActive,
+			Note:      "remote claim with colliding worker id",
+			UpdatedAt: updated,
+		}},
+	}, false)
+	if err != nil {
+		t.Fatalf("importClaimSnapshot error = %v", err)
+	}
+	if imported != 1 || skipped != 0 {
+		t.Fatalf("imported=%d skipped=%d, want 1/0", imported, skipped)
+	}
+	got, err := st.GetClaim("c-wrong-repo")
+	if err != nil {
+		t.Fatalf("get claim: %v", err)
+	}
+	if got.WorkerID != "w-local" {
+		t.Fatalf("WorkerID = %q, want historical worker id", got.WorkerID)
+	}
+	if !got.ExternalWorker || got.WorkerSource != "issue:remote-machine" {
+		t.Fatalf("external provenance = external:%t source:%q, want issue remote machine", got.ExternalWorker, got.WorkerSource)
 	}
 }
 

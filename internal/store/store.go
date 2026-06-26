@@ -171,18 +171,20 @@ const (
 )
 
 type Claim struct {
-	ID        string      `json:"id"`
-	WorkerID  string      `json:"worker_id,omitempty"`
-	Repo      string      `json:"repo"`
-	Scope     string      `json:"scope"`
-	Issue     string      `json:"issue,omitempty"`
-	Status    ClaimStatus `json:"status"`
-	Note      string      `json:"note,omitempty"`
-	Blocker   string      `json:"blocker,omitempty"`
-	Next      string      `json:"next,omitempty"`
-	ExpiresAt time.Time   `json:"expires_at"`
-	CreatedAt time.Time   `json:"created_at"`
-	UpdatedAt time.Time   `json:"updated_at"`
+	ID             string      `json:"id"`
+	WorkerID       string      `json:"worker_id,omitempty"`
+	Repo           string      `json:"repo"`
+	Scope          string      `json:"scope"`
+	Issue          string      `json:"issue,omitempty"`
+	Status         ClaimStatus `json:"status"`
+	Note           string      `json:"note,omitempty"`
+	ExternalWorker bool        `json:"external_worker,omitempty"`
+	WorkerSource   string      `json:"worker_source,omitempty"`
+	Blocker        string      `json:"blocker,omitempty"`
+	Next           string      `json:"next,omitempty"`
+	ExpiresAt      time.Time   `json:"expires_at"`
+	CreatedAt      time.Time   `json:"created_at"`
+	UpdatedAt      time.Time   `json:"updated_at"`
 }
 
 type Agent struct {

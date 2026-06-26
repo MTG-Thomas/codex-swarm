@@ -56,9 +56,18 @@ func (c cli) claimCreate(args []string) error {
 	if strings.TrimSpace(*scope) == "" {
 		return errors.New("claim create requires --scope")
 	}
+	workerIDValue := strings.TrimSpace(*workerID)
+	st := store.NewJSONStore(*statePath)
+	workers, err := st.ListWorkers()
+	if err != nil {
+		return err
+	}
 	repoRoot, err := filepath.Abs(*repo)
 	if err != nil {
 		return fmt.Errorf("resolve repo: %w", err)
+	}
+	if err := claims.ValidateWorkerForRepo(workerIDValue, repoRoot, workers); err != nil {
+		return err
 	}
 	issue, err := normalizeIssue(*issueValue)
 	if err != nil {
@@ -67,7 +76,7 @@ func (c cli) claimCreate(args []string) error {
 	now := c.now().UTC()
 	claim := store.Claim{
 		ID:        fmt.Sprintf("c-%s", now.Format("20060102-150405")),
-		WorkerID:  *workerID,
+		WorkerID:  workerIDValue,
 		Repo:      repoRoot,
 		Scope:     *scope,
 		Issue:     issue,
@@ -77,7 +86,6 @@ func (c cli) claimCreate(args []string) error {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	st := store.NewJSONStore(*statePath)
 	all, err := st.ListClaims()
 	if err != nil {
 		return err

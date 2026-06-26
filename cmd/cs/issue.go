@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/MTG-Thomas/codex-swarm/internal/claims"
 	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
@@ -225,10 +226,16 @@ func importClaimSnapshot(st *store.JSONStore, issue string, snapshot issueClaimS
 
 func planClaimSnapshotImport(st *store.JSONStore, issue string, snapshot issueClaimSnapshot, force bool) (claimImportPlan, error) {
 	var plan claimImportPlan
+	workers, err := st.ListWorkers()
+	if err != nil {
+		return plan, err
+	}
+	workerSource := importedClaimWorkerSource(snapshot)
 	for _, claim := range snapshot.Claims {
 		if claim.Issue == "" {
 			claim.Issue = issue
 		}
+		claim = normalizeImportedClaimWorker(claim, workers, workerSource)
 		local, err := st.GetClaim(claim.ID)
 		if err != nil && !errors.Is(err, store.ErrClaimNotFound) {
 			return plan, err
@@ -243,6 +250,34 @@ func planClaimSnapshotImport(st *store.JSONStore, issue string, snapshot issueCl
 		plan.Entries = append(plan.Entries, claimImportPlanEntry{Claim: claim, Action: "import"})
 	}
 	return plan, nil
+}
+
+func normalizeImportedClaimWorker(claim store.Claim, workers []store.Worker, source string) store.Claim {
+	if strings.TrimSpace(claim.WorkerID) == "" {
+		return claim
+	}
+	if claims.IsExternalWorker(claim) {
+		return claims.MarkExternalWorkerWithSource(claim, source)
+	}
+	for _, worker := range workers {
+		if worker.ID == claim.WorkerID && claims.WorkerMatchesRepo(worker, claim.Repo) {
+			return claim
+		}
+	}
+	return claims.MarkExternalWorkerWithSource(claim, source)
+}
+
+func importedClaimWorkerSource(snapshot issueClaimSnapshot) string {
+	if strings.TrimSpace(snapshot.MachineID) != "" {
+		return "issue:" + strings.TrimSpace(snapshot.MachineID)
+	}
+	if strings.TrimSpace(snapshot.SnapshotID) != "" {
+		return "issue:" + strings.TrimSpace(snapshot.SnapshotID)
+	}
+	if strings.TrimSpace(snapshot.Issue) != "" {
+		return "issue:" + strings.TrimSpace(snapshot.Issue)
+	}
+	return "issue"
 }
 
 func applyClaimImportPlan(st *store.JSONStore, plan claimImportPlan) error {

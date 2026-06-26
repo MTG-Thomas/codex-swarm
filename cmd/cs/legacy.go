@@ -120,7 +120,7 @@ func mapLegacyClaim(item legacyClaim) (store.Claim, error) {
 		}
 		note += "release: " + item.ReleaseNote
 	}
-	return store.Claim{
+	return claims.MarkExternalWorkerWithSource(store.Claim{
 		ID:        "legacy-" + item.ID,
 		WorkerID:  item.Owner,
 		Repo:      item.Repo,
@@ -132,7 +132,7 @@ func mapLegacyClaim(item legacyClaim) (store.Claim, error) {
 		ExpiresAt: expiresAt,
 		CreatedAt: createdAt,
 		UpdatedAt: updatedAt,
-	}, nil
+	}, "legacy-coordinator"), nil
 }
 
 func parseLegacyTime(value string) (time.Time, error) {
