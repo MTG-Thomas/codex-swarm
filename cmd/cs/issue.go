@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -15,14 +16,31 @@ import (
 )
 
 const (
-	claimMarkerStart = "<!-- codex-swarm:claims:v1"
-	claimMarkerEnd   = "-->"
+	claimMarkerStart  = "<!-- codex-swarm:claims:v1"
+	claimMarkerEnd    = "-->"
+	claimMarkerSchema = "codex-swarm.claims.v1"
 )
 
 type issueClaimSnapshot struct {
+	Schema      string        `json:"schema,omitempty"`
+	SnapshotID  string        `json:"snapshot_id,omitempty"`
 	Issue       string        `json:"issue"`
 	GeneratedAt time.Time     `json:"generated_at"`
+	MachineID   string        `json:"machine_id,omitempty"`
 	Claims      []store.Claim `json:"claims"`
+}
+
+type claimImportPlan struct {
+	Imported   int
+	Skipped    int
+	Conflicted int
+	Entries    []claimImportPlanEntry
+}
+
+type claimImportPlanEntry struct {
+	Claim  store.Claim
+	Action string
+	Reason string
 }
 
 func (c cli) issue(args []string) error {
@@ -100,6 +118,7 @@ func (c cli) issuePull(args []string) error {
 	statePath := fs.String("state", defaultStatePath(), "state file path")
 	issueValue := fs.String("issue", "", "GitHub issue reference")
 	force := fs.Bool("force", false, "overwrite newer local claims with issue marker claims")
+	dryRun := fs.Bool("dry-run", false, "print the pull plan without writing local state")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -118,11 +137,19 @@ func (c cli) issuePull(args []string) error {
 	if snapshot.Issue != issue {
 		return fmt.Errorf("latest claim marker is for %s, expected %s", snapshot.Issue, issue)
 	}
-	imported, skippedNewerLocal, err := importClaimSnapshot(store.NewJSONStore(*statePath), issue, snapshot, *force)
+	st := store.NewJSONStore(*statePath)
+	plan, err := planClaimSnapshotImport(st, issue, snapshot, *force)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(c.out, "pulled issue=%s imported=%d skipped_newer_local=%d state=%s\n", issue, imported, skippedNewerLocal, *statePath)
+	if *dryRun {
+		fmt.Fprintf(c.out, "pull dry-run issue=%s imported=%d skipped=%d conflicted=%d state=%s\n", issue, plan.Imported, plan.Skipped, plan.Conflicted, *statePath)
+		return nil
+	}
+	if err := applyClaimImportPlan(st, plan); err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "pulled issue=%s imported=%d skipped=%d conflicted=%d state=%s\n", issue, plan.Imported, plan.Skipped, plan.Conflicted, *statePath)
 	return nil
 }
 
@@ -172,8 +199,11 @@ func (c cli) issueClaim(args []string) error {
 
 func claimIssueMarkerMarkdown(issue string, all []store.Claim, now time.Time) (string, error) {
 	payload, err := json.MarshalIndent(issueClaimSnapshot{
+		Schema:      claimMarkerSchema,
+		SnapshotID:  fmt.Sprintf("snap-%d", now.UTC().UnixNano()),
 		Issue:       issue,
 		GeneratedAt: now,
+		MachineID:   currentMachineID(),
 		Claims:      all,
 	}, "", "  ")
 	if err != nil {
@@ -183,26 +213,48 @@ func claimIssueMarkerMarkdown(issue string, all []store.Claim, now time.Time) (s
 }
 
 func importClaimSnapshot(st *store.JSONStore, issue string, snapshot issueClaimSnapshot, force bool) (int, int, error) {
-	imported := 0
-	skippedNewerLocal := 0
+	plan, err := planClaimSnapshotImport(st, issue, snapshot, force)
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := applyClaimImportPlan(st, plan); err != nil {
+		return plan.Imported, plan.Skipped, err
+	}
+	return plan.Imported, plan.Skipped, nil
+}
+
+func planClaimSnapshotImport(st *store.JSONStore, issue string, snapshot issueClaimSnapshot, force bool) (claimImportPlan, error) {
+	var plan claimImportPlan
 	for _, claim := range snapshot.Claims {
 		if claim.Issue == "" {
 			claim.Issue = issue
 		}
 		local, err := st.GetClaim(claim.ID)
 		if err != nil && !errors.Is(err, store.ErrClaimNotFound) {
-			return imported, skippedNewerLocal, err
+			return plan, err
 		}
 		if err == nil && !force && local.UpdatedAt.After(claim.UpdatedAt) {
-			skippedNewerLocal++
+			plan.Skipped++
+			plan.Conflicted++
+			plan.Entries = append(plan.Entries, claimImportPlanEntry{Claim: claim, Action: "skip", Reason: "newer local claim"})
 			continue
 		}
-		if err := st.SaveClaim(claim); err != nil {
-			return imported, skippedNewerLocal, err
-		}
-		imported++
+		plan.Imported++
+		plan.Entries = append(plan.Entries, claimImportPlanEntry{Claim: claim, Action: "import"})
 	}
-	return imported, skippedNewerLocal, nil
+	return plan, nil
+}
+
+func applyClaimImportPlan(st *store.JSONStore, plan claimImportPlan) error {
+	for _, entry := range plan.Entries {
+		if entry.Action != "import" {
+			continue
+		}
+		if err := st.SaveClaim(entry.Claim); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func workerIssueReportMarkdown(issue string, worker store.Worker, note string, now time.Time) string {
@@ -294,6 +346,14 @@ func extractClaimSnapshot(body string) (issueClaimSnapshot, bool, error) {
 		return issueClaimSnapshot{}, false, fmt.Errorf("parse codex-swarm claim marker: %w", err)
 	}
 	return snapshot, true, nil
+}
+
+func currentMachineID() string {
+	hostname, err := os.Hostname()
+	if err != nil || strings.TrimSpace(hostname) == "" {
+		return "unknown"
+	}
+	return hostname
 }
 
 func fetchIssueJSON(ctx context.Context, issue string) ([]byte, error) {
