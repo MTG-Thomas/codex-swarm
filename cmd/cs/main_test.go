@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -227,6 +228,222 @@ func TestCLIReportFailedSetsTerminatedAt(t *testing.T) {
 	}
 	if worker.Lifecycle.Session.CompletedAt != nil {
 		t.Fatalf("CompletedAt = %v, want nil", worker.Lifecycle.Session.CompletedAt)
+	}
+}
+
+func TestCLIMessageRequestIDIsIdempotentAndRecordsOneSwarmEvent(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 26, 18, 30, 0, 0, time.UTC)
+	state := filepath.Join(t.TempDir(), "state.json")
+	savePairWorkers(t, state, now, "MTG-Thomas/codex-swarm#77")
+	c := cli{
+		out: &out,
+		err: &bytes.Buffer{},
+		now: func() time.Time { return now },
+	}
+
+	if err := c.run([]string{"message", "--state", state, "--request-id", "req-message-1", "w-from", "w-to", "please review"}); err != nil {
+		t.Fatalf("message first error = %v", err)
+	}
+	firstOutput := out.String()
+
+	now = now.Add(time.Minute)
+	out.Reset()
+	if err := c.run([]string{"message", "--state", state, "--request-id", "req-message-1", "w-from", "w-to", "please review"}); err != nil {
+		t.Fatalf("message replay error = %v", err)
+	}
+	if got := out.String(); got != firstOutput {
+		t.Fatalf("message replay output = %q, want original %q", got, firstOutput)
+	}
+
+	events, err := store.NewJSONStore(state).ListEvents()
+	if err != nil {
+		t.Fatalf("ListEvents() error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events count = %d, want 1: %#v", len(events), events)
+	}
+	event := events[0]
+	if event.Type != "message" || event.From != "w-from" || event.To != "w-to" || event.WorkerID != "w-from" || event.Issue != "MTG-Thomas/codex-swarm#77" || event.RequestID != "req-message-1" {
+		t.Fatalf("event metadata = %#v, want message/from/to/worker/issue/request id", event)
+	}
+	if !event.At.Equal(time.Date(2026, 6, 26, 18, 30, 0, 0, time.UTC)) {
+		t.Fatalf("event At = %v, want original timestamp", event.At)
+	}
+
+	from := mustGetWorker(t, state, "w-from")
+	to := mustGetWorker(t, state, "w-to")
+	if len(from.Events) != 1 || len(to.Events) != 1 {
+		t.Fatalf("worker events counts = from %d to %d, want one each", len(from.Events), len(to.Events))
+	}
+}
+
+func TestCLIMessageRequestIDRejectsMismatchedReplay(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 26, 18, 45, 0, 0, time.UTC)
+	state := filepath.Join(t.TempDir(), "state.json")
+	savePairWorkers(t, state, now, "")
+	if err := store.NewJSONStore(state).SaveWorker(store.Worker{
+		ID:          "w-other",
+		ProjectRoot: "/repo",
+		ThreadID:    "thread-other",
+		Engine:      "mock",
+		Status:      store.WorkerIdle,
+		Prompt:      "other worker",
+		CreatedAt:   now.Add(-time.Hour),
+		UpdatedAt:   now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveWorker(w-other) error = %v", err)
+	}
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+
+	if err := c.run([]string{"message", "--state", state, "--request-id", "req-message-mismatch", "w-from", "w-to", "first"}); err != nil {
+		t.Fatalf("message first error = %v", err)
+	}
+	for _, args := range [][]string{
+		{"message", "--state", state, "--request-id", "req-message-mismatch", "w-from", "w-to", "second"},
+		{"message", "--state", state, "--request-id", "req-message-mismatch", "w-from", "w-other", "first"},
+	} {
+		err := c.run(args)
+		if err == nil {
+			t.Fatalf("message replay args %v error = nil, want mismatch failure", args)
+		}
+		if !strings.Contains(err.Error(), "does not match original mutation fingerprint") {
+			t.Fatalf("message replay args %v error = %v", args, err)
+		}
+	}
+	events, err := store.NewJSONStore(state).ListEvents()
+	if err != nil {
+		t.Fatalf("ListEvents() error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events count = %d, want original event only", len(events))
+	}
+}
+
+func TestCLIHandoffRequestIDReplaysOriginalResult(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 26, 19, 0, 0, 0, time.UTC)
+	state := filepath.Join(t.TempDir(), "state.json")
+	savePairWorkers(t, state, now, "MTG-Thomas/codex-swarm#78")
+	c := cli{
+		out: &out,
+		err: &bytes.Buffer{},
+		now: func() time.Time { return now },
+	}
+
+	if err := c.run([]string{"handoff", "--state", state, "--request-id", "req-handoff-1", "w-from", "w-to", "original handoff"}); err != nil {
+		t.Fatalf("handoff first error = %v", err)
+	}
+	firstOutput := out.String()
+
+	now = now.Add(time.Minute)
+	out.Reset()
+	if err := c.run([]string{"handoff", "--state", state, "--request-id", "req-handoff-1", "w-from", "w-to", "original handoff"}); err != nil {
+		t.Fatalf("handoff replay error = %v", err)
+	}
+	if got := out.String(); got != firstOutput {
+		t.Fatalf("handoff replay output = %q, want original %q", got, firstOutput)
+	}
+
+	from := mustGetWorker(t, state, "w-from")
+	if from.Report != "handoff to w-to: original handoff" {
+		t.Fatalf("from Report = %q, want original handoff report", from.Report)
+	}
+	events, err := store.NewJSONStore(state).ListEvents()
+	if err != nil {
+		t.Fatalf("ListEvents() error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events count = %d, want 1: %#v", len(events), events)
+	}
+	event := events[0]
+	if event.Type != "handoff" || event.From != "w-from" || event.To != "w-to" || event.WorkerID != "w-from" || event.Issue != "MTG-Thomas/codex-swarm#78" || event.RequestID != "req-handoff-1" {
+		t.Fatalf("event metadata = %#v, want handoff/from/to/worker/issue/request id", event)
+	}
+}
+
+func TestCLIHandoffRequestIDRejectsMismatchedReplay(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 26, 19, 15, 0, 0, time.UTC)
+	state := filepath.Join(t.TempDir(), "state.json")
+	savePairWorkers(t, state, now, "")
+	if err := store.NewJSONStore(state).SaveWorker(store.Worker{
+		ID:          "w-other",
+		ProjectRoot: "/repo",
+		ThreadID:    "thread-other",
+		Engine:      "mock",
+		Status:      store.WorkerIdle,
+		Prompt:      "other worker",
+		CreatedAt:   now.Add(-time.Hour),
+		UpdatedAt:   now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveWorker(w-other) error = %v", err)
+	}
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+
+	if err := c.run([]string{"handoff", "--state", state, "--request-id", "req-handoff-mismatch", "w-from", "w-to", "first"}); err != nil {
+		t.Fatalf("handoff first error = %v", err)
+	}
+	for _, args := range [][]string{
+		{"handoff", "--state", state, "--request-id", "req-handoff-mismatch", "w-from", "w-to", "second"},
+		{"handoff", "--state", state, "--request-id", "req-handoff-mismatch", "w-from", "w-other", "first"},
+	} {
+		err := c.run(args)
+		if err == nil {
+			t.Fatalf("handoff replay args %v error = nil, want mismatch failure", args)
+		}
+		if !strings.Contains(err.Error(), "does not match original mutation fingerprint") {
+			t.Fatalf("handoff replay args %v error = %v", args, err)
+		}
+	}
+	events, err := store.NewJSONStore(state).ListEvents()
+	if err != nil {
+		t.Fatalf("ListEvents() error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events count = %d, want original event only", len(events))
+	}
+}
+
+func TestCLISwarmEventHistoryIsBoundedAndOrdered(t *testing.T) {
+	var out bytes.Buffer
+	base := time.Date(2026, 6, 26, 20, 0, 0, 0, time.UTC)
+	now := base
+	state := filepath.Join(t.TempDir(), "state.json")
+	savePairWorkers(t, state, base, "")
+	c := cli{
+		out: &out,
+		err: &bytes.Buffer{},
+		now: func() time.Time { return now },
+	}
+
+	for i := 0; i < store.SwarmEventCap+5; i++ {
+		now = base.Add(time.Duration(i) * time.Second)
+		out.Reset()
+		requestID := fmt.Sprintf("req-%03d", i)
+		if err := c.run([]string{"message", "--state", state, "--request-id", requestID, "w-from", "w-to", "message"}); err != nil {
+			t.Fatalf("message %d error = %v", i, err)
+		}
+	}
+
+	events, err := store.NewJSONStore(state).ListEvents()
+	if err != nil {
+		t.Fatalf("ListEvents() error = %v", err)
+	}
+	if len(events) != store.SwarmEventCap {
+		t.Fatalf("events count = %d, want cap %d", len(events), store.SwarmEventCap)
+	}
+	if events[0].RequestID != "req-005" {
+		t.Fatalf("first retained request ID = %q, want req-005", events[0].RequestID)
+	}
+	if events[len(events)-1].RequestID != "req-504" {
+		t.Fatalf("last retained request ID = %q, want req-504", events[len(events)-1].RequestID)
+	}
+	for i := 1; i < len(events); i++ {
+		if events[i].At.Before(events[i-1].At) {
+			t.Fatalf("events out of order at %d: %v before %v", i, events[i].At, events[i-1].At)
+		}
 	}
 }
 
@@ -459,6 +676,38 @@ func saveAppserverWorker(t *testing.T, state string, now time.Time) {
 	}
 	if err := store.NewJSONStore(state).SaveWorker(worker); err != nil {
 		t.Fatalf("SaveWorker() error = %v", err)
+	}
+}
+
+func savePairWorkers(t *testing.T, state string, now time.Time, issue string) {
+	t.Helper()
+	for _, worker := range []store.Worker{
+		{
+			ID:          "w-from",
+			Issue:       issue,
+			ProjectRoot: "/repo",
+			ThreadID:    "thread-from",
+			Engine:      "mock",
+			Status:      store.WorkerIdle,
+			Prompt:      "from worker",
+			CreatedAt:   now.Add(-time.Hour),
+			UpdatedAt:   now.Add(-time.Hour),
+		},
+		{
+			ID:          "w-to",
+			Issue:       issue,
+			ProjectRoot: "/repo",
+			ThreadID:    "thread-to",
+			Engine:      "mock",
+			Status:      store.WorkerIdle,
+			Prompt:      "to worker",
+			CreatedAt:   now.Add(-time.Hour),
+			UpdatedAt:   now.Add(-time.Hour),
+		},
+	} {
+		if err := store.NewJSONStore(state).SaveWorker(worker); err != nil {
+			t.Fatalf("SaveWorker(%s) error = %v", worker.ID, err)
+		}
 	}
 }
 

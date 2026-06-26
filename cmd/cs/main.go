@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -358,6 +359,18 @@ func newWorkerID(now time.Time) (string, error) {
 	return fmt.Sprintf("w-%s-%s", now.UTC().Format("20060102-150405"), suffix), nil
 }
 
+func (c cli) requestID(value string, now time.Time) (string, error) {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		return value, nil
+	}
+	suffix, err := randomSuffix(6)
+	if err != nil {
+		return "", fmt.Errorf("generate request id: %w", err)
+	}
+	return fmt.Sprintf("r-%s-%s", now.UTC().Format("20060102-150405"), suffix), nil
+}
+
 func (c cli) schedule(args []string) error {
 	if len(args) == 0 {
 		return errors.New("schedule requires <add|list>")
@@ -428,6 +441,7 @@ func (c cli) scheduleList(args []string) error {
 func (c cli) message(args []string) error {
 	fs := c.flagSet("message")
 	statePath := fs.String("state", defaultStatePath(), "state file path")
+	requestIDFlag := fs.String("request-id", "", "idempotency key for this mutation")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -441,16 +455,26 @@ func (c cli) message(args []string) error {
 	if strings.TrimSpace(text) == "" {
 		return errors.New("message text is required")
 	}
-	s := store.NewJSONStore(*statePath)
 	now := c.now().UTC()
-	workers, err := s.UpdateWorkers([]string{fromID, toID}, func(workers map[string]*store.Worker) error {
+	requestID, err := c.requestID(*requestIDFlag, now)
+	if err != nil {
+		return err
+	}
+	fingerprint := mutationFingerprint("message", fromID, toID, text)
+	s := store.NewJSONStore(*statePath)
+	result, _, err := s.UpdateWorkersWithRequest(requestID, "message", fingerprint, []string{fromID, toID}, func(workers map[string]*store.Worker) (store.WorkerMutationResult, error) {
 		from := workers[fromID]
 		to := workers[toID]
-		from.Events = append(from.Events, store.Event{At: now, Type: "message.sent", Message: fmt.Sprintf("to=%s %s", to.ID, text)})
+		event := store.Event{At: now, Type: "message", Message: text, From: from.ID, To: to.ID, Issue: eventIssue(from, to), WorkerID: from.ID, RequestID: requestID}
+		from.Events = append(from.Events, store.Event{At: now, Type: "message.sent", Message: fmt.Sprintf("to=%s %s", to.ID, text), From: from.ID, To: to.ID, Issue: event.Issue, WorkerID: from.ID, RequestID: requestID})
 		from.UpdatedAt = now
-		to.Events = append(to.Events, store.Event{At: now, Type: "message.received", Message: fmt.Sprintf("from=%s %s", from.ID, text)})
+		to.Events = append(to.Events, store.Event{At: now, Type: "message.received", Message: fmt.Sprintf("from=%s %s", from.ID, text), From: from.ID, To: to.ID, Issue: event.Issue, WorkerID: to.ID, RequestID: requestID})
 		to.UpdatedAt = now
-		return nil
+		return store.WorkerMutationResult{
+			Fingerprint: fingerprint,
+			Output:      fmt.Sprintf("message %s -> %s request=%s\n", from.ID, to.ID, requestID),
+			Events:      []store.Event{event},
+		}, nil
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrWorkerNotFound) {
@@ -458,13 +482,14 @@ func (c cli) message(args []string) error {
 		}
 		return err
 	}
-	fmt.Fprintf(c.out, "message %s -> %s\n", workers[fromID].ID, workers[toID].ID)
+	fmt.Fprint(c.out, result.Output)
 	return nil
 }
 
 func (c cli) handoff(args []string) error {
 	fs := c.flagSet("handoff")
 	statePath := fs.String("state", defaultStatePath(), "state file path")
+	requestIDFlag := fs.String("request-id", "", "idempotency key for this mutation")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -478,18 +503,28 @@ func (c cli) handoff(args []string) error {
 	if strings.TrimSpace(summary) == "" {
 		return errors.New("handoff summary is required")
 	}
-	s := store.NewJSONStore(*statePath)
 	now := c.now().UTC()
-	workers, err := s.UpdateWorkers([]string{fromID, toID}, func(workers map[string]*store.Worker) error {
+	requestID, err := c.requestID(*requestIDFlag, now)
+	if err != nil {
+		return err
+	}
+	fingerprint := mutationFingerprint("handoff", fromID, toID, summary)
+	s := store.NewJSONStore(*statePath)
+	result, _, err := s.UpdateWorkersWithRequest(requestID, "handoff", fingerprint, []string{fromID, toID}, func(workers map[string]*store.Worker) (store.WorkerMutationResult, error) {
 		from := workers[fromID]
 		to := workers[toID]
+		event := store.Event{At: now, Type: "handoff", Message: summary, From: from.ID, To: to.ID, Issue: eventIssue(from, to), WorkerID: from.ID, RequestID: requestID}
 		from.ApplyStatus(store.WorkerIdle)
 		from.Report = "handoff to " + to.ID + ": " + summary
-		from.Events = append(from.Events, store.Event{At: now, Type: "handoff.sent", Message: from.Report})
+		from.Events = append(from.Events, store.Event{At: now, Type: "handoff.sent", Message: from.Report, From: from.ID, To: to.ID, Issue: event.Issue, WorkerID: from.ID, RequestID: requestID})
 		from.UpdatedAt = now
-		to.Events = append(to.Events, store.Event{At: now, Type: "handoff.received", Message: fmt.Sprintf("from=%s %s", from.ID, summary)})
+		to.Events = append(to.Events, store.Event{At: now, Type: "handoff.received", Message: fmt.Sprintf("from=%s %s", from.ID, summary), From: from.ID, To: to.ID, Issue: event.Issue, WorkerID: to.ID, RequestID: requestID})
 		to.UpdatedAt = now
-		return nil
+		return store.WorkerMutationResult{
+			Fingerprint: fingerprint,
+			Output:      fmt.Sprintf("handoff %s -> %s request=%s\n", from.ID, to.ID, requestID),
+			Events:      []store.Event{event},
+		}, nil
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrWorkerNotFound) {
@@ -497,7 +532,7 @@ func (c cli) handoff(args []string) error {
 		}
 		return err
 	}
-	fmt.Fprintf(c.out, "handoff %s -> %s\n", workers[fromID].ID, workers[toID].ID)
+	fmt.Fprint(c.out, result.Output)
 	return nil
 }
 
@@ -744,8 +779,8 @@ Usage:
   cs spawn --issue owner/repo#123 --repo . --prompt "work this issue"
   cs doctor --appserver
   cs send <worker> "continue with tests"
-  cs message <from-worker> <to-worker> "note"
-  cs handoff <from-worker> <to-worker> "summary"
+  cs message --request-id <id> <from-worker> <to-worker> "note"
+  cs handoff --request-id <id> <from-worker> <to-worker> "summary"
   cs claim create --repo . --scope internal/store --worker <worker>
   cs claim conflicts --repo . --scope internal/store
   cs claim push --issue owner/repo#123
@@ -811,6 +846,21 @@ func appendAppserverWarnings(events []store.Event, at time.Time, warnings []stri
 		events = append(events, store.Event{At: at, Type: "appserver.warning", Message: warning})
 	}
 	return events
+}
+
+func eventIssue(from, to *store.Worker) string {
+	if from != nil && from.Issue != "" {
+		return from.Issue
+	}
+	if to != nil {
+		return to.Issue
+	}
+	return ""
+}
+
+func mutationFingerprint(command, from, to, payload string) string {
+	sum := sha256.Sum256([]byte(command + "\x00" + from + "\x00" + to + "\x00" + payload))
+	return hex.EncodeToString(sum[:])
 }
 
 func appserverWarnings(events []store.Event) []string {

@@ -13,6 +13,11 @@ var (
 	ErrAgentNotFound  = errors.New("agent not found")
 )
 
+const (
+	SwarmEventCap             = 500
+	CompletedMutationCacheCap = 500
+)
+
 type WorkerStatus string
 
 const (
@@ -147,9 +152,28 @@ func workerStatusFromLifecycle(lc lifecycle.Lifecycle) WorkerStatus {
 }
 
 type Event struct {
-	At      time.Time `json:"at"`
-	Type    string    `json:"type"`
-	Message string    `json:"message"`
+	At        time.Time `json:"at"`
+	Type      string    `json:"type"`
+	Message   string    `json:"message"`
+	From      string    `json:"from,omitempty"`
+	To        string    `json:"to,omitempty"`
+	Issue     string    `json:"issue,omitempty"`
+	WorkerID  string    `json:"worker,omitempty"`
+	RequestID string    `json:"request_id,omitempty"`
+}
+
+type CompletedMutation struct {
+	RequestID   string    `json:"request_id"`
+	Command     string    `json:"command"`
+	Fingerprint string    `json:"fingerprint,omitempty"`
+	Output      string    `json:"output"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+type WorkerMutationResult struct {
+	Fingerprint string
+	Output      string
+	Events      []Event
 }
 
 type Schedule struct {

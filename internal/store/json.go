@@ -22,10 +22,12 @@ type JSONStore struct {
 }
 
 type stateFile struct {
-	Workers   []Worker   `json:"workers"`
-	Schedules []Schedule `json:"schedules,omitempty"`
-	Claims    []Claim    `json:"claims,omitempty"`
-	Agents    []Agent    `json:"agents,omitempty"`
+	Workers            []Worker            `json:"workers"`
+	Schedules          []Schedule          `json:"schedules,omitempty"`
+	Claims             []Claim             `json:"claims,omitempty"`
+	Agents             []Agent             `json:"agents,omitempty"`
+	Events             []Event             `json:"events,omitempty"`
+	CompletedMutations []CompletedMutation `json:"completed_mutations,omitempty"`
 }
 
 func NewJSONStore(path string) *JSONStore {
@@ -123,6 +125,68 @@ func (s *JSONStore) UpdateWorkers(ids []string, mutate func(map[string]*Worker) 
 	return updated, nil
 }
 
+func (s *JSONStore) UpdateWorkersWithRequest(requestID, command, fingerprint string, ids []string, mutate func(map[string]*Worker) (WorkerMutationResult, error)) (WorkerMutationResult, bool, error) {
+	var result WorkerMutationResult
+	replayed := false
+	err := s.withStateLock(func() error {
+		state, err := s.read()
+		if err != nil {
+			return err
+		}
+
+		for _, completed := range state.CompletedMutations {
+			if completed.RequestID == requestID && completed.Command == command {
+				if completed.Fingerprint != "" && completed.Fingerprint != fingerprint {
+					return fmt.Errorf("request %q for %s does not match original mutation fingerprint", requestID, command)
+				}
+				result.Output = completed.Output
+				replayed = true
+				return nil
+			}
+		}
+
+		targets := map[string]*Worker{}
+		for _, id := range ids {
+			if _, ok := targets[id]; ok {
+				continue
+			}
+			found := false
+			for i := range state.Workers {
+				if state.Workers[i].ID == id {
+					targets[id] = &state.Workers[i]
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("%w: %s", ErrWorkerNotFound, id)
+			}
+		}
+
+		mutated, err := mutate(targets)
+		if err != nil {
+			return err
+		}
+		for _, worker := range targets {
+			normalizeWorkerLifecycleForSave(worker)
+		}
+		state.Events = appendBoundedEvents(state.Events, mutated.Events, SwarmEventCap)
+		state.CompletedMutations = appendBoundedCompletedMutations(state.CompletedMutations, CompletedMutation{
+			RequestID:   requestID,
+			Command:     command,
+			Fingerprint: mutated.Fingerprint,
+			Output:      mutated.Output,
+			CreatedAt:   completedMutationTime(mutated.Events),
+		}, CompletedMutationCacheCap)
+		result = mutated
+		return s.write(state)
+	})
+	if err != nil {
+		return WorkerMutationResult{}, false, err
+	}
+	return result, replayed, nil
+}
+
 func (s *JSONStore) GetWorker(id string) (Worker, error) {
 	var got Worker
 	err := s.withStateLock(func() error {
@@ -158,6 +222,19 @@ func (s *JSONStore) ListWorkers() ([]Worker, error) {
 		return nil
 	})
 	return workers, err
+}
+
+func (s *JSONStore) ListEvents() ([]Event, error) {
+	var events []Event
+	err := s.withStateLock(func() error {
+		state, err := s.read()
+		if err != nil {
+			return err
+		}
+		events = append([]Event(nil), state.Events...)
+		return nil
+	})
+	return events, err
 }
 
 func (s *JSONStore) SaveSchedule(schedule Schedule) error {
@@ -525,4 +602,32 @@ func normalizeWorkerLifecycleForSave(worker *Worker) {
 	}
 	worker.Lifecycle.ClearTerminalMarkersForNonTerminal()
 	worker.Status = workerStatusFromLifecycle(*worker.Lifecycle)
+}
+
+func appendBoundedEvents(existing []Event, added []Event, cap int) []Event {
+	if len(added) == 0 {
+		return existing
+	}
+	events := append(existing, added...)
+	if cap <= 0 || len(events) <= cap {
+		return events
+	}
+	return append([]Event(nil), events[len(events)-cap:]...)
+}
+
+func appendBoundedCompletedMutations(existing []CompletedMutation, added CompletedMutation, cap int) []CompletedMutation {
+	mutations := append(existing, added)
+	if cap <= 0 || len(mutations) <= cap {
+		return mutations
+	}
+	return append([]CompletedMutation(nil), mutations[len(mutations)-cap:]...)
+}
+
+func completedMutationTime(events []Event) time.Time {
+	for _, event := range events {
+		if !event.At.IsZero() {
+			return event.At
+		}
+	}
+	return time.Now().UTC()
 }
