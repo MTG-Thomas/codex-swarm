@@ -1,7 +1,7 @@
 .cs/
 .codex-swarm/
+.sonar/
 bin/
 coverage.out
 *.exe
 *.test
-
