@@ -156,7 +156,7 @@ func (c cli) issueReport(args []string) error {
 	if err := postIssueComment(context.Background(), issue, body); err != nil {
 		return err
 	}
-	fmt.Fprintf(c.out, "reported issue=%s worker=%s status=%s\n", issue, worker.ID, worker.Status)
+	fmt.Fprintf(c.out, "reported issue=%s worker=%s status=%s\n", issue, worker.ID, displayWorkerStatus(worker))
 	return nil
 }
 
@@ -221,7 +221,7 @@ func workerIssueReportMarkdown(issue string, worker store.Worker, note string, n
 	fmt.Fprintf(&buf, "## codex-swarm worker report for `%s`\n\n", issue)
 	fmt.Fprintf(&buf, "_Generated: %s_\n\n", now.Format(time.RFC3339))
 	fmt.Fprintf(&buf, "- Worker: `%s`\n", worker.ID)
-	fmt.Fprintf(&buf, "- Status: `%s`\n", worker.Status)
+	fmt.Fprintf(&buf, "- Status: `%s`\n", displayWorkerStatus(worker))
 	fmt.Fprintf(&buf, "- Engine: `%s`\n", worker.Engine)
 	if worker.ThreadID != "" {
 		fmt.Fprintf(&buf, "- Thread: `%s`\n", worker.ThreadID)

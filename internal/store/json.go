@@ -10,6 +10,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/MTG-Thomas/codex-swarm/internal/lifecycle"
 )
 
 const stateLockTimeout = 5 * time.Second
@@ -32,6 +34,7 @@ func NewJSONStore(path string) *JSONStore {
 
 func (s *JSONStore) SaveWorker(worker Worker) error {
 	return s.withStateLock(func() error {
+		normalizeWorkerLifecycleForSave(&worker)
 		state, err := s.read()
 		if err != nil {
 			return err
@@ -51,6 +54,73 @@ func (s *JSONStore) SaveWorker(worker Worker) error {
 
 		return s.write(state)
 	})
+}
+
+func (s *JSONStore) UpdateWorker(id string, mutate func(*Worker) error) (Worker, error) {
+	var updated Worker
+	err := s.withStateLock(func() error {
+		state, err := s.read()
+		if err != nil {
+			return err
+		}
+		for i := range state.Workers {
+			if state.Workers[i].ID != id {
+				continue
+			}
+			if err := mutate(&state.Workers[i]); err != nil {
+				return err
+			}
+			normalizeWorkerLifecycleForSave(&state.Workers[i])
+			updated = state.Workers[i]
+			return s.write(state)
+		}
+		return fmt.Errorf("%w: %s", ErrWorkerNotFound, id)
+	})
+	if err != nil {
+		return Worker{}, err
+	}
+	return updated, nil
+}
+
+func (s *JSONStore) UpdateWorkers(ids []string, mutate func(map[string]*Worker) error) (map[string]Worker, error) {
+	updated := map[string]Worker{}
+	err := s.withStateLock(func() error {
+		state, err := s.read()
+		if err != nil {
+			return err
+		}
+
+		targets := map[string]*Worker{}
+		for _, id := range ids {
+			if _, ok := targets[id]; ok {
+				continue
+			}
+			found := false
+			for i := range state.Workers {
+				if state.Workers[i].ID == id {
+					targets[id] = &state.Workers[i]
+					found = true
+					break
+				}
+			}
+			if !found {
+				return fmt.Errorf("%w: %s", ErrWorkerNotFound, id)
+			}
+		}
+
+		if err := mutate(targets); err != nil {
+			return err
+		}
+		for id, worker := range targets {
+			normalizeWorkerLifecycleForSave(worker)
+			updated[id] = *worker
+		}
+		return s.write(state)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 func (s *JSONStore) GetWorker(id string) (Worker, error) {
@@ -309,6 +379,9 @@ func (s *JSONStore) read() (stateFile, error) {
 	if err := json.Unmarshal(data, &state); err != nil {
 		return stateFile{}, fmt.Errorf("parse state %s: %w", s.path, err)
 	}
+	for i := range state.Workers {
+		normalizeWorkerLifecycleForRead(&state.Workers[i])
+	}
 	return state, nil
 }
 
@@ -430,4 +503,26 @@ func (l *stateLock) release() error {
 		return fmt.Errorf("close state lock %s: %w", l.path, closeErr)
 	}
 	return err
+}
+
+func normalizeWorkerLifecycleForRead(worker *Worker) {
+	if worker.Lifecycle == nil {
+		lc := lifecycleFromWorkerStatus(worker.Status)
+		worker.Lifecycle = &lc
+	} else if worker.Lifecycle.Version == 0 {
+		worker.Lifecycle.Version = lifecycle.CurrentVersion
+	}
+	worker.Lifecycle.ClearTerminalMarkersForNonTerminal()
+	worker.Status = workerStatusFromLifecycle(*worker.Lifecycle)
+}
+
+func normalizeWorkerLifecycleForSave(worker *Worker) {
+	if worker.Lifecycle == nil {
+		lc := lifecycleFromWorkerStatus(worker.Status)
+		worker.Lifecycle = &lc
+	} else if worker.Lifecycle.Version == 0 {
+		worker.Lifecycle.Version = lifecycle.CurrentVersion
+	}
+	worker.Lifecycle.ClearTerminalMarkersForNonTerminal()
+	worker.Status = workerStatusFromLifecycle(*worker.Lifecycle)
 }

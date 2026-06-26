@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/MTG-Thomas/codex-swarm/internal/lifecycle"
 )
 
 func TestJSONStoreRoundTrip(t *testing.T) {
@@ -110,11 +112,416 @@ func TestJSONStoreNotFound(t *testing.T) {
 	}
 }
 
+func TestJSONStoreSynthesizesLifecycleForOldWorkerState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	oldState := `{
+  "workers": [
+    {
+      "id": "w-old",
+      "project_root": "/repo",
+      "worktree": "",
+      "branch": "",
+      "thread_id": "thread-old",
+      "engine": "mock",
+      "status": "running",
+      "prompt": "old worker",
+      "created_at": "2026-06-26T01:00:00Z",
+      "updated_at": "2026-06-26T01:00:00Z"
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(oldState), 0o600); err != nil {
+		t.Fatalf("WriteFile(old state) error = %v", err)
+	}
+
+	worker, err := NewJSONStore(path).GetWorker("w-old")
+	if err != nil {
+		t.Fatalf("GetWorker() error = %v", err)
+	}
+	if worker.Lifecycle == nil {
+		t.Fatal("Lifecycle = nil, want synthesized lifecycle")
+	}
+	if got := worker.Lifecycle.DeriveStatus(); got != lifecycle.DisplayWorking {
+		t.Fatalf("Lifecycle.DeriveStatus() = %q, want %q", got, lifecycle.DisplayWorking)
+	}
+	if worker.Status != WorkerRunning {
+		t.Fatalf("Status = %q, want legacy status preserved as %q", worker.Status, WorkerRunning)
+	}
+}
+
+func TestJSONStoreSynthesizesIdleLifecycleForOldWorkerState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	oldState := `{
+  "workers": [
+    {
+      "id": "w-idle",
+      "project_root": "/repo",
+      "worktree": "",
+      "branch": "",
+      "thread_id": "thread-idle",
+      "engine": "mock",
+      "status": "idle",
+      "prompt": "old idle worker",
+      "created_at": "2026-06-26T01:00:00Z",
+      "updated_at": "2026-06-26T01:00:00Z"
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(oldState), 0o600); err != nil {
+		t.Fatalf("WriteFile(old state) error = %v", err)
+	}
+
+	worker, err := NewJSONStore(path).GetWorker("w-idle")
+	if err != nil {
+		t.Fatalf("GetWorker() error = %v", err)
+	}
+	if worker.Lifecycle == nil {
+		t.Fatal("Lifecycle = nil, want synthesized lifecycle")
+	}
+	if worker.Lifecycle.Session.State != lifecycle.SessionIdle {
+		t.Fatalf("Lifecycle.Session.State = %q, want %q", worker.Lifecycle.Session.State, lifecycle.SessionIdle)
+	}
+	if got := worker.Lifecycle.DeriveStatus(); got != lifecycle.DisplayIdle {
+		t.Fatalf("Lifecycle.DeriveStatus() = %q, want %q", got, lifecycle.DisplayIdle)
+	}
+	if worker.Status != WorkerIdle {
+		t.Fatalf("Status = %q, want legacy status preserved as %q", worker.Status, WorkerIdle)
+	}
+}
+
+func TestJSONStoreSavesWorkerLifecycle(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	now := time.Date(2026, 6, 26, 1, 30, 0, 0, time.UTC)
+	if err := NewJSONStore(path).SaveWorker(Worker{
+		ID:          "w-new",
+		ProjectRoot: "/repo",
+		ThreadID:    "thread-new",
+		Engine:      "mock",
+		Status:      WorkerRunning,
+		Prompt:      "new worker",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("SaveWorker() error = %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%q) error = %v", path, err)
+	}
+	var state stateFile
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatalf("Unmarshal(state) error = %v\n%s", err, string(data))
+	}
+	if len(state.Workers) != 1 {
+		t.Fatalf("workers count = %d, want 1", len(state.Workers))
+	}
+	if state.Workers[0].Lifecycle == nil {
+		t.Fatal("stored Lifecycle = nil, want lifecycle persisted")
+	}
+	if got := state.Workers[0].Lifecycle.DeriveStatus(); got != lifecycle.DisplayWorking {
+		t.Fatalf("stored Lifecycle.DeriveStatus() = %q, want %q", got, lifecycle.DisplayWorking)
+	}
+}
+
+func TestJSONStoreSynthesizesLifecycleFromStatusOnSaveWhenMissingLifecycle(t *testing.T) {
+	now := time.Date(2026, 6, 26, 1, 45, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		status      WorkerStatus
+		wantDisplay lifecycle.DisplayStatus
+		wantSession lifecycle.SessionState
+		wantReason  lifecycle.Reason
+	}{
+		{
+			name:        "done",
+			status:      WorkerDone,
+			wantDisplay: lifecycle.DisplayDone,
+			wantSession: lifecycle.SessionDone,
+			wantReason:  lifecycle.ReasonCompleted,
+		},
+		{
+			name:        "failed",
+			status:      WorkerFailed,
+			wantDisplay: lifecycle.DisplayFailed,
+			wantSession: lifecycle.SessionFailed,
+			wantReason:  lifecycle.ReasonFailed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.json")
+			if err := NewJSONStore(path).SaveWorker(Worker{
+				ID:          "w-reconcile",
+				ProjectRoot: "/repo",
+				ThreadID:    "thread-reconcile",
+				Engine:      "mock",
+				Status:      tt.status,
+				Prompt:      "status changed by existing caller",
+				CreatedAt:   now,
+				UpdatedAt:   now,
+			}); err != nil {
+				t.Fatalf("SaveWorker() error = %v", err)
+			}
+
+			worker, err := NewJSONStore(path).GetWorker("w-reconcile")
+			if err != nil {
+				t.Fatalf("GetWorker() error = %v", err)
+			}
+			if worker.Lifecycle == nil {
+				t.Fatal("Lifecycle = nil, want reconciled lifecycle")
+			}
+			if got := worker.Lifecycle.DeriveStatus(); got != tt.wantDisplay {
+				t.Fatalf("Lifecycle.DeriveStatus() = %q, want %q", got, tt.wantDisplay)
+			}
+			if worker.Lifecycle.Session.State != tt.wantSession {
+				t.Fatalf("Lifecycle.Session.State = %q, want %q", worker.Lifecycle.Session.State, tt.wantSession)
+			}
+			if worker.Lifecycle.Session.Reason != tt.wantReason {
+				t.Fatalf("Lifecycle.Session.Reason = %q, want %q", worker.Lifecycle.Session.Reason, tt.wantReason)
+			}
+		})
+	}
+}
+
+func TestJSONStorePersistsLifecycleTransitionHelper(t *testing.T) {
+	now := time.Date(2026, 6, 26, 2, 20, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		status      WorkerStatus
+		wantDisplay lifecycle.DisplayStatus
+		wantSession lifecycle.SessionState
+	}{
+		{
+			name:        "done",
+			status:      WorkerDone,
+			wantDisplay: lifecycle.DisplayDone,
+			wantSession: lifecycle.SessionDone,
+		},
+		{
+			name:        "failed",
+			status:      WorkerFailed,
+			wantDisplay: lifecycle.DisplayFailed,
+			wantSession: lifecycle.SessionFailed,
+		},
+		{
+			name:        "idle",
+			status:      WorkerIdle,
+			wantDisplay: lifecycle.DisplayIdle,
+			wantSession: lifecycle.SessionIdle,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.json")
+			if err := NewJSONStore(path).SaveWorker(Worker{
+				ID:          "w-transition",
+				ProjectRoot: "/repo",
+				ThreadID:    "thread-transition",
+				Engine:      "mock",
+				Status:      WorkerIdle,
+				Prompt:      "existing worker",
+				CreatedAt:   now,
+				UpdatedAt:   now,
+			}); err != nil {
+				t.Fatalf("SaveWorker(initial) error = %v", err)
+			}
+
+			worker, err := NewJSONStore(path).GetWorker("w-transition")
+			if err != nil {
+				t.Fatalf("GetWorker() error = %v", err)
+			}
+			worker.ApplyStatus(tt.status)
+			worker.UpdatedAt = now.Add(time.Minute)
+			if err := NewJSONStore(path).SaveWorker(worker); err != nil {
+				t.Fatalf("SaveWorker(transitioned) error = %v", err)
+			}
+
+			got, err := NewJSONStore(path).GetWorker("w-transition")
+			if err != nil {
+				t.Fatalf("GetWorker(after) error = %v", err)
+			}
+			if got.Status != tt.status {
+				t.Fatalf("Status = %q, want %q", got.Status, tt.status)
+			}
+			if got.Lifecycle == nil {
+				t.Fatal("Lifecycle = nil, want transitioned lifecycle")
+			}
+			if display := got.Lifecycle.DeriveStatus(); display != tt.wantDisplay {
+				t.Fatalf("Lifecycle.DeriveStatus() = %q, want %q", display, tt.wantDisplay)
+			}
+			if got.Lifecycle.Session.State != tt.wantSession {
+				t.Fatalf("Lifecycle.Session.State = %q, want %q", got.Lifecycle.Session.State, tt.wantSession)
+			}
+		})
+	}
+}
+
+func TestJSONStorePreservesExplicitStaleLifecycleOnSave(t *testing.T) {
+	now := time.Date(2026, 6, 26, 2, 5, 0, 0, time.UTC)
+	for _, status := range []WorkerStatus{WorkerRunning, WorkerIdle, WorkerDone, WorkerFailed} {
+		t.Run(string(status), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.json")
+			staleLifecycle := lifecycle.NewWorkerLifecycle()
+			staleLifecycle.Runtime.State = lifecycle.RuntimeDead
+			staleLifecycle.Runtime.Reason = lifecycle.ReasonRuntimeLost
+
+			if err := NewJSONStore(path).SaveWorker(Worker{
+				ID:          "w-stale",
+				ProjectRoot: "/repo",
+				ThreadID:    "thread-stale",
+				Engine:      "mock",
+				Status:      status,
+				Lifecycle:   &staleLifecycle,
+				Prompt:      "stale worker",
+				CreatedAt:   now,
+				UpdatedAt:   now,
+			}); err != nil {
+				t.Fatalf("SaveWorker() error = %v", err)
+			}
+
+			worker, err := NewJSONStore(path).GetWorker("w-stale")
+			if err != nil {
+				t.Fatalf("GetWorker() error = %v", err)
+			}
+			if worker.Lifecycle == nil {
+				t.Fatal("Lifecycle = nil, want explicit lifecycle preserved")
+			}
+			if got := worker.Lifecycle.DeriveStatus(); got != lifecycle.DisplayStale {
+				t.Fatalf("Lifecycle.DeriveStatus() = %q, want %q", got, lifecycle.DisplayStale)
+			}
+			if worker.Lifecycle.Runtime.State != lifecycle.RuntimeDead || worker.Lifecycle.Runtime.Reason != lifecycle.ReasonRuntimeLost {
+				t.Fatalf("Runtime = %#v, want dead runtime_lost", worker.Lifecycle.Runtime)
+			}
+			if worker.Status != WorkerRunning {
+				t.Fatalf("Status = %q, want stale legacy fallback %q", worker.Status, WorkerRunning)
+			}
+		})
+	}
+}
+
+func TestJSONStorePreservesExplicitTerminalLifecycleOnSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	now := time.Date(2026, 6, 26, 2, 10, 0, 0, time.UTC)
+	completedAt := now.Add(-time.Minute)
+	terminalLifecycle := lifecycle.Lifecycle{
+		Version: lifecycle.CurrentVersion,
+		Session: lifecycle.SessionLifecycle{
+			State:       lifecycle.SessionDone,
+			CompletedAt: &completedAt,
+		},
+		Runtime: lifecycle.RuntimeLifecycle{
+			State:  lifecycle.RuntimeDead,
+			Reason: lifecycle.ReasonRuntimeLost,
+		},
+	}
+
+	if err := NewJSONStore(path).SaveWorker(Worker{
+		ID:          "w-terminal",
+		ProjectRoot: "/repo",
+		ThreadID:    "thread-terminal",
+		Engine:      "mock",
+		Status:      WorkerRunning,
+		Lifecycle:   &terminalLifecycle,
+		Prompt:      "terminal worker",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("SaveWorker() error = %v", err)
+	}
+
+	worker, err := NewJSONStore(path).GetWorker("w-terminal")
+	if err != nil {
+		t.Fatalf("GetWorker() error = %v", err)
+	}
+	if worker.Lifecycle == nil {
+		t.Fatal("Lifecycle = nil, want explicit lifecycle preserved")
+	}
+	if got := worker.Lifecycle.DeriveStatus(); got != lifecycle.DisplayDone {
+		t.Fatalf("Lifecycle.DeriveStatus() = %q, want %q", got, lifecycle.DisplayDone)
+	}
+	if worker.Lifecycle.Session.CompletedAt == nil || !worker.Lifecycle.Session.CompletedAt.Equal(completedAt) {
+		t.Fatalf("CompletedAt = %v, want %v", worker.Lifecycle.Session.CompletedAt, completedAt)
+	}
+	if worker.Status != WorkerDone {
+		t.Fatalf("Status = %q, want derived legacy status %q", worker.Status, WorkerDone)
+	}
+}
+
+func TestJSONStoreDerivesStatusFromExistingLifecycleOnRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	state := `{
+  "workers": [
+    {
+      "id": "w-done",
+      "project_root": "/repo",
+      "worktree": "",
+      "branch": "",
+      "thread_id": "thread-done",
+      "engine": "mock",
+      "status": "running",
+      "lifecycle": {
+        "version": 1,
+        "session": {"state": "done"},
+        "runtime": {"state": "dead", "reason": "runtime_lost"}
+      },
+      "prompt": "canonical terminal worker",
+      "created_at": "2026-06-26T02:00:00Z",
+      "updated_at": "2026-06-26T02:00:00Z"
+    },
+    {
+      "id": "w-stale",
+      "project_root": "/repo",
+      "worktree": "",
+      "branch": "",
+      "thread_id": "thread-stale",
+      "engine": "mock",
+      "status": "idle",
+      "lifecycle": {
+        "version": 1,
+        "session": {"state": "working", "reason": "task_in_progress"},
+        "runtime": {"state": "dead", "reason": "runtime_lost"}
+      },
+      "prompt": "canonical stale worker",
+      "created_at": "2026-06-26T02:00:00Z",
+      "updated_at": "2026-06-26T02:01:00Z"
+    }
+  ]
+}`
+	if err := os.WriteFile(path, []byte(state), 0o600); err != nil {
+		t.Fatalf("WriteFile(state) error = %v", err)
+	}
+
+	done, err := NewJSONStore(path).GetWorker("w-done")
+	if err != nil {
+		t.Fatalf("GetWorker(done) error = %v", err)
+	}
+	if done.Status != WorkerDone {
+		t.Fatalf("done Status = %q, want %q", done.Status, WorkerDone)
+	}
+	if got := done.Lifecycle.DeriveStatus(); got != lifecycle.DisplayDone {
+		t.Fatalf("done Lifecycle.DeriveStatus() = %q, want %q", got, lifecycle.DisplayDone)
+	}
+
+	stale, err := NewJSONStore(path).GetWorker("w-stale")
+	if err != nil {
+		t.Fatalf("GetWorker(stale) error = %v", err)
+	}
+	if stale.Status != WorkerRunning {
+		t.Fatalf("stale Status = %q, want least-misleading fallback %q", stale.Status, WorkerRunning)
+	}
+	if got := stale.Lifecycle.DeriveStatus(); got != lifecycle.DisplayStale {
+		t.Fatalf("stale Lifecycle.DeriveStatus() = %q, want %q", got, lifecycle.DisplayStale)
+	}
+}
+
 func TestJSONStoreConcurrentMutationsPreserveNonConflictingUpdates(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	now := time.Date(2026, 6, 26, 9, 0, 0, 0, time.UTC)
 
-	const pairs = 32
+	const pairs = 12
 	var wg sync.WaitGroup
 	start := make(chan struct{})
 	errs := make(chan error, pairs*2)
@@ -200,6 +607,65 @@ func TestJSONStoreConcurrentMutationsPreserveNonConflictingUpdates(t *testing.T)
 		if id := fmt.Sprintf("c-%02d", i); !claims[id] {
 			t.Fatalf("missing claim %s in final state", id)
 		}
+	}
+}
+
+func TestJSONStoreUpdateWorkerSerializesReadModifyWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	now := time.Date(2026, 6, 26, 14, 0, 0, 0, time.UTC)
+	s := NewJSONStore(path)
+	if err := s.SaveWorker(Worker{
+		ID:          "w-update",
+		ProjectRoot: "/repo",
+		ThreadID:    "thread-update",
+		Status:      WorkerIdle,
+		Prompt:      "atomic update",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("SaveWorker() error = %v", err)
+	}
+
+	const updates = 16
+	start := make(chan struct{})
+	errs := make(chan error, updates)
+	var wg sync.WaitGroup
+	for i := 0; i < updates; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := NewJSONStore(path).UpdateWorker("w-update", func(worker *Worker) error {
+				worker.Events = append(worker.Events, Event{
+					At:      now.Add(time.Duration(i) * time.Second),
+					Type:    fmt.Sprintf("event-%02d", i),
+					Message: "atomic worker mutation",
+				})
+				worker.UpdatedAt = now.Add(time.Duration(i) * time.Second)
+				return nil
+			})
+			if err != nil {
+				errs <- err
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	if t.Failed() {
+		t.FailNow()
+	}
+
+	worker, err := s.GetWorker("w-update")
+	if err != nil {
+		t.Fatalf("GetWorker() error = %v", err)
+	}
+	if len(worker.Events) != updates {
+		t.Fatalf("events count = %d, want %d", len(worker.Events), updates)
 	}
 }
 

@@ -3,6 +3,8 @@ package store
 import (
 	"errors"
 	"time"
+
+	"github.com/MTG-Thomas/codex-swarm/internal/lifecycle"
 )
 
 var (
@@ -22,23 +24,126 @@ const (
 )
 
 type Worker struct {
-	ID          string       `json:"id"`
-	ParentID    string       `json:"parent_id,omitempty"`
-	Role        string       `json:"role,omitempty"`
-	Issue       string       `json:"issue,omitempty"`
-	ProjectRoot string       `json:"project_root"`
-	Worktree    string       `json:"worktree"`
-	Branch      string       `json:"branch"`
-	ThreadID    string       `json:"thread_id"`
-	TurnID      string       `json:"turn_id,omitempty"`
-	Engine      string       `json:"engine"`
-	Status      WorkerStatus `json:"status"`
-	Prompt      string       `json:"prompt"`
-	LastMessage string       `json:"last_message,omitempty"`
-	Report      string       `json:"report,omitempty"`
-	CreatedAt   time.Time    `json:"created_at"`
-	UpdatedAt   time.Time    `json:"updated_at"`
-	Events      []Event      `json:"events,omitempty"`
+	ID          string               `json:"id"`
+	ParentID    string               `json:"parent_id,omitempty"`
+	Role        string               `json:"role,omitempty"`
+	Issue       string               `json:"issue,omitempty"`
+	ProjectRoot string               `json:"project_root"`
+	Worktree    string               `json:"worktree"`
+	Branch      string               `json:"branch"`
+	ThreadID    string               `json:"thread_id"`
+	TurnID      string               `json:"turn_id,omitempty"`
+	Engine      string               `json:"engine"`
+	Status      WorkerStatus         `json:"status"`
+	Lifecycle   *lifecycle.Lifecycle `json:"lifecycle,omitempty"`
+	Prompt      string               `json:"prompt"`
+	LastMessage string               `json:"last_message,omitempty"`
+	Report      string               `json:"report,omitempty"`
+	CreatedAt   time.Time            `json:"created_at"`
+	UpdatedAt   time.Time            `json:"updated_at"`
+	Events      []Event              `json:"events,omitempty"`
+}
+
+func (w *Worker) ApplyStatus(status WorkerStatus) {
+	w.Status = status
+	lc := lifecycleFromWorkerStatus(status)
+	w.Lifecycle = &lc
+}
+
+func (w *Worker) ApplyStatusAt(status WorkerStatus, at time.Time) {
+	w.ApplyStatus(status)
+	if w.Lifecycle == nil {
+		return
+	}
+	switch status {
+	case WorkerDone:
+		w.Lifecycle.Session.CompletedAt = &at
+		w.Lifecycle.Session.TerminatedAt = nil
+	case WorkerFailed:
+		w.Lifecycle.Session.CompletedAt = nil
+		w.Lifecycle.Session.TerminatedAt = &at
+	default:
+		w.Lifecycle.ClearTerminalMarkersForNonTerminal()
+	}
+}
+
+func lifecycleFromWorkerStatus(status WorkerStatus) lifecycle.Lifecycle {
+	switch status {
+	case WorkerRunning:
+		return lifecycle.NewWorkerLifecycle()
+	case WorkerDone:
+		return lifecycle.Lifecycle{
+			Version: lifecycle.CurrentVersion,
+			Session: lifecycle.SessionLifecycle{
+				State:  lifecycle.SessionDone,
+				Reason: lifecycle.ReasonCompleted,
+			},
+			Runtime: lifecycle.RuntimeLifecycle{
+				State: lifecycle.RuntimeStopped,
+			},
+		}
+	case WorkerFailed:
+		return lifecycle.Lifecycle{
+			Version: lifecycle.CurrentVersion,
+			Session: lifecycle.SessionLifecycle{
+				State:  lifecycle.SessionFailed,
+				Reason: lifecycle.ReasonFailed,
+			},
+			Runtime: lifecycle.RuntimeLifecycle{
+				State: lifecycle.RuntimeStopped,
+			},
+		}
+	case WorkerIdle:
+		return lifecycle.Lifecycle{
+			Version: lifecycle.CurrentVersion,
+			Session: lifecycle.SessionLifecycle{
+				State: lifecycle.SessionIdle,
+			},
+			Runtime: lifecycle.RuntimeLifecycle{
+				State: lifecycle.RuntimeStopped,
+			},
+		}
+	default:
+		return lifecycle.Lifecycle{
+			Version: lifecycle.CurrentVersion,
+			Session: lifecycle.SessionLifecycle{
+				State: statusToSessionState(status),
+			},
+			Runtime: lifecycle.RuntimeLifecycle{
+				State: lifecycle.RuntimeUnknown,
+			},
+		}
+	}
+}
+
+func statusToSessionState(status WorkerStatus) lifecycle.SessionState {
+	switch status {
+	case WorkerPending:
+		return lifecycle.SessionPending
+	case WorkerIdle:
+		return lifecycle.SessionIdle
+	default:
+		return lifecycle.SessionPending
+	}
+}
+
+func workerStatusFromLifecycle(lc lifecycle.Lifecycle) WorkerStatus {
+	switch lc.DeriveStatus() {
+	case lifecycle.DisplayDone:
+		return WorkerDone
+	case lifecycle.DisplayFailed:
+		return WorkerFailed
+	case lifecycle.DisplayIdle:
+		return WorkerIdle
+	case lifecycle.DisplayStale:
+		// There is no legacy stale status. Running is the least misleading
+		// fallback because stale represents interrupted work, not completion.
+		return WorkerRunning
+	case lifecycle.DisplayWorking:
+		return WorkerRunning
+	default:
+		return WorkerPending
+	}
 }
 
 type Event struct {
