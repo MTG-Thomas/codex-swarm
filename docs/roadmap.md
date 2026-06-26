@@ -24,6 +24,7 @@ Exit criteria: a new user can spawn a real Codex worker, find the thread in the 
 - Keep direct CLI state mode available until daemon mode is proven.
 - Persist daemon events in the same worker event model.
 - Recover cleanly after daemon restart.
+- Keep daemon HTTP endpoints read-only until mutation APIs have a stronger local auth and idempotency model.
 
 Exit criteria: repeated `cs` commands do not start a new app-server process each time, and `csd` can be restarted without losing worker identity.
 
@@ -33,6 +34,7 @@ Exit criteria: repeated `cs` commands do not start a new app-server process each
 - Surface branch, base commit, dirty status, and worktree path in `cs status` and `cs show`.
 - Add safe cleanup with explicit confirmation-oriented command names.
 - Integrate local Codex coordination claims without committing coordination state to repos.
+- Treat Codex session fork/resume as conversation isolation only; require explicit worktree/branch assignment for filesystem isolation.
 
 Exit criteria: parallel workers can operate on one repository without trampling each other's branches or user changes.
 
@@ -55,6 +57,7 @@ Exit criteria: one operator command can start a small set of role-based workers 
 - Use `cs issue export/sync/pull` marker blocks to exchange claim state through GitHub issues across machines.
 - Post reports or status comments only on explicit commands such as `cs issue report`.
 - Add optional labels for running, blocked, and done states.
+- Keep local state authoritative; issue comments and marker blocks are sync and audit artifacts, not the source of truth.
 
 Exit criteria: an issue can become a worker-backed local task and receive a concise final report without clickops.
 
@@ -69,9 +72,12 @@ Exit criteria: routine repo hygiene or issue triage agents can run on a schedule
 
 ## Phase 6: maturity and distribution
 
-- Move from JSON state to SQLite when concurrent daemon writes or query complexity justify it.
+- Move from JSON state to SQLite when concurrent daemon writes, migration safety, or query complexity justify it.
 - Add release builds for Windows, macOS, and Linux.
 - Add service install helpers for Windows service, launchd, and systemd.
+- Add a service manager dependency only when platform helpers stop being small, testable standard-library code.
+- Add a GitHub client library only when typed API coverage is safer than the `gh` CLI boundary.
+- Add a CLI framework only when stdlib `flag` becomes a real maintenance cost for help, routing, or completion.
 - Add config validation once hand-edited config grows beyond simple flags.
 - Maintain CI, vulnerability scanning, and small package boundaries.
 
