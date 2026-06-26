@@ -299,6 +299,40 @@ func (s *JSONStore) SaveClaim(claim Claim) error {
 	})
 }
 
+func (s *JSONStore) ImportClaims(claims []Claim, force bool) (imported int, skipped int, conflicted int, err error) {
+	err = s.withStateLock(func() error {
+		state, err := s.read()
+		if err != nil {
+			return err
+		}
+
+		for _, claim := range claims {
+			found := false
+			for i := range state.Claims {
+				if state.Claims[i].ID != claim.ID {
+					continue
+				}
+				found = true
+				if !force && state.Claims[i].UpdatedAt.After(claim.UpdatedAt) {
+					skipped++
+					conflicted++
+					break
+				}
+				state.Claims[i] = claim
+				imported++
+				break
+			}
+			if !found {
+				state.Claims = append(state.Claims, claim)
+				imported++
+			}
+		}
+
+		return s.write(state)
+	})
+	return imported, skipped, conflicted, err
+}
+
 func (s *JSONStore) GetClaim(id string) (Claim, error) {
 	var got Claim
 	err := s.withStateLock(func() error {

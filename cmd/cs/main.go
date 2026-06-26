@@ -258,23 +258,6 @@ func (c cli) spawn(args []string) error {
 	lastMessage := mockSummary(*prompt)
 	status := store.WorkerIdle
 	events := []store.Event{{At: now, Type: "spawned", Message: "worker created"}}
-	if *engine == "appserver" {
-		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
-		defer cancel()
-		result, err := c.runner().RunTurn(ctx, repoRoot, *prompt)
-		if err != nil {
-			return fmt.Errorf("run app-server worker: %w", err)
-		}
-		threadID = result.ThreadID
-		turnID = result.TurnID
-		status = workerStatusFromTurn(result.Status)
-		lastMessage = fmt.Sprintf("app-server turn submitted: thread=%s turn=%s status=%s", result.ThreadID, result.TurnID, result.Status)
-		events = append(events, store.Event{At: now, Type: "appserver.turn.started", Message: lastMessage})
-		events = appendAppserverWarnings(events, now, result.Warnings)
-	} else {
-		events = append(events, store.Event{At: now, Type: "mock.turn.completed", Message: lastMessage})
-	}
-
 	worker := store.Worker{
 		ID:          id,
 		ParentID:    *parentID,
@@ -293,7 +276,6 @@ func (c cli) spawn(args []string) error {
 		UpdatedAt:   now,
 		Events:      events,
 	}
-	worker.ApplyStatusAt(status, now)
 
 	if *createWorktree {
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
@@ -311,6 +293,28 @@ func (c cli) spawn(args []string) error {
 		}
 		worker.Events = append(worker.Events, store.Event{At: now, Type: "worktree.created", Message: worker.Worktree})
 	}
+
+	if *engine == "appserver" {
+		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+		defer cancel()
+		result, err := c.runner().RunTurn(ctx, workerExecutionRoot(worker), *prompt)
+		if err != nil {
+			return fmt.Errorf("run app-server worker: %w", err)
+		}
+		threadID = result.ThreadID
+		turnID = result.TurnID
+		status = workerStatusFromTurn(result.Status)
+		lastMessage = fmt.Sprintf("app-server turn submitted: thread=%s turn=%s status=%s", result.ThreadID, result.TurnID, result.Status)
+		worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.turn.started", Message: lastMessage})
+		worker.Events = appendAppserverWarnings(worker.Events, now, result.Warnings)
+	} else {
+		worker.Events = append(worker.Events, store.Event{At: now, Type: "mock.turn.completed", Message: lastMessage})
+	}
+	worker.ThreadID = threadID
+	worker.TurnID = turnID
+	worker.Status = status
+	worker.LastMessage = lastMessage
+	worker.ApplyStatusAt(status, now)
 
 	if err := store.NewJSONStore(*statePath).SaveWorker(worker); err != nil {
 		return err
@@ -566,7 +570,7 @@ func (c cli) send(args []string) error {
 	if initial.Engine == "appserver" {
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 		defer cancel()
-		appserverResult, appserverErr = c.runner().SendTurn(ctx, initial.ProjectRoot, initial.ThreadID, message)
+		appserverResult, appserverErr = c.runner().SendTurn(ctx, workerExecutionRoot(initial), initial.ThreadID, message)
 	}
 	return c.updateWorker(*statePath, id, func(worker *store.Worker, now time.Time) {
 		worker.Events = append(worker.Events, store.Event{At: now, Type: "message.sent", Message: message})
@@ -648,7 +652,7 @@ func (c cli) resume(args []string) error {
 	if initial.Engine == "appserver" {
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 		defer cancel()
-		appserverResult, appserverErr = c.runner().Resume(ctx, initial.ProjectRoot, initial.ThreadID)
+		appserverResult, appserverErr = c.runner().Resume(ctx, workerExecutionRoot(initial), initial.ThreadID)
 	}
 	return c.updateWorker(*statePath, rest[0], func(worker *store.Worker, now time.Time) {
 		if worker.Engine == "appserver" {
@@ -695,7 +699,7 @@ func (c cli) inspectThread(args []string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	result, err := (appserver.Runner{}).Resume(ctx, worker.ProjectRoot, worker.ThreadID)
+	result, err := (appserver.Runner{}).Resume(ctx, workerExecutionRoot(worker), worker.ThreadID)
 	if err != nil {
 		return fmt.Errorf("inspect app-server thread %s: %w", worker.ThreadID, err)
 	}
@@ -844,6 +848,15 @@ func workerStatusFromTurn(status string) store.WorkerStatus {
 	default:
 		return store.WorkerIdle
 	}
+}
+
+func workerExecutionRoot(worker store.Worker) string {
+	if strings.TrimSpace(worker.Worktree) != "" {
+		if info, err := os.Stat(worker.Worktree); err == nil && info.IsDir() {
+			return worker.Worktree
+		}
+	}
+	return worker.ProjectRoot
 }
 
 func appendAppserverWarnings(events []store.Event, at time.Time, warnings []string) []store.Event {

@@ -147,7 +147,7 @@ func (c cli) issuePull(args []string) error {
 		fmt.Fprintf(c.out, "pull dry-run issue=%s imported=%d skipped=%d conflicted=%d state=%s\n", issue, plan.Imported, plan.Skipped, plan.Conflicted, *statePath)
 		return nil
 	}
-	if err := applyClaimImportPlan(st, plan); err != nil {
+	if err := applyClaimImportPlan(st, &plan, *force); err != nil {
 		return err
 	}
 	fmt.Fprintf(c.out, "pulled issue=%s imported=%d skipped=%d conflicted=%d state=%s\n", issue, plan.Imported, plan.Skipped, plan.Conflicted, *statePath)
@@ -218,7 +218,7 @@ func importClaimSnapshot(st *store.JSONStore, issue string, snapshot issueClaimS
 	if err != nil {
 		return 0, 0, err
 	}
-	if err := applyClaimImportPlan(st, plan); err != nil {
+	if err := applyClaimImportPlan(st, &plan, force); err != nil {
 		return plan.Imported, plan.Skipped, err
 	}
 	return plan.Imported, plan.Skipped, nil
@@ -280,15 +280,21 @@ func importedClaimWorkerSource(snapshot issueClaimSnapshot) string {
 	return "issue"
 }
 
-func applyClaimImportPlan(st *store.JSONStore, plan claimImportPlan) error {
+func applyClaimImportPlan(st *store.JSONStore, plan *claimImportPlan, force bool) error {
+	var imports []store.Claim
 	for _, entry := range plan.Entries {
 		if entry.Action != "import" {
 			continue
 		}
-		if err := st.SaveClaim(entry.Claim); err != nil {
-			return err
-		}
+		imports = append(imports, entry.Claim)
 	}
+	imported, skipped, conflicted, err := st.ImportClaims(imports, force)
+	if err != nil {
+		return err
+	}
+	plan.Imported = imported
+	plan.Skipped += skipped
+	plan.Conflicted += conflicted
 	return nil
 }
 

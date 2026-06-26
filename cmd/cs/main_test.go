@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -616,6 +618,95 @@ func TestCLISpawnAppserverPrintsLifecycleDisplayStatus(t *testing.T) {
 	}
 }
 
+func TestCLISpawnAppserverWithWorktreeRunsInManagedWorktree(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 26, 16, 5, 0, 0, time.UTC)
+	repo := initCLITestRepo(t)
+	var runCWD string
+	c := cli{
+		out: &out,
+		err: &bytes.Buffer{},
+		now: func() time.Time { return now },
+		appserverRunner: fakeAppserverRunner{
+			runTurn: func(_ context.Context, cwd, _ string) (appserver.RunResult, error) {
+				runCWD = cwd
+				return appserver.RunResult{ThreadID: "thread-1", TurnID: "turn-1", Status: "completed"}, nil
+			},
+		},
+	}
+	state := filepath.Join(t.TempDir(), "state.json")
+
+	if err := c.run([]string{"spawn", "--state", state, "--engine", "appserver", "--repo", repo, "--worktree", "--prompt", "continue"}); err != nil {
+		t.Fatalf("spawn error = %v", err)
+	}
+	worker := mustFindWorkerByPrompt(t, state, "continue")
+	if worker.ProjectRoot != repo {
+		t.Fatalf("ProjectRoot = %q, want canonical repo root %q", worker.ProjectRoot, repo)
+	}
+	if worker.Worktree == "" {
+		t.Fatal("Worktree = empty")
+	}
+	if runCWD != worker.Worktree {
+		t.Fatalf("RunTurn cwd = %q, want managed worktree %q", runCWD, worker.Worktree)
+	}
+	if _, err := os.Stat(filepath.Join(worker.Worktree, ".git")); err != nil {
+		t.Fatalf("managed worktree missing .git: %v", err)
+	}
+}
+
+func TestCLISendAndResumeAppserverUseExistingWorktree(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 26, 16, 10, 0, 0, time.UTC)
+	state := filepath.Join(t.TempDir(), "state.json")
+	repo := t.TempDir()
+	worktree := filepath.Join(repo, ".codex-swarm", "worktrees", "w-app")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatalf("create worktree dir: %v", err)
+	}
+	if err := store.NewJSONStore(state).SaveWorker(store.Worker{
+		ID:          "w-app",
+		ProjectRoot: repo,
+		Worktree:    worktree,
+		ThreadID:    "thread-app",
+		Engine:      "appserver",
+		Status:      store.WorkerIdle,
+		Prompt:      "app worker",
+		CreatedAt:   now.Add(-time.Hour),
+		UpdatedAt:   now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveWorker() error = %v", err)
+	}
+	var sendCWD, resumeCWD string
+	c := cli{
+		out: &out,
+		err: &bytes.Buffer{},
+		now: func() time.Time { return now },
+		appserverRunner: fakeAppserverRunner{
+			sendTurn: func(_ context.Context, cwd, _, _ string) (appserver.RunResult, error) {
+				sendCWD = cwd
+				return appserver.RunResult{ThreadID: "thread-app", TurnID: "turn-send", Status: "completed"}, nil
+			},
+			resume: func(_ context.Context, cwd, _ string) (appserver.RunResult, error) {
+				resumeCWD = cwd
+				return appserver.RunResult{ThreadID: "thread-app", Status: "completed"}, nil
+			},
+		},
+	}
+
+	if err := c.run([]string{"send", "--state", state, "w-app", "continue"}); err != nil {
+		t.Fatalf("send error = %v", err)
+	}
+	if err := c.run([]string{"resume", "--state", state, "w-app"}); err != nil {
+		t.Fatalf("resume error = %v", err)
+	}
+	if sendCWD != worktree {
+		t.Fatalf("SendTurn cwd = %q, want %q", sendCWD, worktree)
+	}
+	if resumeCWD != worktree {
+		t.Fatalf("Resume cwd = %q, want %q", resumeCWD, worktree)
+	}
+}
+
 func TestCLISpawnAppserverFailedResultSetsTerminatedAt(t *testing.T) {
 	var out bytes.Buffer
 	now := time.Date(2026, 6, 26, 16, 15, 0, 0, time.UTC)
@@ -776,6 +867,33 @@ func savePairWorkers(t *testing.T, state string, now time.Time, issue string) {
 		if err := store.NewJSONStore(state).SaveWorker(worker); err != nil {
 			t.Fatalf("SaveWorker(%s) error = %v", worker.ID, err)
 		}
+	}
+}
+
+func initCLITestRepo(t *testing.T) string {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	root := t.TempDir()
+	runCLITestGit(t, root, "init")
+	runCLITestGit(t, root, "config", "user.email", "test@example.com")
+	runCLITestGit(t, root, "config", "user.name", "Test User")
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# test\n"), 0o644); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+	runCLITestGit(t, root, "add", "README.md")
+	runCLITestGit(t, root, "commit", "-m", "initial")
+	return root
+}
+
+func runCLITestGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v\n%s", args, err, out)
 	}
 }
 

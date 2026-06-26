@@ -27,6 +27,9 @@ func Conflicts(existing, candidate store.Claim, now time.Time) bool {
 	if existing.ID == candidate.ID || !IsOpen(existing, now) {
 		return false
 	}
+	if sameIssue(existing.Issue, candidate.Issue) {
+		return scopesOverlap(existing.Scope, candidate.Scope)
+	}
 	if !sameRepoPath(cleanRepo(existing.Repo), cleanRepo(candidate.Repo)) {
 		return false
 	}
@@ -132,6 +135,12 @@ func sameRepoPath(a, b string) bool {
 		return strings.EqualFold(a, b)
 	}
 	return a == b
+}
+
+func sameIssue(a, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	return a != "" && b != "" && strings.EqualFold(a, b)
 }
 
 func cleanScope(value string) string {

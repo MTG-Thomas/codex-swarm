@@ -58,6 +58,34 @@ func TestConflictsUsesPlatformRepoPathSemantics(t *testing.T) {
 	}
 }
 
+func TestConflictsUsesIssueScopeAcrossRepoPaths(t *testing.T) {
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	existing := store.Claim{
+		ID:        "c-remote",
+		Repo:      "/remote/checkout",
+		Scope:     "cmd/cs",
+		Issue:     "MTG-Thomas/codex-swarm#42",
+		Status:    store.ClaimActive,
+		ExpiresAt: now.Add(time.Hour),
+	}
+	candidate := store.Claim{
+		ID:        "c-local",
+		Repo:      "/local/checkout",
+		Scope:     "cmd/cs/issue.go",
+		Issue:     "MTG-Thomas/codex-swarm#42",
+		Status:    store.ClaimActive,
+		ExpiresAt: now.Add(time.Hour),
+	}
+
+	if !Conflicts(existing, candidate, now) {
+		t.Fatal("Conflicts() = false, want issue/scope conflict across checkout paths")
+	}
+	candidate.Issue = "MTG-Thomas/codex-swarm#43"
+	if Conflicts(existing, candidate, now) {
+		t.Fatal("Conflicts() = true, want different issues to fall back to repo matching")
+	}
+}
+
 func TestValidateWorkerID(t *testing.T) {
 	workers := []store.Worker{{ID: "w-known"}}
 

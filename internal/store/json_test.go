@@ -104,6 +104,41 @@ func TestJSONStoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestJSONStoreImportClaimsSkipsNewerLocal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	s := NewJSONStore(path)
+	localUpdated := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
+	remoteUpdated := localUpdated.Add(-time.Hour)
+	if err := s.SaveClaim(Claim{
+		ID:        "c-1",
+		Status:    ClaimActive,
+		Note:      "newer local",
+		UpdatedAt: localUpdated,
+	}); err != nil {
+		t.Fatalf("SaveClaim() error = %v", err)
+	}
+
+	imported, skipped, conflicted, err := s.ImportClaims([]Claim{{
+		ID:        "c-1",
+		Status:    ClaimReleased,
+		Note:      "older remote",
+		UpdatedAt: remoteUpdated,
+	}}, false)
+	if err != nil {
+		t.Fatalf("ImportClaims() error = %v", err)
+	}
+	if imported != 0 || skipped != 1 || conflicted != 1 {
+		t.Fatalf("ImportClaims() = imported:%d skipped:%d conflicted:%d, want 0/1/1", imported, skipped, conflicted)
+	}
+	got, err := s.GetClaim("c-1")
+	if err != nil {
+		t.Fatalf("GetClaim() error = %v", err)
+	}
+	if got.Note != "newer local" || got.Status != ClaimActive {
+		t.Fatalf("claim overwritten = %#v", got)
+	}
+}
+
 func TestJSONStoreNotFound(t *testing.T) {
 	s := NewJSONStore(filepath.Join(t.TempDir(), "missing.json"))
 	_, err := s.GetWorker("missing")
