@@ -47,25 +47,27 @@ func TestCLIWorkflow(t *testing.T) {
 	if err := c.run([]string{"spawn", "--state", state, "--repo", ".", "--role", "implementer", "--issue", "MTG-Thomas/codex-swarm#42", "--prompt", "inspect repo and report"}); err != nil {
 		t.Fatalf("spawn error = %v", err)
 	}
-	if !strings.Contains(out.String(), "spawned w-20260624-120000") {
+	if !strings.Contains(out.String(), "spawned w-20260624-120000-") {
 		t.Fatalf("spawn output = %q", out.String())
 	}
 	if !strings.Contains(out.String(), "issue: MTG-Thomas/codex-swarm#42") {
 		t.Fatalf("spawn issue output = %q", out.String())
 	}
+	implementerID := mustFindWorkerByPrompt(t, state, "inspect repo and report").ID
 
 	now = now.Add(time.Second)
 	out.Reset()
-	if err := c.run([]string{"spawn", "--state", state, "--repo", ".", "--role", "reviewer", "--parent", "w-20260624-120000", "--prompt", "review the implementation"}); err != nil {
+	if err := c.run([]string{"spawn", "--state", state, "--repo", ".", "--role", "reviewer", "--parent", implementerID, "--prompt", "review the implementation"}); err != nil {
 		t.Fatalf("spawn reviewer error = %v", err)
 	}
-	if !strings.Contains(out.String(), "swarm: role=reviewer parent=w-20260624-120000") {
+	if !strings.Contains(out.String(), "swarm: role=reviewer parent="+implementerID) {
 		t.Fatalf("reviewer spawn output = %q", out.String())
 	}
+	reviewerID := mustFindWorkerByPrompt(t, state, "review the implementation").ID
 
 	now = now.Add(time.Second)
 	out.Reset()
-	if err := c.run([]string{"claim", "create", "--state", state, "--repo", ".", "--scope", "internal/store", "--worker", "w-20260624-120000", "--issue", "MTG-Thomas/codex-swarm#42", "--note", "editing store claims"}); err != nil {
+	if err := c.run([]string{"claim", "create", "--state", state, "--repo", ".", "--scope", "internal/store", "--worker", implementerID, "--issue", "MTG-Thomas/codex-swarm#42", "--note", "editing store claims"}); err != nil {
 		t.Fatalf("claim create error = %v", err)
 	}
 	if !strings.Contains(out.String(), "claim c-20260624-120002") || !strings.Contains(out.String(), "conflicts=0") {
@@ -107,19 +109,19 @@ func TestCLIWorkflow(t *testing.T) {
 
 	now = now.Add(time.Second)
 	out.Reset()
-	if err := c.run([]string{"message", "--state", state, "w-20260624-120000", "w-20260624-120001", "please review the store changes"}); err != nil {
+	if err := c.run([]string{"message", "--state", state, implementerID, reviewerID, "please review the store changes"}); err != nil {
 		t.Fatalf("message error = %v", err)
 	}
-	if !strings.Contains(out.String(), "message w-20260624-120000 -> w-20260624-120001") {
+	if !strings.Contains(out.String(), "message "+implementerID+" -> "+reviewerID) {
 		t.Fatalf("message output = %q", out.String())
 	}
 
 	now = now.Add(time.Second)
 	out.Reset()
-	if err := c.run([]string{"handoff", "--state", state, "w-20260624-120000", "w-20260624-120001", "implementation ready for review"}); err != nil {
+	if err := c.run([]string{"handoff", "--state", state, implementerID, reviewerID, "implementation ready for review"}); err != nil {
 		t.Fatalf("handoff error = %v", err)
 	}
-	if !strings.Contains(out.String(), "handoff w-20260624-120000 -> w-20260624-120001") {
+	if !strings.Contains(out.String(), "handoff "+implementerID+" -> "+reviewerID) {
 		t.Fatalf("handoff output = %q", out.String())
 	}
 
@@ -142,21 +144,21 @@ func TestCLIWorkflow(t *testing.T) {
 	}
 
 	out.Reset()
-	if err := c.run([]string{"send", "--state", state, "w-20260624-120000", "continue with tests"}); err != nil {
+	if err := c.run([]string{"send", "--state", state, implementerID, "continue with tests"}); err != nil {
 		t.Fatalf("send error = %v", err)
 	}
-	if !strings.Contains(out.String(), "sent w-20260624-120000") {
+	if !strings.Contains(out.String(), "sent "+implementerID) {
 		t.Fatalf("send output = %q", out.String())
 	}
 
 	out.Reset()
-	if err := c.run([]string{"report", "--state", state, "--note", "demo complete", "w-20260624-120000", "done"}); err != nil {
+	if err := c.run([]string{"report", "--state", state, "--note", "demo complete", implementerID, "done"}); err != nil {
 		t.Fatalf("report error = %v", err)
 	}
 	if !strings.Contains(out.String(), "status=done") {
 		t.Fatalf("report output = %q", out.String())
 	}
-	reported, err := store.NewJSONStore(state).GetWorker("w-20260624-120000")
+	reported, err := store.NewJSONStore(state).GetWorker(implementerID)
 	if err != nil {
 		t.Fatalf("GetWorker(reported) error = %v", err)
 	}
@@ -181,7 +183,7 @@ func TestCLIWorkflow(t *testing.T) {
 		t.Fatalf("status error = %v", err)
 	}
 	got := out.String()
-	if !strings.Contains(got, "workers=2") || !strings.Contains(got, "w-20260624-120000") || !strings.Contains(got, "w-20260624-120001") {
+	if !strings.Contains(got, "workers=2") || !strings.Contains(got, implementerID) || !strings.Contains(got, reviewerID) {
 		t.Fatalf("status output = %q", got)
 	}
 }
@@ -225,6 +227,35 @@ func TestCLIReportFailedSetsTerminatedAt(t *testing.T) {
 	}
 	if worker.Lifecycle.Session.CompletedAt != nil {
 		t.Fatalf("CompletedAt = %v, want nil", worker.Lifecycle.Session.CompletedAt)
+	}
+}
+
+func TestCLISpawnSameSecondCreatesDistinctWorkers(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 26, 18, 0, 0, 0, time.UTC)
+	c := cli{
+		out: &out,
+		err: &bytes.Buffer{},
+		now: func() time.Time { return now },
+	}
+	state := filepath.Join(t.TempDir(), "state.json")
+
+	if err := c.run([]string{"spawn", "--state", state, "--repo", ".", "--prompt", "first"}); err != nil {
+		t.Fatalf("first spawn error = %v", err)
+	}
+	if err := c.run([]string{"spawn", "--state", state, "--repo", ".", "--prompt", "second"}); err != nil {
+		t.Fatalf("second spawn error = %v", err)
+	}
+
+	workers, err := store.NewJSONStore(state).ListWorkers()
+	if err != nil {
+		t.Fatalf("ListWorkers() error = %v", err)
+	}
+	if len(workers) != 2 {
+		t.Fatalf("workers = %d, want 2: %#v", len(workers), workers)
+	}
+	if workers[0].ID == workers[1].ID {
+		t.Fatalf("worker IDs both = %q, want distinct IDs", workers[0].ID)
 	}
 }
 
@@ -318,7 +349,7 @@ func TestCLISpawnAppserverFailedResultSetsTerminatedAt(t *testing.T) {
 	if err := c.run([]string{"spawn", "--state", state, "--engine", "appserver", "--repo", ".", "--prompt", "continue"}); err != nil {
 		t.Fatalf("spawn error = %v", err)
 	}
-	assertWorkerTerminatedAt(t, state, "w-20260626-161500", now)
+	assertWorkerTerminatedAt(t, state, mustFindWorkerByPrompt(t, state, "continue").ID, now)
 	if got := out.String(); !strings.Contains(got, "status=failed") {
 		t.Fatalf("spawn output = %q, want failed display status", got)
 	}
@@ -397,6 +428,21 @@ func mustGetWorker(t *testing.T, state, id string) store.Worker {
 		t.Fatalf("GetWorker(%q) error = %v", id, err)
 	}
 	return worker
+}
+
+func mustFindWorkerByPrompt(t *testing.T, state, prompt string) store.Worker {
+	t.Helper()
+	workers, err := store.NewJSONStore(state).ListWorkers()
+	if err != nil {
+		t.Fatalf("ListWorkers() error = %v", err)
+	}
+	for _, worker := range workers {
+		if worker.Prompt == prompt {
+			return worker
+		}
+	}
+	t.Fatalf("worker with prompt %q not found in %#v", prompt, workers)
+	return store.Worker{}
 }
 
 func saveAppserverWorker(t *testing.T, state string, now time.Time) {

@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -228,7 +230,11 @@ func (c cli) spawn(args []string) error {
 	}
 
 	now := c.now().UTC()
-	id := fmt.Sprintf("w-%s", now.Format("20060102-150405"))
+	id, err := newWorkerID(now)
+	if err != nil {
+		return fmt.Errorf("generate worker id: %w", err)
+	}
+	managedName := id
 	if *engine != "mock" && *engine != "appserver" {
 		return fmt.Errorf("unknown engine %q", *engine)
 	}
@@ -268,8 +274,8 @@ func (c cli) spawn(args []string) error {
 		Role:        *role,
 		Issue:       issue,
 		ProjectRoot: repoRoot,
-		Worktree:    filepath.Join(repoRoot, ".codex-swarm", "worktrees", id),
-		Branch:      "cs/" + id,
+		Worktree:    filepath.Join(repoRoot, ".codex-swarm", "worktrees", managedName),
+		Branch:      "cs/" + managedName,
 		ThreadID:    threadID,
 		TurnID:      turnID,
 		Engine:      *engine,
@@ -285,12 +291,16 @@ func (c cli) spawn(args []string) error {
 	if *createWorktree {
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 		defer cancel()
-		if err := (worktree.Git{}).Create(ctx, worktree.Spec{
+		result, err := (worktree.Git{}).Create(ctx, worktree.Spec{
 			RepoRoot: repoRoot,
 			Branch:   worker.Branch,
 			Path:     worker.Worktree,
-		}); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("create worktree: %w", err)
+		}
+		for _, warning := range result.Warnings {
+			worker.Events = append(worker.Events, store.Event{At: now, Type: "worktree.warning", Message: warning})
 		}
 		worker.Events = append(worker.Events, store.Event{At: now, Type: "worktree.created", Message: worker.Worktree})
 	}
@@ -318,8 +328,32 @@ func (c cli) spawn(args []string) error {
 	}
 	if *createWorktree {
 		fmt.Fprintf(c.out, "worktree: %s branch=%s\n", worker.Worktree, worker.Branch)
+		for _, event := range worker.Events {
+			if event.Type == "worktree.warning" {
+				fmt.Fprintf(c.out, "warning: %s\n", event.Message)
+			}
+		}
 	}
 	return nil
+}
+
+func randomSuffix(bytesLen int) (string, error) {
+	if bytesLen <= 0 {
+		return "", nil
+	}
+	buf := make([]byte, bytesLen)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+func newWorkerID(now time.Time) (string, error) {
+	suffix, err := randomSuffix(4)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("w-%s-%s", now.UTC().Format("20060102-150405"), suffix), nil
 }
 
 func (c cli) schedule(args []string) error {

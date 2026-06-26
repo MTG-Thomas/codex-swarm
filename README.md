@@ -62,7 +62,9 @@ State is written to a machine-global user config path by default, for example `%
 
 `spawn --engine appserver` prints the Codex thread ID and a recovery command. Codex app visibility can lag briefly, especially on mobile; use `inspect-thread` to verify that the stored thread can still be resumed through app-server.
 
-Pass `--worktree` to create a Git branch and worktree for the worker. The worktree path and branch are recorded on the worker and shown in command output.
+Pass `--worktree` to create a Git branch and worktree for the worker. Managed branch names use the worker timestamp plus a random suffix, and the worktree path and branch are recorded on the worker and shown in command output.
+
+Managed worktree creation uses repo-local branch locks under `.codex-swarm/locks/`. A live lock fails fast instead of handing two workers the same managed checkout; a stale lock whose PID is gone is pruned. If the intended managed worktree already exists on the requested branch, it is reused. Dirty managed worktrees are reused without refresh and print a warning so local changes are preserved. If the branch is checked out in the main repository or an external worktree, `spawn --worktree` fails with that location instead of reusing it.
 
 Pass `--role` and `--parent` to record simple local swarm relationships. Use `message` and `handoff` to write directed communication events into both workers' local timelines without routing routine interagent traffic through MCP.
 
