@@ -91,6 +91,18 @@ Use `--engine mock` when the demo needs to avoid live Codex calls:
 go run ./cmd/cs spawn --engine mock --repo . --prompt "inspect this repo"
 ```
 
+Run the local friend-demo smoke script when you want a disposable end-to-end walkthrough without touching machine-global swarm state or GitHub:
+
+```powershell
+.\scripts\demo-swarm.ps1
+```
+
+```bash
+./scripts/demo-swarm.sh
+```
+
+The demo registers a coordinator identity, creates a coordinator plus two mock workers, links one claim to `MTG-Thomas/codex-swarm#9`, sends a worker-to-worker message, creates one managed mock worktree, prints `cs status`, and then removes only its temporary state file and managed demo worktree/branch.
+
 Local maturity checks:
 
 ```powershell
