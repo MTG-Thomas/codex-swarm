@@ -9,8 +9,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -18,6 +16,7 @@ import (
 	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
 	"github.com/MTG-Thomas/codex-swarm/internal/dispatch"
 	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
+	"github.com/MTG-Thomas/codex-swarm/internal/proofcache"
 	"github.com/MTG-Thomas/codex-swarm/internal/readiness"
 	"github.com/MTG-Thomas/codex-swarm/internal/repohints"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
@@ -227,18 +226,16 @@ func requireFreshGateEvidence(st *store.JSONStore, worker store.Worker, required
 	}
 	head := bestEffortGitCommit(repoRoot)
 	for _, gate := range required {
-		match, ok := newestEvidenceForGate(evidence, repoRoot, strings.TrimSpace(gate.ID))
-		if !ok {
-			return fmt.Errorf("quality gate %s missing evidence; refresh with: cs gate record --repo %s --worker %s --gate %s --exit-code <code> --output <summary>", gate.ID, repoRoot, worker.ID, gate.ID)
-		}
-		if match.ExitCode != 0 {
-			return fmt.Errorf("quality gate %s failed with exit code %d; refresh with: cs gate record --repo %s --worker %s --gate %s --exit-code <code> --output <summary>", gate.ID, match.ExitCode, repoRoot, worker.ID, gate.ID)
-		}
-		if !worker.UpdatedAt.IsZero() && match.CreatedAt.Before(worker.UpdatedAt) {
-			return fmt.Errorf("quality gate %s is stale: evidence %s is older than worker update %s; refresh with: cs gate record --repo %s --worker %s --gate %s --exit-code <code> --output <summary>", gate.ID, match.CreatedAt.Format(time.RFC3339), worker.UpdatedAt.Format(time.RFC3339), repoRoot, worker.ID, gate.ID)
-		}
-		if head != "" && strings.TrimSpace(match.Commit) != "" && strings.TrimSpace(match.Commit) != head {
-			return fmt.Errorf("quality gate %s is stale: evidence commit %s does not match current commit %s; refresh with: cs gate record --repo %s --worker %s --gate %s --exit-code <code> --output <summary>", gate.ID, match.Commit, head, repoRoot, worker.ID, gate.ID)
+		_, err := proofcache.Lookup(evidence, proofcache.Query{
+			Repo:          repoRoot,
+			GateID:        strings.TrimSpace(gate.ID),
+			Command:       strings.TrimSpace(gate.Command),
+			Head:          head,
+			NotBefore:     worker.UpdatedAt,
+			RequirePassed: true,
+		})
+		if err != nil {
+			return fmt.Errorf("quality gate %s proof cache miss: %s; refresh with: cs gate record --repo %s --worker %s --gate %s --exit-code <code> --output <summary>", gate.ID, err, repoRoot, worker.ID, gate.ID)
 		}
 	}
 	return nil
@@ -278,36 +275,6 @@ func requiredQualityGates(repoRoot string, explicit []string) ([]readiness.Gate,
 		gates = append(gates, readiness.Gate{ID: id})
 	}
 	return gates, nil
-}
-
-func newestEvidenceForGate(all []store.GateEvidence, repoRoot, gateID string) (store.GateEvidence, bool) {
-	for _, evidence := range all {
-		if strings.TrimSpace(evidence.GateID) != gateID {
-			continue
-		}
-		if evidence.Repo != "" && !samePath(evidence.Repo, repoRoot) {
-			continue
-		}
-		return evidence, true
-	}
-	return store.GateEvidence{}, false
-}
-
-func samePath(a, b string) bool {
-	left, leftErr := filepath.Abs(a)
-	right, rightErr := filepath.Abs(b)
-	if leftErr == nil {
-		a = left
-	}
-	if rightErr == nil {
-		b = right
-	}
-	a = filepath.Clean(a)
-	b = filepath.Clean(b)
-	if runtime.GOOS == "windows" {
-		return strings.EqualFold(a, b)
-	}
-	return a == b
 }
 
 func (c cli) issueClaim(args []string) error {

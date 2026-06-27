@@ -738,7 +738,7 @@ func TestIssueReportRejectsMissingGateEvidenceBeforeGitHubMutation(t *testing.T)
 	if err == nil {
 		t.Fatal("issue report error = nil, want missing gate rejection")
 	}
-	if !strings.Contains(err.Error(), "quality gate test missing evidence") || !strings.Contains(err.Error(), "cs gate record --repo "+repo+" --worker w-report --gate test") {
+	if !strings.Contains(err.Error(), "quality gate test proof cache miss: missing evidence") || !strings.Contains(err.Error(), "cs gate record --repo "+repo+" --worker w-report --gate test") {
 		t.Fatalf("issue report error = %v", err)
 	}
 	got := readFakeGHState(t, ghStatePath)
@@ -763,7 +763,7 @@ func TestIssueReportRejectsFailingGateEvidenceBeforeGitHubMutation(t *testing.T)
 	if err == nil {
 		t.Fatal("issue report error = nil, want failing gate rejection")
 	}
-	if !strings.Contains(err.Error(), "quality gate test failed with exit code 1") {
+	if !strings.Contains(err.Error(), "quality gate test proof cache miss: cached command failed with exit code 1") {
 		t.Fatalf("issue report error = %v", err)
 	}
 	got := readFakeGHState(t, ghStatePath)
@@ -788,7 +788,7 @@ func TestIssueReportRejectsGateEvidenceOlderThanWorkerUpdate(t *testing.T) {
 	if err == nil {
 		t.Fatal("issue report error = nil, want stale gate rejection")
 	}
-	if !strings.Contains(err.Error(), "quality gate test is stale") || !strings.Contains(err.Error(), "older than worker update") {
+	if !strings.Contains(err.Error(), "quality gate test proof cache miss: stale evidence") || !strings.Contains(err.Error(), "older than required") {
 		t.Fatalf("issue report error = %v", err)
 	}
 	got := readFakeGHState(t, ghStatePath)
@@ -813,7 +813,7 @@ func TestIssueReportRejectsGateEvidenceFromOlderCommit(t *testing.T) {
 	if err == nil {
 		t.Fatal("issue report error = nil, want stale commit rejection")
 	}
-	if !strings.Contains(err.Error(), "quality gate test is stale") || !strings.Contains(err.Error(), "old-commit") {
+	if !strings.Contains(err.Error(), "quality gate test proof cache miss: HEAD mismatch") || !strings.Contains(err.Error(), "old-commit") {
 		t.Fatalf("issue report error = %v", err)
 	}
 	got := readFakeGHState(t, ghStatePath)
