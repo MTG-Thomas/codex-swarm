@@ -99,7 +99,7 @@ Use `issue dispatch --issue owner/repo#123 --repo <path> --prompt <task> --gate 
 
 Set `CODEX_SWARM_DAEMON_URL=http://127.0.0.1:8787` or pass `--daemon http://127.0.0.1:8787` to have `issue dispatch` perform the same explicit mutation through the daemon. Daemon dispatch requires loopback access and an idempotent request ID derived by the CLI.
 
-Use `issue report --issue owner/repo#123 --worker <worker-id>` only when you intentionally want to post that worker's current report or last message as a GitHub issue comment.
+Use `issue report --issue owner/repo#123 --worker <worker-id>` only when you intentionally want to post that worker's current report or last message as a GitHub issue comment. When the worker's repo advertises quality gates, `issue report` fails closed unless the local state has fresh successful evidence for each gate. It does not run gate commands for you; refresh evidence with `cs gate record --repo <path> --worker <worker-id> --gate <id> --exit-code <code> --output <summary>`. Use `--bypass-gates` only for an intentional exception; the command prints `bypassed_gates=true` before mutating GitHub.
 
 Use `validate start --issue owner/repo#123 --prompt <task> --gate <id>` to
 create an issue-linked implementer and validator pair. The validator gets fresh

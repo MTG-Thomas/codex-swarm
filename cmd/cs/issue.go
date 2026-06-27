@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/MTG-Thomas/codex-swarm/internal/dispatch"
 	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
 	"github.com/MTG-Thomas/codex-swarm/internal/readiness"
+	"github.com/MTG-Thomas/codex-swarm/internal/repohints"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
 
@@ -168,6 +171,8 @@ func (c cli) issueReport(args []string) error {
 	issueValue := fs.String("issue", "", "GitHub issue reference")
 	workerID := fs.String("worker", "", "worker id")
 	note := fs.String("note", "", "optional report note override")
+	gates := fs.String("gate", "", "comma-separated quality gate ids to require")
+	bypassGates := fs.Bool("bypass-gates", false, "post the report without required quality gate evidence")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -188,12 +193,121 @@ func (c cli) issueReport(args []string) error {
 	if worker.Issue != "" && worker.Issue != issue {
 		return fmt.Errorf("worker %s is linked to %s, not %s", worker.ID, worker.Issue, issue)
 	}
+	if *bypassGates {
+		fmt.Fprintln(c.out, "bypassed_gates=true")
+	} else if err := requireFreshGateEvidence(store.NewJSONStore(*statePath), worker, splitGateIDs(*gates)); err != nil {
+		return err
+	}
 	body := workerIssueReportMarkdown(issue, worker, *note, c.now().UTC())
 	if err := postIssueComment(context.Background(), issue, body); err != nil {
 		return err
 	}
 	fmt.Fprintf(c.out, "reported issue=%s worker=%s status=%s\n", issue, worker.ID, displayWorkerStatus(worker))
 	return nil
+}
+
+func requireFreshGateEvidence(st *store.JSONStore, worker store.Worker, requiredGateIDs []string) error {
+	repoRoot := strings.TrimSpace(worker.ProjectRoot)
+	if repoRoot == "" {
+		if len(requiredGateIDs) == 0 {
+			return nil
+		}
+		return fmt.Errorf("quality gates unavailable: worker %s has no repo path", worker.ID)
+	}
+	required, err := requiredQualityGates(repoRoot, requiredGateIDs)
+	if err != nil {
+		return err
+	}
+	if len(required) == 0 {
+		return nil
+	}
+	evidence, err := st.ListGateEvidence()
+	if err != nil {
+		return err
+	}
+	head := bestEffortGitCommit(repoRoot)
+	for _, gate := range required {
+		match, ok := newestEvidenceForGate(evidence, repoRoot, strings.TrimSpace(gate.ID))
+		if !ok {
+			return fmt.Errorf("quality gate %s missing evidence; refresh with: cs gate record --repo %s --worker %s --gate %s --exit-code <code> --output <summary>", gate.ID, repoRoot, worker.ID, gate.ID)
+		}
+		if match.ExitCode != 0 {
+			return fmt.Errorf("quality gate %s failed with exit code %d; refresh with: cs gate record --repo %s --worker %s --gate %s --exit-code <code> --output <summary>", gate.ID, match.ExitCode, repoRoot, worker.ID, gate.ID)
+		}
+		if !worker.UpdatedAt.IsZero() && match.CreatedAt.Before(worker.UpdatedAt) {
+			return fmt.Errorf("quality gate %s is stale: evidence %s is older than worker update %s; refresh with: cs gate record --repo %s --worker %s --gate %s --exit-code <code> --output <summary>", gate.ID, match.CreatedAt.Format(time.RFC3339), worker.UpdatedAt.Format(time.RFC3339), repoRoot, worker.ID, gate.ID)
+		}
+		if head != "" && strings.TrimSpace(match.Commit) != "" && strings.TrimSpace(match.Commit) != head {
+			return fmt.Errorf("quality gate %s is stale: evidence commit %s does not match current commit %s; refresh with: cs gate record --repo %s --worker %s --gate %s --exit-code <code> --output <summary>", gate.ID, match.Commit, head, repoRoot, worker.ID, gate.ID)
+		}
+	}
+	return nil
+}
+
+func requiredQualityGates(repoRoot string, explicit []string) ([]readiness.Gate, error) {
+	hints, _, ok, err := repohints.Load(repoRoot)
+	if err != nil {
+		return nil, err
+	}
+	byID := map[string]readiness.Gate{}
+	if ok {
+		for _, gate := range hints.QualityGates {
+			id := strings.TrimSpace(gate.ID)
+			byID[id] = readiness.Gate{
+				ID:      id,
+				Command: strings.TrimSpace(gate.Command),
+				Scope:   strings.TrimSpace(gate.Scope),
+			}
+		}
+	}
+	if len(explicit) == 0 {
+		gates := make([]readiness.Gate, 0, len(byID))
+		for _, gate := range hints.QualityGates {
+			if resolved, ok := byID[strings.TrimSpace(gate.ID)]; ok {
+				gates = append(gates, resolved)
+			}
+		}
+		return gates, nil
+	}
+	gates := make([]readiness.Gate, 0, len(explicit))
+	for _, id := range explicit {
+		if gate, ok := byID[id]; ok {
+			gates = append(gates, gate)
+			continue
+		}
+		gates = append(gates, readiness.Gate{ID: id})
+	}
+	return gates, nil
+}
+
+func newestEvidenceForGate(all []store.GateEvidence, repoRoot, gateID string) (store.GateEvidence, bool) {
+	for _, evidence := range all {
+		if strings.TrimSpace(evidence.GateID) != gateID {
+			continue
+		}
+		if evidence.Repo != "" && !samePath(evidence.Repo, repoRoot) {
+			continue
+		}
+		return evidence, true
+	}
+	return store.GateEvidence{}, false
+}
+
+func samePath(a, b string) bool {
+	left, leftErr := filepath.Abs(a)
+	right, rightErr := filepath.Abs(b)
+	if leftErr == nil {
+		a = left
+	}
+	if rightErr == nil {
+		b = right
+	}
+	a = filepath.Clean(a)
+	b = filepath.Clean(b)
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
 }
 
 func (c cli) issueClaim(args []string) error {
