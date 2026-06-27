@@ -7,6 +7,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	claimrules "github.com/MTG-Thomas/codex-swarm/internal/claims"
+	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
 
 func TestLegacyImportCoordinator(t *testing.T) {
@@ -59,5 +62,19 @@ func TestLegacyImportCoordinator(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "legacy-active-id") || strings.Contains(out.String(), "legacy-released-id") {
 		t.Fatalf("claim list output = %q", out.String())
+	}
+
+	claim, err := store.NewJSONStore(state).GetClaim("legacy-active-id")
+	if err != nil {
+		t.Fatalf("GetClaim(legacy-active-id) error = %v", err)
+	}
+	if claim.WorkerID != "legacy-owner" {
+		t.Fatalf("WorkerID = %q, want legacy-owner", claim.WorkerID)
+	}
+	if claim.WorkerSource != "legacy-coordinator" {
+		t.Fatalf("WorkerSource = %q, want legacy-coordinator", claim.WorkerSource)
+	}
+	if !claimrules.IsExternalWorker(claim) {
+		t.Fatalf("legacy claim = %#v, want external marker", claim)
 	}
 }

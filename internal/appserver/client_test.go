@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCallSkipsNotificationsAndMatchesResponseID(t *testing.T) {
@@ -78,6 +80,167 @@ func TestWaitTurnCompleted(t *testing.T) {
 	}
 	if turn.ID != "turn-1" || turn.Status != "completed" {
 		t.Fatalf("turn = %#v", turn)
+	}
+}
+
+func TestWaitTurnCompletedWithPolicyReturnsWarningAfterCompletionSignalGrace(t *testing.T) {
+	var written bytes.Buffer
+	reader, writer := io.Pipe()
+	defer func() { _ = reader.Close() }()
+	defer func() { _ = writer.Close() }()
+	go func() {
+		_, _ = writer.Write([]byte(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thread-1","delta":"work is DONE"}}` + "\n"))
+	}()
+	client := NewClient(&written, reader)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	result, err := client.WaitTurnCompletedWithPolicy(ctx, "thread-1", "turn-1", CompletionPolicy{
+		Signal:            "DONE",
+		IdleTimeout:       time.Second,
+		CompletionTimeout: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("WaitTurnCompletedWithPolicy() error = %v", err)
+	}
+	if result.Turn.ID != "turn-1" || result.Turn.Status != "completed" {
+		t.Fatalf("Turn = %#v, want synthetic completed turn", result.Turn)
+	}
+	if !strings.Contains(result.Warning, "completion signal") || !strings.Contains(result.Warning, "turn-1") {
+		t.Fatalf("Warning = %q, want completion-signal warning with turn id", result.Warning)
+	}
+}
+
+func TestWaitTurnCompletedWithPolicyFailsWithoutCompletionSignal(t *testing.T) {
+	var written bytes.Buffer
+	reader, writer := io.Pipe()
+	defer func() { _ = reader.Close() }()
+	defer func() { _ = writer.Close() }()
+	client := NewClient(&written, reader)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_, err := client.WaitTurnCompletedWithPolicy(ctx, "thread-1", "turn-1", CompletionPolicy{
+		Signal:            "DONE",
+		IdleTimeout:       10 * time.Millisecond,
+		CompletionTimeout: 10 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("WaitTurnCompletedWithPolicy() error = nil, want missing-signal timeout")
+	}
+	if !strings.Contains(err.Error(), "completion signal") {
+		t.Fatalf("error = %v, want completion-signal timeout", err)
+	}
+}
+
+func TestWaitTurnCompletedWithPolicyIgnoresSignalInUnrelatedNotification(t *testing.T) {
+	var written bytes.Buffer
+	reader, writer := io.Pipe()
+	defer func() { _ = reader.Close() }()
+	defer func() { _ = writer.Close() }()
+	go func() {
+		_, _ = writer.Write([]byte(`{"jsonrpc":"2.0","method":"item/userMessage/delta","params":{"threadId":"thread-1","delta":"DONE"}}` + "\n"))
+	}()
+	client := NewClient(&written, reader)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_, err := client.WaitTurnCompletedWithPolicy(ctx, "thread-1", "turn-1", CompletionPolicy{
+		Signal:            "DONE",
+		IdleTimeout:       10 * time.Millisecond,
+		CompletionTimeout: 10 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("WaitTurnCompletedWithPolicy() error = nil, want missing-signal timeout")
+	}
+	if !strings.Contains(err.Error(), "completion signal") {
+		t.Fatalf("error = %v, want completion-signal timeout", err)
+	}
+}
+
+func TestWaitTurnCompletedWithPolicyRequiresMatchingThreadForSignal(t *testing.T) {
+	var written bytes.Buffer
+	reader, writer := io.Pipe()
+	defer func() { _ = reader.Close() }()
+	defer func() { _ = writer.Close() }()
+	go func() {
+		_, _ = writer.Write([]byte(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"other-thread","delta":"DONE"}}` + "\n"))
+	}()
+	client := NewClient(&written, reader)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_, err := client.WaitTurnCompletedWithPolicy(ctx, "thread-1", "turn-1", CompletionPolicy{
+		Signal:            "DONE",
+		IdleTimeout:       10 * time.Millisecond,
+		CompletionTimeout: 10 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("WaitTurnCompletedWithPolicy() error = nil, want missing-signal timeout")
+	}
+	if !strings.Contains(err.Error(), "completion signal") {
+		t.Fatalf("error = %v, want completion-signal timeout", err)
+	}
+}
+
+func TestWaitTurnCompletedWithPolicyRequiresThreadForSignal(t *testing.T) {
+	var written bytes.Buffer
+	reader, writer := io.Pipe()
+	defer func() { _ = reader.Close() }()
+	defer func() { _ = writer.Close() }()
+	go func() {
+		_, _ = writer.Write([]byte(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"DONE"}}` + "\n"))
+	}()
+	client := NewClient(&written, reader)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	_, err := client.WaitTurnCompletedWithPolicy(ctx, "thread-1", "turn-1", CompletionPolicy{
+		Signal:            "DONE",
+		IdleTimeout:       10 * time.Millisecond,
+		CompletionTimeout: 10 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("WaitTurnCompletedWithPolicy() error = nil, want missing-signal timeout")
+	}
+	if !strings.Contains(err.Error(), "completion signal") {
+		t.Fatalf("error = %v, want completion-signal timeout", err)
+	}
+}
+
+func TestWaitTurnCompletedWithPolicyPreservesTrailingMetadataWithinGrace(t *testing.T) {
+	var written bytes.Buffer
+	reader, writer := io.Pipe()
+	defer func() { _ = reader.Close() }()
+	defer func() { _ = writer.Close() }()
+	go func() {
+		_, _ = writer.Write([]byte(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thread-1","delta":"DONE"}}` + "\n"))
+		time.Sleep(5 * time.Millisecond)
+		_, _ = writer.Write([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed","usage":{"totalTokens":17}}}}` + "\n"))
+	}()
+	client := NewClient(&written, reader)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	result, err := client.WaitTurnCompletedWithPolicy(ctx, "thread-1", "turn-1", CompletionPolicy{
+		Signal:            "DONE",
+		IdleTimeout:       time.Second,
+		CompletionTimeout: 100 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("WaitTurnCompletedWithPolicy() error = %v", err)
+	}
+	if result.Warning != "" {
+		t.Fatalf("Warning = %q, want clean completion when metadata arrives within grace", result.Warning)
+	}
+	var usage struct {
+		TotalTokens int `json:"totalTokens"`
+	}
+	if err := json.Unmarshal(result.Turn.Usage, &usage); err != nil {
+		t.Fatalf("unmarshal usage: %v", err)
+	}
+	if usage.TotalTokens != 17 {
+		t.Fatalf("usage.TotalTokens = %d, want 17", usage.TotalTokens)
 	}
 }
 

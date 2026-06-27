@@ -3,41 +3,95 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/MTG-Thomas/codex-swarm/internal/claims"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
 
+const Version = "0.1.0"
+
 // Status is the compact operator-facing state returned by the daemon.
 type Status struct {
+	Daemon        string `json:"daemon"`
+	Version       string `json:"version"`
+	StatePath     string `json:"state_path"`
+	WorkerCount   int    `json:"worker_count"`
+	ClaimCount    int    `json:"claim_count"`
+	ConflictCount int    `json:"conflict_count"`
+}
+
+// String renders a compact human-readable daemon status line.
+func (s Status) String() string {
+	return fmt.Sprintf("daemon=%s version=%s workers=%d claims=%d conflicts=%d state=%s", s.Daemon, s.Version, s.WorkerCount, s.ClaimCount, s.ConflictCount, s.StatePath)
+}
+
+// WorkerStatus is the compact daemon representation of one worker.
+type WorkerStatus struct {
+	ID       string `json:"id"`
+	Status   string `json:"status"`
+	Issue    string `json:"issue,omitempty"`
+	Worktree string `json:"worktree,omitempty"`
+	ThreadID string `json:"thread_id,omitempty"`
+}
+
+// WorkersResponse is returned by the daemon workers endpoint.
+type WorkersResponse struct {
+	Workers []WorkerStatus `json:"workers"`
+}
+
+// ClaimsResponse is returned by the daemon claims endpoint.
+type ClaimsResponse struct {
+	Claims    []store.Claim   `json:"claims"`
+	Conflicts []ClaimConflict `json:"conflicts"`
+}
+
+// LegacyStatus is the compatibility response for older daemon clients.
+type LegacyStatus struct {
 	Daemon    string         `json:"daemon"`
 	StatePath string         `json:"state_path"`
 	Workers   []store.Worker `json:"workers"`
 }
 
-func (s Status) String() string {
-	return fmt.Sprintf("daemon=%s workers=%d state=%s", s.Daemon, len(s.Workers), s.StatePath)
+// ClaimConflict describes one pair of overlapping open claims.
+type ClaimConflict struct {
+	ClaimID    string `json:"claim_id"`
+	ConflictID string `json:"conflict_id"`
+	Repo       string `json:"repo"`
+	Scope      string `json:"scope"`
 }
 
+type readStore interface {
+	ListWorkers() ([]store.Worker, error)
+	ListClaims() ([]store.Claim, error)
+}
+
+// Server exposes read-only daemon HTTP endpoints over swarm state.
 type Server struct {
-	store     store.Store
+	store     readStore
 	statePath string
 }
 
-func NewServer(statePath string, st store.Store) *Server {
+// NewServer builds a read-only daemon server over the provided store.
+func NewServer(statePath string, st readStore) *Server {
 	return &Server{
 		store:     st,
 		statePath: statePath,
 	}
 }
 
+// Handler returns the daemon HTTP handler.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
-	mux.HandleFunc("/v1/status", s.handleStatus)
+	mux.HandleFunc("/status", s.handleStatus)
+	mux.HandleFunc("/workers", s.handleWorkers)
+	mux.HandleFunc("/claims", s.handleClaims)
+	mux.HandleFunc("/v1/status", s.handleLegacyStatus)
 	return mux
 }
 
@@ -59,24 +113,131 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	claimList, err := s.store.ListClaims()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, Status{
+		Daemon:        "running",
+		Version:       Version,
+		StatePath:     s.statePath,
+		WorkerCount:   len(workers),
+		ClaimCount:    len(claimList),
+		ConflictCount: len(findClaimConflicts(claimList, time.Now().UTC())),
+	})
+}
+
+func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	workers, err := s.store.ListWorkers()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, WorkersResponse{Workers: summarizeWorkers(workers)})
+}
+
+func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	claimList, err := s.store.ListClaims()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, ClaimsResponse{
+		Claims:    claimList,
+		Conflicts: findClaimConflicts(claimList, time.Now().UTC()),
+	})
+}
+
+func (s *Server) handleLegacyStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	workers, err := s.store.ListWorkers()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, LegacyStatus{
 		Daemon:    "running",
 		StatePath: s.statePath,
 		Workers:   workers,
 	})
 }
 
+// Client reads status from a running codex-swarm daemon.
 type Client struct {
 	BaseURL    string
 	HTTPClient *http.Client
 }
 
+// Status returns compact daemon state, falling back only for legacy daemons.
 func (c Client) Status(ctx context.Context) (Status, error) {
 	var status Status
-	if err := c.get(ctx, "/v1/status", &status); err != nil {
-		return Status{}, err
+	if err := c.get(ctx, "/status", &status); err != nil {
+		if !isLegacyFallbackStatus(err) {
+			return Status{}, err
+		}
+		var legacy LegacyStatus
+		if legacyErr := c.get(ctx, "/v1/status", &legacy); legacyErr != nil {
+			return Status{}, err
+		}
+		return Status{
+			Daemon:      legacy.Daemon,
+			Version:     "legacy",
+			StatePath:   legacy.StatePath,
+			WorkerCount: len(legacy.Workers),
+		}, nil
 	}
 	return status, nil
+}
+
+// Workers returns compact worker summaries from the daemon.
+func (c Client) Workers(ctx context.Context) (WorkersResponse, error) {
+	var workers WorkersResponse
+	if err := c.get(ctx, "/workers", &workers); err != nil {
+		if !isLegacyFallbackStatus(err) {
+			return WorkersResponse{}, err
+		}
+		var legacy LegacyStatus
+		if legacyErr := c.get(ctx, "/v1/status", &legacy); legacyErr != nil {
+			return WorkersResponse{}, err
+		}
+		return WorkersResponse{Workers: summarizeWorkers(legacy.Workers)}, nil
+	}
+	return workers, nil
+}
+
+type statusError struct {
+	StatusCode int
+	Status     string
+}
+
+func (e statusError) Error() string {
+	return "daemon returned " + e.Status
+}
+
+func isLegacyFallbackStatus(err error) bool {
+	var status statusError
+	return errors.As(err, &status) && (status.StatusCode == http.StatusNotFound || status.StatusCode == http.StatusNotImplemented)
+}
+
+// Claims returns claims and conflict summaries from the daemon.
+func (c Client) Claims(ctx context.Context) (ClaimsResponse, error) {
+	var claimList ClaimsResponse
+	if err := c.get(ctx, "/claims", &claimList); err != nil {
+		return ClaimsResponse{}, err
+	}
+	return claimList, nil
 }
 
 func (c Client) get(ctx context.Context, path string, target any) error {
@@ -98,7 +259,7 @@ func (c Client) get(ctx context.Context, path string, target any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("daemon returned %s", resp.Status)
+		return statusError{StatusCode: resp.StatusCode, Status: resp.Status}
 	}
 	return json.NewDecoder(resp.Body).Decode(target)
 }
@@ -106,4 +267,53 @@ func (c Client) get(ctx context.Context, path string, target any) error {
 func writeJSON(w http.ResponseWriter, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+func summarizeWorkers(workers []store.Worker) []WorkerStatus {
+	summaries := make([]WorkerStatus, 0, len(workers))
+	for _, worker := range workers {
+		summaries = append(summaries, WorkerStatus{
+			ID:       worker.ID,
+			Status:   displayWorkerStatus(worker),
+			Issue:    worker.Issue,
+			Worktree: worker.Worktree,
+			ThreadID: worker.ThreadID,
+		})
+	}
+	return summaries
+}
+
+func displayWorkerStatus(worker store.Worker) string {
+	if worker.Lifecycle != nil {
+		return string(worker.Lifecycle.DeriveStatus())
+	}
+	return string(worker.Status)
+}
+
+func findClaimConflicts(claimList []store.Claim, now time.Time) []ClaimConflict {
+	conflicts := []ClaimConflict(nil)
+	seen := map[string]struct{}{}
+	for _, claim := range claimList {
+		if !claims.IsOpen(claim, now) {
+			continue
+		}
+		for _, conflict := range claims.FindConflicts(claimList, claim, now) {
+			left, right := claim.ID, conflict.ID
+			if right < left {
+				left, right = right, left
+			}
+			key := left + "\x00" + right
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			conflicts = append(conflicts, ClaimConflict{
+				ClaimID:    claim.ID,
+				ConflictID: conflict.ID,
+				Repo:       claim.Repo,
+				Scope:      claim.Scope,
+			})
+		}
+	}
+	return conflicts
 }

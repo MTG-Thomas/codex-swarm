@@ -1,12 +1,16 @@
 package appserver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os/exec"
+	"strings"
+	"sync"
 	"sync/atomic"
+	"time"
 )
 
 // Client is the narrow boundary around Codex app-server JSON-RPC.
@@ -14,15 +18,39 @@ type Client struct {
 	in     io.Writer
 	out    *json.Decoder
 	nextID atomic.Int64
+	once   sync.Once
+	msgs   chan clientMessage
 }
 
+type clientMessage struct {
+	response Response
+	err      error
+}
+
+// CompletionPolicy controls how long a turn wait should rely on completion
+// events versus an agent-emitted signal.
+type CompletionPolicy struct {
+	Signal            string
+	IdleTimeout       time.Duration
+	CompletionTimeout time.Duration
+}
+
+// TurnCompletion is the observed or synthesized outcome of waiting for a turn.
+type TurnCompletion struct {
+	Turn    Turn
+	Warning string
+}
+
+// NewClient creates a JSON-RPC client over the provided app-server streams.
 func NewClient(in io.Writer, out io.Reader) *Client {
 	return &Client{
-		in:  in,
-		out: json.NewDecoder(out),
+		in:   in,
+		out:  json.NewDecoder(out),
+		msgs: make(chan clientMessage, 16),
 	}
 }
 
+// Call sends a JSON-RPC request and waits for the matching response.
 func (c *Client) Call(ctx context.Context, method string, params any) (*Response, error) {
 	id := c.nextID.Add(1)
 	req := Request{
@@ -37,44 +65,27 @@ func (c *Client) Call(ctx context.Context, method string, params any) (*Response
 	}
 	data = append(data, '\n')
 
-	type result struct {
-		response *Response
-		err      error
+	if _, err := c.in.Write(data); err != nil {
+		return nil, err
 	}
-	ch := make(chan result, 1)
-	go func() {
-		if _, err := c.in.Write(data); err != nil {
-			ch <- result{err: err}
-			return
+	for {
+		resp, err := c.readMessage(ctx)
+		if err != nil {
+			return nil, err
 		}
-		for {
-			var resp Response
-			if err := c.out.Decode(&resp); err != nil {
-				ch <- result{err: err}
-				return
+		if resp.ID == id {
+			if resp.Error != nil {
+				return nil, fmt.Errorf("app-server %s failed: %s", method, resp.Error.Message)
 			}
-			if resp.ID == id {
-				if resp.Error != nil {
-					ch <- result{err: fmt.Errorf("app-server %s failed: %s", method, resp.Error.Message)}
-					return
-				}
-				ch <- result{response: &resp}
-				return
-			}
-			if resp.ID != 0 && resp.Method != "" {
-				_ = c.respond(resp.ID, map[string]string{"decision": "accept"})
-			}
+			return &resp, nil
 		}
-	}()
-
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case res := <-ch:
-		return res.response, res.err
+		if resp.ID != 0 && resp.Method != "" {
+			_ = c.respond(resp.ID, map[string]string{"decision": "accept"})
+		}
 	}
 }
 
+// Notify sends a JSON-RPC notification without waiting for a response.
 func (c *Client) Notify(method string, params any) error {
 	req := Request{
 		JSONRPC: "2.0",
@@ -90,6 +101,7 @@ func (c *Client) Notify(method string, params any) error {
 	return err
 }
 
+// Initialize performs the app-server initialize/initialized handshake.
 func (c *Client) Initialize(ctx context.Context) error {
 	resp, err := c.Call(ctx, "initialize", InitializeParams{
 		ClientInfo: ClientInfo{
@@ -107,6 +119,7 @@ func (c *Client) Initialize(ctx context.Context) error {
 	return c.Notify("initialized", map[string]any{})
 }
 
+// ThreadStart starts a Codex thread through the app-server.
 func (c *Client) ThreadStart(ctx context.Context, params ThreadStartParams) (ThreadStartResponse, error) {
 	resp, err := c.Call(ctx, "thread/start", params)
 	if err != nil {
@@ -122,6 +135,7 @@ func (c *Client) ThreadStart(ctx context.Context, params ThreadStartParams) (Thr
 	return result, nil
 }
 
+// ThreadResume resumes an existing Codex thread through the app-server.
 func (c *Client) ThreadResume(ctx context.Context, threadID string) (ThreadStartResponse, error) {
 	resp, err := c.Call(ctx, "thread/resume", map[string]string{"threadId": threadID})
 	if err != nil {
@@ -137,6 +151,7 @@ func (c *Client) ThreadResume(ctx context.Context, threadID string) (ThreadStart
 	return result, nil
 }
 
+// TurnStart starts a new turn in an existing app-server thread.
 func (c *Client) TurnStart(ctx context.Context, params TurnStartParams) (TurnStartResponse, error) {
 	resp, err := c.Call(ctx, "turn/start", params)
 	if err != nil {
@@ -149,44 +164,128 @@ func (c *Client) TurnStart(ctx context.Context, params TurnStartParams) (TurnSta
 	return result, nil
 }
 
+// WaitTurnCompleted waits for the app-server turn/completed event.
 func (c *Client) WaitTurnCompleted(ctx context.Context, threadID, turnID string) (Turn, error) {
-	type result struct {
-		turn Turn
-		err  error
+	result, err := c.WaitTurnCompletedWithPolicy(ctx, threadID, turnID, CompletionPolicy{})
+	return result.Turn, err
+}
+
+// WaitTurnCompletedWithPolicy waits for a turn completion event with optional
+// signal and grace-period handling for app-server finalization lag.
+func (c *Client) WaitTurnCompletedWithPolicy(ctx context.Context, threadID, turnID string, policy CompletionPolicy) (TurnCompletion, error) {
+	var idleTimer *time.Timer
+	var idle <-chan time.Time
+	if policy.Signal != "" && policy.IdleTimeout > 0 {
+		idleTimer = time.NewTimer(policy.IdleTimeout)
+		idle = idleTimer.C
+		defer idleTimer.Stop()
 	}
-	ch := make(chan result, 1)
-	go func() {
-		for {
-			var msg Response
-			if err := c.out.Decode(&msg); err != nil {
-				ch <- result{err: err}
-				return
+	var completionTimer *time.Timer
+	var completion <-chan time.Time
+	if policy.CompletionTimeout < 0 {
+		policy.CompletionTimeout = 0
+	}
+	signaled := false
+	warning := func(reason string) TurnCompletion {
+		message := fmt.Sprintf("completion signal observed for thread %s turn %s", threadID, turnID)
+		if reason != "" {
+			message += ": " + reason
+		}
+		return TurnCompletion{
+			Turn:    Turn{ID: turnID, Status: "completed"},
+			Warning: message,
+		}
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return TurnCompletion{}, ctx.Err()
+		case <-idle:
+			return TurnCompletion{}, fmt.Errorf("completion signal %q not observed for thread %s turn %s before idle timeout %s", policy.Signal, threadID, turnID, policy.IdleTimeout)
+		case <-completion:
+			return warning(fmt.Sprintf("turn finalization did not arrive within %s", policy.CompletionTimeout)), nil
+		case msg := <-c.messageChannel():
+			if msg.err != nil {
+				if signaled {
+					return warning(fmt.Sprintf("turn finalization ended before completion metadata: %v", msg.err)), nil
+				}
+				return TurnCompletion{}, msg.err
 			}
-			if msg.ID != 0 && msg.Method != "" {
-				_ = c.respond(msg.ID, map[string]string{"decision": "accept"})
+			if msg.response.ID != 0 && msg.response.Method != "" {
+				_ = c.respond(msg.response.ID, map[string]string{"decision": "accept"})
 				continue
 			}
-			if msg.Method != "turn/completed" {
-				continue
+			if msg.response.Method == "turn/completed" {
+				var params TurnCompletedParams
+				if err := json.Unmarshal(msg.response.Params, &params); err != nil {
+					if signaled {
+						return warning(fmt.Sprintf("turn finalization ended before completion metadata: %v", err)), nil
+					}
+					return TurnCompletion{}, fmt.Errorf("decode turn/completed params: %w", err)
+				}
+				if params.ThreadID == threadID && params.Turn.ID == turnID {
+					return TurnCompletion{Turn: params.Turn}, nil
+				}
 			}
-			var params TurnCompletedParams
-			if err := json.Unmarshal(msg.Params, &params); err != nil {
-				ch <- result{err: fmt.Errorf("decode turn/completed params: %w", err)}
-				return
-			}
-			if params.ThreadID == threadID && params.Turn.ID == turnID {
-				ch <- result{turn: params.Turn}
-				return
+			if msg.response.Method == "item/agentMessage/delta" && paramsContainSignal(msg.response.Params, threadID, policy.Signal) && !signaled {
+				signaled = true
+				if idleTimer != nil {
+					idleTimer.Stop()
+				}
+				idle = nil
+				if policy.CompletionTimeout == 0 {
+					return warning("turn finalization was not awaited"), nil
+				}
+				completionTimer = time.NewTimer(policy.CompletionTimeout)
+				defer completionTimer.Stop()
+				completion = completionTimer.C
 			}
 		}
-	}()
+	}
+}
 
+func (c *Client) readMessage(ctx context.Context) (Response, error) {
 	select {
 	case <-ctx.Done():
-		return Turn{}, ctx.Err()
-	case res := <-ch:
-		return res.turn, res.err
+		return Response{}, ctx.Err()
+	case msg := <-c.messageChannel():
+		return msg.response, msg.err
 	}
+}
+
+func (c *Client) messageChannel() <-chan clientMessage {
+	c.once.Do(func() {
+		go func() {
+			for {
+				var resp Response
+				if err := c.out.Decode(&resp); err != nil {
+					c.msgs <- clientMessage{err: err}
+					return
+				}
+				c.msgs <- clientMessage{response: resp}
+			}
+		}()
+	})
+	return c.msgs
+}
+
+func paramsContainSignal(params json.RawMessage, threadID, signal string) bool {
+	if signal == "" || !bytes.Contains(params, []byte(signal)) {
+		return false
+	}
+	var envelope struct {
+		ThreadID string `json:"threadId"`
+		Delta    string `json:"delta"`
+		Text     string `json:"text"`
+	}
+	if err := json.Unmarshal(params, &envelope); err != nil {
+		return false
+	}
+	if envelope.ThreadID != threadID {
+		return false
+	}
+	return strings.Contains(envelope.Delta, signal) || strings.Contains(envelope.Text, signal)
 }
 
 func (c *Client) respond(id int64, result any) error {
@@ -204,14 +303,18 @@ func (c *Client) respond(id int64, result any) error {
 	return err
 }
 
+// Runner starts short-lived Codex app-server processes for CLI operations.
 type Runner struct {
-	Binary string
+	Binary           string
+	CompletionPolicy CompletionPolicy
 }
 
+// RunTurn creates a thread and submits a prompt as the first turn.
 func (r Runner) RunTurn(ctx context.Context, cwd, prompt string) (RunResult, error) {
 	return r.runTurn(ctx, cwd, "", prompt)
 }
 
+// SendTurn submits a prompt to an existing thread.
 func (r Runner) SendTurn(ctx context.Context, cwd, threadID, prompt string) (RunResult, error) {
 	if threadID == "" {
 		return RunResult{}, fmt.Errorf("thread id is required")
@@ -219,6 +322,7 @@ func (r Runner) SendTurn(ctx context.Context, cwd, threadID, prompt string) (Run
 	return r.runTurn(ctx, cwd, threadID, prompt)
 }
 
+// Resume verifies that an existing app-server thread can be resumed.
 func (r Runner) Resume(ctx context.Context, cwd, threadID string) (RunResult, error) {
 	if threadID == "" {
 		return RunResult{}, fmt.Errorf("thread id is required")
@@ -255,6 +359,7 @@ func (r Runner) Resume(ctx context.Context, cwd, threadID string) (RunResult, er
 	return RunResult{ThreadID: thread.Thread.ID, Status: "resumed"}, nil
 }
 
+// Check verifies that the Codex app-server can be started and initialized.
 func (r Runner) Check(ctx context.Context, cwd string) error {
 	binary := r.Binary
 	if binary == "" {
@@ -334,14 +439,20 @@ func (r Runner) runTurn(ctx context.Context, cwd, threadID, prompt string) (RunR
 	if err != nil {
 		return RunResult{}, err
 	}
-	completed, err := client.WaitTurnCompleted(ctx, threadID, turn.Turn.ID)
-	if err == nil {
-		turn.Turn = completed
+	completed, err := client.WaitTurnCompletedWithPolicy(ctx, threadID, turn.Turn.ID, r.CompletionPolicy)
+	if err != nil {
+		return RunResult{ThreadID: threadID, TurnID: turn.Turn.ID, Status: turn.Turn.Status}, err
+	}
+	turn.Turn = completed.Turn
+	warnings := []string(nil)
+	if completed.Warning != "" {
+		warnings = append(warnings, completed.Warning)
 	}
 	return RunResult{
 		ThreadID: threadID,
 		TurnID:   turn.Turn.ID,
 		Status:   turn.Turn.Status,
+		Warnings: warnings,
 	}, nil
 }
 

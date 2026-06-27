@@ -23,6 +23,7 @@ Current scaffold:
 ```powershell
 go test ./...
 go run ./cmd/cs status
+go run ./cmd/cs status --daemon http://127.0.0.1:8787
 go run ./cmd/csd
 ```
 
@@ -62,7 +63,11 @@ State is written to a machine-global user config path by default, for example `%
 
 `spawn --engine appserver` prints the Codex thread ID and a recovery command. Codex app visibility can lag briefly, especially on mobile; use `inspect-thread` to verify that the stored thread can still be resumed through app-server.
 
-Pass `--worktree` to create a Git branch and worktree for the worker. The worktree path and branch are recorded on the worker and shown in command output.
+App-server runs use the normal `turn/completed` JSON-RPC event as their completion record. The internal completion policy also supports a separate text completion signal for shell-agent style runners: after that signal appears, `cs` waits briefly for trailing turn metadata and records a warning instead of failing the worker if finalization never arrives. No extra app-server completion flags are exposed while the default signal is empty.
+
+Pass `--worktree` to create a Git branch and worktree for the worker. Managed branch names use the worker timestamp plus a random suffix, and the worktree path and branch are recorded on the worker and shown in command output.
+
+Managed worktree creation uses repo-local branch locks under `.codex-swarm/locks/`. A live lock fails fast instead of handing two workers the same managed checkout; a stale lock whose PID is gone is pruned. If the intended managed worktree already exists on the requested branch, it is reused. Dirty managed worktrees are reused without refresh and print a warning so local changes are preserved. If the branch is checked out in the main repository or an external worktree, `spawn --worktree` fails with that location instead of reusing it.
 
 Pass `--role` and `--parent` to record simple local swarm relationships. Use `message` and `handoff` to write directed communication events into both workers' local timelines without routing routine interagent traffic through MCP.
 
@@ -76,13 +81,27 @@ Use `issue report --issue owner/repo#123 --worker <worker-id>` only when you int
 
 Use `agent register --name <name> --role <role>` to record the current local agent identity. Use `legacy import-coordinator` once per machine, or with `--include-expired` for audit work, to import active warning-only claims from the old PowerShell coordinator.
 
-Set `CODEX_SWARM_DAEMON_URL=http://127.0.0.1:8787` to make `cs status` prefer a running daemon. `csd serve` starts the daemon, `csd status` checks it, and `csd install` / `csd uninstall` are explicit service-manager stubs until platform-specific installers are added.
+Set `CODEX_SWARM_DAEMON_URL=http://127.0.0.1:8787` or pass `cs status --daemon http://127.0.0.1:8787` to make `cs status` prefer a running daemon. Daemon-backed status prints the daemon version, state path, worker count, claim count, conflict count, and read-only worker lines with lifecycle status, issue, worktree, and thread ID.
+
+`csd serve` starts the daemon, `csd status` checks it, and `csd install` / `csd uninstall` are explicit service-manager stubs until platform-specific installers are added. The daemon exposes only read-only HTTP status surfaces in this task: `GET /status`, `GET /workers`, and `GET /claims`. Use the `cs` CLI for worker, claim, issue, and schedule mutations.
 
 Use `--engine mock` when the demo needs to avoid live Codex calls:
 
 ```powershell
 go run ./cmd/cs spawn --engine mock --repo . --prompt "inspect this repo"
 ```
+
+Run the local friend-demo smoke script when you want a disposable end-to-end walkthrough without touching machine-global swarm state or GitHub:
+
+```powershell
+.\scripts\demo-swarm.ps1
+```
+
+```bash
+./scripts/demo-swarm.sh
+```
+
+The demo registers a coordinator identity, creates a coordinator plus two mock workers, links one claim to `MTG-Thomas/codex-swarm#9`, sends a worker-to-worker message, creates one managed mock worktree, prints `cs status`, and then removes only its temporary state file and managed demo worktree/branch.
 
 Local maturity checks:
 

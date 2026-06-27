@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"flag"
 	"fmt"
@@ -20,9 +23,16 @@ import (
 )
 
 type cli struct {
-	out io.Writer
-	err io.Writer
-	now func() time.Time
+	out             io.Writer
+	err             io.Writer
+	now             func() time.Time
+	appserverRunner appserverRunner
+}
+
+type appserverRunner interface {
+	RunTurn(ctx context.Context, cwd, prompt string) (appserver.RunResult, error)
+	SendTurn(ctx context.Context, cwd, threadID, prompt string) (appserver.RunResult, error)
+	Resume(ctx context.Context, cwd, threadID string) (appserver.RunResult, error)
 }
 
 func main() {
@@ -176,13 +186,18 @@ func (c cli) status(args []string) error {
 	if *daemonURL != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		status, err := (daemon.Client{BaseURL: *daemonURL}).Status(ctx)
+		client := daemon.Client{BaseURL: *daemonURL}
+		status, err := client.Status(ctx)
 		if err != nil {
 			return fmt.Errorf("daemon status: %w", err)
 		}
 		fmt.Fprintln(c.out, status.String())
-		for _, worker := range status.Workers {
-			fmt.Fprintf(c.out, "%s\t%s\t%s\t%s\t%s\n", worker.ID, worker.Status, worker.Engine, worker.ThreadID, short(worker.Prompt, 60))
+		workers, err := client.Workers(ctx)
+		if err != nil {
+			return fmt.Errorf("daemon workers: %w", err)
+		}
+		for _, worker := range workers.Workers {
+			fmt.Fprintf(c.out, "%s\t%s\t%s\t%s\t%s\n", worker.ID, worker.Status, emptyDash(worker.Issue), emptyDash(worker.Worktree), emptyDash(worker.ThreadID))
 		}
 		return nil
 	}
@@ -193,7 +208,7 @@ func (c cli) status(args []string) error {
 	}
 	fmt.Fprintf(c.out, "workers=%d state=%s\n", len(workers), *statePath)
 	for _, worker := range workers {
-		fmt.Fprintf(c.out, "%s\t%s\t%s\t%s\t%s\n", worker.ID, worker.Status, worker.Engine, worker.ThreadID, short(worker.Prompt, 60))
+		fmt.Fprintf(c.out, "%s\t%s\t%s\t%s\t%s\n", worker.ID, displayWorkerStatus(worker), worker.Engine, worker.ThreadID, short(worker.Prompt, 60))
 	}
 	return nil
 }
@@ -221,7 +236,11 @@ func (c cli) spawn(args []string) error {
 	}
 
 	now := c.now().UTC()
-	id := fmt.Sprintf("w-%s", now.Format("20060102-150405"))
+	id, err := newWorkerID(now)
+	if err != nil {
+		return fmt.Errorf("generate worker id: %w", err)
+	}
+	managedName := id
 	if *engine != "mock" && *engine != "appserver" {
 		return fmt.Errorf("unknown engine %q", *engine)
 	}
@@ -239,30 +258,14 @@ func (c cli) spawn(args []string) error {
 	lastMessage := mockSummary(*prompt)
 	status := store.WorkerIdle
 	events := []store.Event{{At: now, Type: "spawned", Message: "worker created"}}
-	if *engine == "appserver" {
-		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
-		defer cancel()
-		result, err := (appserver.Runner{}).RunTurn(ctx, repoRoot, *prompt)
-		if err != nil {
-			return fmt.Errorf("run app-server worker: %w", err)
-		}
-		threadID = result.ThreadID
-		turnID = result.TurnID
-		status = workerStatusFromTurn(result.Status)
-		lastMessage = fmt.Sprintf("app-server turn submitted: thread=%s turn=%s status=%s", result.ThreadID, result.TurnID, result.Status)
-		events = append(events, store.Event{At: now, Type: "appserver.turn.started", Message: lastMessage})
-	} else {
-		events = append(events, store.Event{At: now, Type: "mock.turn.completed", Message: lastMessage})
-	}
-
 	worker := store.Worker{
 		ID:          id,
 		ParentID:    *parentID,
 		Role:        *role,
 		Issue:       issue,
 		ProjectRoot: repoRoot,
-		Worktree:    filepath.Join(repoRoot, ".codex-swarm", "worktrees", id),
-		Branch:      "cs/" + id,
+		Worktree:    filepath.Join(repoRoot, ".codex-swarm", "worktrees", managedName),
+		Branch:      "cs/" + managedName,
 		ThreadID:    threadID,
 		TurnID:      turnID,
 		Engine:      *engine,
@@ -277,20 +280,57 @@ func (c cli) spawn(args []string) error {
 	if *createWorktree {
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 		defer cancel()
-		if err := (worktree.Git{}).Create(ctx, worktree.Spec{
+		result, err := (worktree.Git{}).Create(ctx, worktree.Spec{
 			RepoRoot: repoRoot,
 			Branch:   worker.Branch,
 			Path:     worker.Worktree,
-		}); err != nil {
+		})
+		if err != nil {
 			return fmt.Errorf("create worktree: %w", err)
+		}
+		for _, warning := range result.Warnings {
+			worker.Events = append(worker.Events, store.Event{At: now, Type: "worktree.warning", Message: warning})
 		}
 		worker.Events = append(worker.Events, store.Event{At: now, Type: "worktree.created", Message: worker.Worktree})
 	}
 
+	if *engine == "appserver" {
+		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+		defer cancel()
+		result, err := c.runner().RunTurn(ctx, workerExecutionRoot(worker), *prompt)
+		if err != nil {
+			worker.ApplyStatusAt(store.WorkerFailed, now)
+			worker.LastMessage = "app-server spawn failed: " + err.Error()
+			worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.spawn.failed", Message: worker.LastMessage})
+			if saveErr := store.NewJSONStore(*statePath).SaveWorker(worker); saveErr != nil {
+				return errors.Join(fmt.Errorf("run app-server worker: %w", err), fmt.Errorf("save failed app-server worker: %w", saveErr))
+			}
+			return fmt.Errorf("run app-server worker: %w", err)
+		}
+		threadID = result.ThreadID
+		turnID = result.TurnID
+		status = workerStatusFromTurn(result.Status)
+		lastMessage = fmt.Sprintf("app-server turn submitted: thread=%s turn=%s status=%s", result.ThreadID, result.TurnID, result.Status)
+		worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.turn.started", Message: lastMessage})
+		worker.Events = appendAppserverWarnings(worker.Events, now, result.Warnings)
+	} else {
+		worker.Events = append(worker.Events, store.Event{At: now, Type: "mock.turn.completed", Message: lastMessage})
+	}
+	worker.ThreadID = threadID
+	worker.TurnID = turnID
+	worker.Status = status
+	worker.LastMessage = lastMessage
+	worker.ApplyStatusAt(status, now)
+
 	if err := store.NewJSONStore(*statePath).SaveWorker(worker); err != nil {
 		return err
 	}
-	fmt.Fprintf(c.out, "spawned %s engine=%s thread=%s status=%s\n", worker.ID, worker.Engine, worker.ThreadID, worker.Status)
+	saved, err := store.NewJSONStore(*statePath).GetWorker(worker.ID)
+	if err != nil {
+		return err
+	}
+	worker = saved
+	fmt.Fprintf(c.out, "spawned %s engine=%s thread=%s status=%s\n", worker.ID, worker.Engine, worker.ThreadID, displayWorkerStatus(worker))
 	if worker.Role != "" || worker.ParentID != "" {
 		fmt.Fprintf(c.out, "swarm: role=%s parent=%s\n", emptyDash(worker.Role), emptyDash(worker.ParentID))
 	}
@@ -302,11 +342,48 @@ func (c cli) spawn(args []string) error {
 		fmt.Fprintf(c.out, "codex thread: %s\n", worker.ThreadID)
 		fmt.Fprintf(c.out, "inspect: cs inspect-thread --state %s %s\n", *statePath, worker.ID)
 		fmt.Fprintln(c.out, "note: Codex app visibility can lag briefly, especially on mobile.")
+		printWarnings(c.out, appserverWarnings(worker.Events))
 	}
 	if *createWorktree {
 		fmt.Fprintf(c.out, "worktree: %s branch=%s\n", worker.Worktree, worker.Branch)
+		for _, event := range worker.Events {
+			if event.Type == "worktree.warning" {
+				fmt.Fprintf(c.out, "warning: %s\n", event.Message)
+			}
+		}
 	}
 	return nil
+}
+
+func randomSuffix(bytesLen int) (string, error) {
+	if bytesLen <= 0 {
+		return "", nil
+	}
+	buf := make([]byte, bytesLen)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+func newWorkerID(now time.Time) (string, error) {
+	suffix, err := randomSuffix(4)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("w-%s-%s", now.UTC().Format("20060102-150405"), suffix), nil
+}
+
+func (c cli) requestID(value string, now time.Time) (string, error) {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		return value, nil
+	}
+	suffix, err := randomSuffix(6)
+	if err != nil {
+		return "", fmt.Errorf("generate request id: %w", err)
+	}
+	return fmt.Sprintf("r-%s-%s", now.UTC().Format("20060102-150405"), suffix), nil
 }
 
 func (c cli) schedule(args []string) error {
@@ -379,6 +456,7 @@ func (c cli) scheduleList(args []string) error {
 func (c cli) message(args []string) error {
 	fs := c.flagSet("message")
 	statePath := fs.String("state", defaultStatePath(), "state file path")
+	requestIDFlag := fs.String("request-id", "", "idempotency key for this mutation")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -392,39 +470,41 @@ func (c cli) message(args []string) error {
 	if strings.TrimSpace(text) == "" {
 		return errors.New("message text is required")
 	}
-	s := store.NewJSONStore(*statePath)
-	from, err := s.GetWorker(fromID)
-	if err != nil {
-		if errors.Is(err, store.ErrWorkerNotFound) {
-			return fmt.Errorf("from worker %q not found", fromID)
-		}
-		return err
-	}
-	to, err := s.GetWorker(toID)
-	if err != nil {
-		if errors.Is(err, store.ErrWorkerNotFound) {
-			return fmt.Errorf("to worker %q not found", toID)
-		}
-		return err
-	}
 	now := c.now().UTC()
-	from.Events = append(from.Events, store.Event{At: now, Type: "message.sent", Message: fmt.Sprintf("to=%s %s", to.ID, text)})
-	from.UpdatedAt = now
-	to.Events = append(to.Events, store.Event{At: now, Type: "message.received", Message: fmt.Sprintf("from=%s %s", from.ID, text)})
-	to.UpdatedAt = now
-	if err := s.SaveWorker(from); err != nil {
+	requestID, err := c.requestID(*requestIDFlag, now)
+	if err != nil {
 		return err
 	}
-	if err := s.SaveWorker(to); err != nil {
+	fingerprint := mutationFingerprint("message", fromID, toID, text)
+	s := store.NewJSONStore(*statePath)
+	result, _, err := s.UpdateWorkersWithRequest(requestID, "message", fingerprint, []string{fromID, toID}, func(workers map[string]*store.Worker) (store.WorkerMutationResult, error) {
+		from := workers[fromID]
+		to := workers[toID]
+		event := store.Event{At: now, Type: "message", Message: text, From: from.ID, To: to.ID, Issue: eventIssue(from, to), WorkerID: from.ID, RequestID: requestID}
+		from.Events = append(from.Events, store.Event{At: now, Type: "message.sent", Message: fmt.Sprintf("to=%s %s", to.ID, text), From: from.ID, To: to.ID, Issue: event.Issue, WorkerID: from.ID, RequestID: requestID})
+		from.UpdatedAt = now
+		to.Events = append(to.Events, store.Event{At: now, Type: "message.received", Message: fmt.Sprintf("from=%s %s", from.ID, text), From: from.ID, To: to.ID, Issue: event.Issue, WorkerID: to.ID, RequestID: requestID})
+		to.UpdatedAt = now
+		return store.WorkerMutationResult{
+			Fingerprint: fingerprint,
+			Output:      fmt.Sprintf("message %s -> %s request=%s\n", from.ID, to.ID, requestID),
+			Events:      []store.Event{event},
+		}, nil
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrWorkerNotFound) {
+			return fmt.Errorf("message worker not found: %w", err)
+		}
 		return err
 	}
-	fmt.Fprintf(c.out, "message %s -> %s\n", from.ID, to.ID)
+	fmt.Fprint(c.out, result.Output)
 	return nil
 }
 
 func (c cli) handoff(args []string) error {
 	fs := c.flagSet("handoff")
 	statePath := fs.String("state", defaultStatePath(), "state file path")
+	requestIDFlag := fs.String("request-id", "", "idempotency key for this mutation")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -438,35 +518,36 @@ func (c cli) handoff(args []string) error {
 	if strings.TrimSpace(summary) == "" {
 		return errors.New("handoff summary is required")
 	}
-	s := store.NewJSONStore(*statePath)
-	from, err := s.GetWorker(fromID)
-	if err != nil {
-		if errors.Is(err, store.ErrWorkerNotFound) {
-			return fmt.Errorf("from worker %q not found", fromID)
-		}
-		return err
-	}
-	to, err := s.GetWorker(toID)
-	if err != nil {
-		if errors.Is(err, store.ErrWorkerNotFound) {
-			return fmt.Errorf("to worker %q not found", toID)
-		}
-		return err
-	}
 	now := c.now().UTC()
-	from.Status = store.WorkerIdle
-	from.Report = "handoff to " + to.ID + ": " + summary
-	from.Events = append(from.Events, store.Event{At: now, Type: "handoff.sent", Message: from.Report})
-	from.UpdatedAt = now
-	to.Events = append(to.Events, store.Event{At: now, Type: "handoff.received", Message: fmt.Sprintf("from=%s %s", from.ID, summary)})
-	to.UpdatedAt = now
-	if err := s.SaveWorker(from); err != nil {
+	requestID, err := c.requestID(*requestIDFlag, now)
+	if err != nil {
 		return err
 	}
-	if err := s.SaveWorker(to); err != nil {
+	fingerprint := mutationFingerprint("handoff", fromID, toID, summary)
+	s := store.NewJSONStore(*statePath)
+	result, _, err := s.UpdateWorkersWithRequest(requestID, "handoff", fingerprint, []string{fromID, toID}, func(workers map[string]*store.Worker) (store.WorkerMutationResult, error) {
+		from := workers[fromID]
+		to := workers[toID]
+		event := store.Event{At: now, Type: "handoff", Message: summary, From: from.ID, To: to.ID, Issue: eventIssue(from, to), WorkerID: from.ID, RequestID: requestID}
+		from.ApplyStatus(store.WorkerIdle)
+		from.Report = "handoff to " + to.ID + ": " + summary
+		from.Events = append(from.Events, store.Event{At: now, Type: "handoff.sent", Message: from.Report, From: from.ID, To: to.ID, Issue: event.Issue, WorkerID: from.ID, RequestID: requestID})
+		from.UpdatedAt = now
+		to.Events = append(to.Events, store.Event{At: now, Type: "handoff.received", Message: fmt.Sprintf("from=%s %s", from.ID, summary), From: from.ID, To: to.ID, Issue: event.Issue, WorkerID: to.ID, RequestID: requestID})
+		to.UpdatedAt = now
+		return store.WorkerMutationResult{
+			Fingerprint: fingerprint,
+			Output:      fmt.Sprintf("handoff %s -> %s request=%s\n", from.ID, to.ID, requestID),
+			Events:      []store.Event{event},
+		}, nil
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrWorkerNotFound) {
+			return fmt.Errorf("handoff worker not found: %w", err)
+		}
 		return err
 	}
-	fmt.Fprintf(c.out, "handoff %s -> %s\n", from.ID, to.ID)
+	fmt.Fprint(c.out, result.Output)
 	return nil
 }
 
@@ -483,29 +564,42 @@ func (c cli) send(args []string) error {
 	}
 	id := rest[0]
 	message := strings.Join(rest[1:], " ")
+	var appserverResult appserver.RunResult
+	var appserverErr error
+	initial, err := store.NewJSONStore(*statePath).GetWorker(id)
+	if err != nil {
+		if errors.Is(err, store.ErrWorkerNotFound) {
+			return fmt.Errorf("worker %q not found", id)
+		}
+		return err
+	}
+	if initial.Engine == "appserver" {
+		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+		defer cancel()
+		appserverResult, appserverErr = c.runner().SendTurn(ctx, workerExecutionRoot(initial), initial.ThreadID, message)
+	}
 	return c.updateWorker(*statePath, id, func(worker *store.Worker, now time.Time) {
 		worker.Events = append(worker.Events, store.Event{At: now, Type: "message.sent", Message: message})
 		if worker.Engine == "appserver" {
-			ctx, cancel := context.WithTimeout(context.Background(), *timeout)
-			defer cancel()
-			result, err := (appserver.Runner{}).SendTurn(ctx, worker.ProjectRoot, worker.ThreadID, message)
-			if err != nil {
-				worker.Status = store.WorkerFailed
-				worker.LastMessage = "app-server send failed: " + err.Error()
+			if appserverErr != nil {
+				worker.ApplyStatusAt(store.WorkerFailed, now)
+				worker.LastMessage = "app-server send failed: " + appserverErr.Error()
 				worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.turn.failed", Message: worker.LastMessage})
 				return
 			}
-			worker.TurnID = result.TurnID
-			worker.Status = workerStatusFromTurn(result.Status)
-			worker.LastMessage = fmt.Sprintf("app-server turn submitted: thread=%s turn=%s status=%s", result.ThreadID, result.TurnID, result.Status)
+			worker.TurnID = appserverResult.TurnID
+			worker.ApplyStatusAt(workerStatusFromTurn(appserverResult.Status), now)
+			worker.LastMessage = fmt.Sprintf("app-server turn submitted: thread=%s turn=%s status=%s", appserverResult.ThreadID, appserverResult.TurnID, appserverResult.Status)
 			worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.turn.started", Message: worker.LastMessage})
+			worker.Events = appendAppserverWarnings(worker.Events, now, appserverResult.Warnings)
 			return
 		}
-		worker.Status = store.WorkerIdle
+		worker.ApplyStatus(store.WorkerIdle)
 		worker.LastMessage = mockSummary(message)
 		worker.Events = append(worker.Events, store.Event{At: now, Type: "mock.turn.completed", Message: worker.LastMessage})
 	}, func(worker store.Worker) {
-		fmt.Fprintf(c.out, "sent %s status=%s\n%s\n", worker.ID, worker.Status, worker.LastMessage)
+		fmt.Fprintf(c.out, "sent %s status=%s\n%s\n", worker.ID, displayWorkerStatus(worker), worker.LastMessage)
+		printWarnings(c.out, appserverResult.Warnings)
 	})
 }
 
@@ -528,16 +622,16 @@ func (c cli) report(args []string) error {
 	return c.updateWorker(*statePath, id, func(worker *store.Worker, now time.Time) {
 		switch rest[1] {
 		case "done", "completed":
-			worker.Status = store.WorkerDone
+			worker.ApplyStatusAt(store.WorkerDone, now)
 		case "failed":
-			worker.Status = store.WorkerFailed
+			worker.ApplyStatusAt(store.WorkerFailed, now)
 		default:
-			worker.Status = store.WorkerIdle
+			worker.ApplyStatus(store.WorkerIdle)
 		}
 		worker.Report = report
 		worker.Events = append(worker.Events, store.Event{At: now, Type: "reported", Message: report})
 	}, func(worker store.Worker) {
-		fmt.Fprintf(c.out, "reported %s status=%s report=%q\n", worker.ID, worker.Status, worker.Report)
+		fmt.Fprintf(c.out, "reported %s status=%s report=%q\n", worker.ID, displayWorkerStatus(worker), worker.Report)
 	})
 }
 
@@ -552,27 +646,38 @@ func (c cli) resume(args []string) error {
 	if len(rest) != 1 {
 		return errors.New("resume requires <worker>")
 	}
+	var appserverResult appserver.RunResult
+	var appserverErr error
+	initial, err := store.NewJSONStore(*statePath).GetWorker(rest[0])
+	if err != nil {
+		if errors.Is(err, store.ErrWorkerNotFound) {
+			return fmt.Errorf("worker %q not found", rest[0])
+		}
+		return err
+	}
+	if initial.Engine == "appserver" {
+		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
+		defer cancel()
+		appserverResult, appserverErr = c.runner().Resume(ctx, workerExecutionRoot(initial), initial.ThreadID)
+	}
 	return c.updateWorker(*statePath, rest[0], func(worker *store.Worker, now time.Time) {
 		if worker.Engine == "appserver" {
-			ctx, cancel := context.WithTimeout(context.Background(), *timeout)
-			defer cancel()
-			result, err := (appserver.Runner{}).Resume(ctx, worker.ProjectRoot, worker.ThreadID)
-			if err != nil {
-				worker.Status = store.WorkerFailed
-				worker.LastMessage = "app-server resume failed: " + err.Error()
+			if appserverErr != nil {
+				worker.ApplyStatusAt(store.WorkerFailed, now)
+				worker.LastMessage = "app-server resume failed: " + appserverErr.Error()
 				worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.resume.failed", Message: worker.LastMessage})
 				return
 			}
-			worker.ThreadID = result.ThreadID
-			worker.Status = store.WorkerIdle
-			worker.LastMessage = "app-server thread resumed: " + result.ThreadID
+			worker.ThreadID = appserverResult.ThreadID
+			worker.ApplyStatus(store.WorkerIdle)
+			worker.LastMessage = "app-server thread resumed: " + appserverResult.ThreadID
 			worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.thread.resumed", Message: worker.LastMessage})
 			return
 		}
-		worker.Status = store.WorkerIdle
+		worker.ApplyStatus(store.WorkerIdle)
 		worker.Events = append(worker.Events, store.Event{At: now, Type: "resume.requested", Message: "resume requested"})
 	}, func(worker store.Worker) {
-		fmt.Fprintf(c.out, "resume %s thread=%s status=%s\n", worker.ID, worker.ThreadID, worker.Status)
+		fmt.Fprintf(c.out, "resume %s thread=%s status=%s\n", worker.ID, worker.ThreadID, displayWorkerStatus(worker))
 	})
 }
 
@@ -600,7 +705,7 @@ func (c cli) inspectThread(args []string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	result, err := (appserver.Runner{}).Resume(ctx, worker.ProjectRoot, worker.ThreadID)
+	result, err := c.runner().Resume(ctx, workerExecutionRoot(worker), worker.ThreadID)
 	if err != nil {
 		return fmt.Errorf("inspect app-server thread %s: %w", worker.ThreadID, err)
 	}
@@ -626,7 +731,7 @@ func (c cli) show(args []string) error {
 		}
 		return err
 	}
-	fmt.Fprintf(c.out, "id=%s\nstatus=%s\nengine=%s\nthread=%s\n", worker.ID, worker.Status, worker.Engine, worker.ThreadID)
+	fmt.Fprintf(c.out, "id=%s\nstatus=%s\nengine=%s\nthread=%s\n", worker.ID, displayWorkerStatus(worker), worker.Engine, worker.ThreadID)
 	if worker.Role != "" {
 		fmt.Fprintf(c.out, "role=%s\n", worker.Role)
 	}
@@ -650,22 +755,27 @@ func (c cli) show(args []string) error {
 }
 
 func (c cli) updateWorker(statePath, id string, mutate func(*store.Worker, time.Time), print func(store.Worker)) error {
-	s := store.NewJSONStore(statePath)
-	worker, err := s.GetWorker(id)
+	now := c.now().UTC()
+	worker, err := store.NewJSONStore(statePath).UpdateWorker(id, func(worker *store.Worker) error {
+		mutate(worker, now)
+		worker.UpdatedAt = now
+		return nil
+	})
 	if err != nil {
 		if errors.Is(err, store.ErrWorkerNotFound) {
 			return fmt.Errorf("worker %q not found", id)
 		}
 		return err
 	}
-	now := c.now().UTC()
-	mutate(&worker, now)
-	worker.UpdatedAt = now
-	if err := s.SaveWorker(worker); err != nil {
-		return err
-	}
 	print(worker)
 	return nil
+}
+
+func (c cli) runner() appserverRunner {
+	if c.appserverRunner != nil {
+		return c.appserverRunner
+	}
+	return appserver.Runner{}
 }
 
 func (c cli) flagSet(name string) *flag.FlagSet {
@@ -684,8 +794,8 @@ Usage:
   cs spawn --issue owner/repo#123 --repo . --prompt "work this issue"
   cs doctor --appserver
   cs send <worker> "continue with tests"
-  cs message <from-worker> <to-worker> "note"
-  cs handoff <from-worker> <to-worker> "summary"
+  cs message --request-id <id> <from-worker> <to-worker> "note"
+  cs handoff --request-id <id> <from-worker> <to-worker> "summary"
   cs claim create --repo . --scope internal/store --worker <worker>
   cs claim conflicts --repo . --scope internal/store
   cs claim push --issue owner/repo#123
@@ -709,6 +819,13 @@ func emptyDash(value string) string {
 		return "-"
 	}
 	return value
+}
+
+func displayWorkerStatus(worker store.Worker) string {
+	if worker.Lifecycle != nil {
+		return string(worker.Lifecycle.DeriveStatus())
+	}
+	return string(worker.Status)
 }
 
 func defaultStatePath() string {
@@ -736,6 +853,53 @@ func workerStatusFromTurn(status string) store.WorkerStatus {
 		return store.WorkerFailed
 	default:
 		return store.WorkerIdle
+	}
+}
+
+func workerExecutionRoot(worker store.Worker) string {
+	if strings.TrimSpace(worker.Worktree) != "" {
+		if info, err := os.Stat(worker.Worktree); err == nil && info.IsDir() {
+			return worker.Worktree
+		}
+	}
+	return worker.ProjectRoot
+}
+
+func appendAppserverWarnings(events []store.Event, at time.Time, warnings []string) []store.Event {
+	for _, warning := range warnings {
+		events = append(events, store.Event{At: at, Type: "appserver.warning", Message: warning})
+	}
+	return events
+}
+
+func eventIssue(from, to *store.Worker) string {
+	if from != nil && from.Issue != "" {
+		return from.Issue
+	}
+	if to != nil {
+		return to.Issue
+	}
+	return ""
+}
+
+func mutationFingerprint(command, from, to, payload string) string {
+	sum := sha256.Sum256([]byte(command + "\x00" + from + "\x00" + to + "\x00" + payload))
+	return hex.EncodeToString(sum[:])
+}
+
+func appserverWarnings(events []store.Event) []string {
+	warnings := []string(nil)
+	for _, event := range events {
+		if event.Type == "appserver.warning" {
+			warnings = append(warnings, event.Message)
+		}
+	}
+	return warnings
+}
+
+func printWarnings(out io.Writer, warnings []string) {
+	for _, warning := range warnings {
+		fmt.Fprintf(out, "warning: %s\n", warning)
 	}
 }
 

@@ -38,3 +38,21 @@ Reviewed sources:
 - Add `go test -race ./...` CI once daemon worker execution becomes concurrent.
 - Add GoReleaser when manual GitHub release assets are painful twice.
 - Add service install helpers when `csd` can run and resume useful work across restarts.
+- Add SQLite when locked JSON stops being enough for concurrent daemon writes, migration safety, or inspectable history queries.
+- Add a GitHub client library when marker sync/report behavior needs typed API coverage that fake-`gh` tests cannot keep simple.
+- Add a service manager package when Windows service, launchd, and systemd helpers need more than small isolated platform files.
+- Add Cobra or another CLI framework only when stdlib `flag` makes help output, routing, or shell completion more expensive than the dependency.
+
+## Operating Guardrails
+
+- Treat local state as authoritative. External systems can mirror, audit, or
+  exchange snapshots, but the local store owns worker lifecycle, claims, events,
+  and reports.
+- Keep GitHub issue markers in the sync/audit role. A marker comment is not a
+  database lease, and pulling one should merge into local state rather than
+  silently replacing it.
+- Do not describe session fork as workspace isolation. A distinct Codex thread
+  can still write into the same checkout unless `cs` creates or assigns a
+  separate worktree and branch.
+- Keep daemon endpoints read-only until HTTP mutation has a local auth model,
+  idempotent request replay, and clear operator controls for risky actions.
