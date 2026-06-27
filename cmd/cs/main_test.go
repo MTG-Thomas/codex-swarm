@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http/httptest"
@@ -636,6 +637,88 @@ func TestCLIDisplaysLifecycleStatusForStaleWorkers(t *testing.T) {
 	}
 }
 
+func TestCLIShowSnapshotTextAndJSON(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	now := time.Date(2026, 6, 27, 18, 10, 0, 0, time.UTC)
+	st := store.NewJSONStore(state)
+	worker := store.Worker{
+		ID:          "w-snapshot",
+		Role:        "implementer",
+		Issue:       "MTG-Thomas/codex-swarm#17",
+		ProjectRoot: "/repo",
+		Worktree:    "/repo/.codex-swarm/worktrees/w-snapshot",
+		Branch:      "cs/w-snapshot",
+		ThreadID:    "thread-snapshot",
+		Engine:      "mock",
+		Status:      store.WorkerIdle,
+		Prompt:      "snapshot work",
+		LastMessage: "latest update",
+		Report:      "ready",
+		CreatedAt:   now.Add(-time.Hour),
+		UpdatedAt:   now,
+		Events: []store.Event{
+			{At: now, Type: "reported", Message: "ready"},
+		},
+	}
+	worker.ApplyStatusAt(store.WorkerIdle, now)
+	if err := st.SaveWorker(worker); err != nil {
+		t.Fatalf("SaveWorker() error = %v", err)
+	}
+	if err := st.SaveClaim(store.Claim{
+		ID:       "c-snapshot",
+		WorkerID: "w-snapshot",
+		Issue:    "MTG-Thomas/codex-swarm#17",
+		Scope:    "cmd/cs",
+		Status:   store.ClaimActive,
+	}); err != nil {
+		t.Fatalf("SaveClaim() error = %v", err)
+	}
+	if err := st.SaveGateEvidence(store.GateEvidence{
+		ID:        "g-snapshot",
+		GateID:    "test",
+		WorkerID:  "w-snapshot",
+		Repo:      "/repo",
+		Command:   "go test ./...",
+		ExitCode:  0,
+		Commit:    "abc123",
+		CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("SaveGateEvidence() error = %v", err)
+	}
+	var out bytes.Buffer
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+
+	if err := c.run([]string{"show", "--snapshot", "--state", state, "w-snapshot"}); err != nil {
+		t.Fatalf("show --snapshot error = %v", err)
+	}
+	for _, want := range []string{
+		"STATE_SNAPSHOT worker=w-snapshot status=idle role=implementer issue=MTG-Thomas/codex-swarm#17",
+		"claim=c-snapshot status=active scope=cmd/cs",
+		"gate=test exit=0 commit=abc123 command=go test ./...",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("show --snapshot missing %q:\n%s", want, out.String())
+		}
+	}
+
+	out.Reset()
+	if err := c.run([]string{"show", "--snapshot", "--json", "--state", state, "w-snapshot"}); err != nil {
+		t.Fatalf("show --snapshot --json error = %v", err)
+	}
+	var decoded struct {
+		Schema string `json:"schema"`
+		Worker struct {
+			ID string `json:"id"`
+		} `json:"worker"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &decoded); err != nil {
+		t.Fatalf("snapshot JSON parse error = %v\n%s", err, out.String())
+	}
+	if decoded.Schema != "codex-swarm.worker-snapshot.v1" || decoded.Worker.ID != "w-snapshot" {
+		t.Fatalf("decoded snapshot = %#v", decoded)
+	}
+}
+
 func TestCLIStatusPrefersDaemonWithLifecycleAndConflictCounts(t *testing.T) {
 	var out bytes.Buffer
 	now := time.Date(2026, 6, 26, 15, 30, 0, 0, time.UTC)
@@ -873,7 +956,7 @@ func TestCLIValidateStartCreatesIssueLinkedPair(t *testing.T) {
 	if implementer.Issue != "MTG-Thomas/codex-swarm#15" || validator.Issue != implementer.Issue {
 		t.Fatalf("issues = implementer:%q validator:%q", implementer.Issue, validator.Issue)
 	}
-	if validator.Prompt == implementer.Prompt || !strings.Contains(validator.Prompt, "Required gates: test, vet") || strings.Contains(validator.Prompt, implementer.LastMessage) {
+	if validator.Prompt == implementer.Prompt || !strings.Contains(validator.Prompt, "Required gates: test, vet") || !strings.Contains(validator.Prompt, "STATE_SNAPSHOT worker="+implementer.ID) {
 		t.Fatalf("validator prompt = %q, implementer prompt = %q last = %q", validator.Prompt, implementer.Prompt, implementer.LastMessage)
 	}
 
@@ -1022,6 +1105,37 @@ func TestCLISendAndResumeAppserverUseExistingWorktree(t *testing.T) {
 	}
 	if resumeCWD != worktree {
 		t.Fatalf("Resume cwd = %q, want %q", resumeCWD, worktree)
+	}
+}
+
+func TestCLISendAppserverIncludesCompactSnapshot(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 27, 18, 20, 0, 0, time.UTC)
+	state := filepath.Join(t.TempDir(), "state.json")
+	saveAppserverWorker(t, state, now)
+	var sentPrompt string
+	c := cli{
+		out: &out,
+		err: &bytes.Buffer{},
+		now: func() time.Time { return now },
+		appserverRunner: fakeAppserverRunner{
+			sendTurn: func(_ context.Context, _, _, prompt string) (appserver.RunResult, error) {
+				sentPrompt = prompt
+				return appserver.RunResult{ThreadID: "thread-app", TurnID: "turn-send", Status: "completed"}, nil
+			},
+		},
+	}
+
+	if err := c.run([]string{"send", "--state", state, "w-app", "continue with verification"}); err != nil {
+		t.Fatalf("send error = %v", err)
+	}
+	for _, want := range []string{
+		"STATE_SNAPSHOT worker=w-app",
+		"USER_MESSAGE\ncontinue with verification",
+	} {
+		if !strings.Contains(sentPrompt, want) {
+			t.Fatalf("appserver prompt missing %q:\n%s", want, sentPrompt)
+		}
 	}
 }
 

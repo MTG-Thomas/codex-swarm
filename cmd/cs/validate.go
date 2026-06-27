@@ -8,6 +8,7 @@ import (
 	"time"
 
 	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
+	"github.com/MTG-Thomas/codex-swarm/internal/snapshot"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
 
@@ -149,6 +150,9 @@ func validatorPrompt(implementer store.Worker, gates []string) string {
 	if len(gates) > 0 {
 		fmt.Fprintf(&b, "Required gates: %s\n", strings.Join(gates, ", "))
 	}
+	b.WriteString("\n")
+	b.WriteString(snapshot.Build(snapshot.Input{Worker: implementer}).Text())
+	b.WriteString("\n\n")
 	b.WriteString("Review the final diff and gate evidence. Approve with actionable proof or reject with actionable findings.")
 	return b.String()
 }

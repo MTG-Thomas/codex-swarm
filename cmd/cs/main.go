@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
 	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
 	"github.com/MTG-Thomas/codex-swarm/internal/repohints"
+	"github.com/MTG-Thomas/codex-swarm/internal/snapshot"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 	"github.com/MTG-Thomas/codex-swarm/internal/worktree"
 )
@@ -739,7 +741,8 @@ func (c cli) send(args []string) error {
 	message := strings.Join(rest[1:], " ")
 	var appserverResult appserver.RunResult
 	var appserverErr error
-	initial, err := store.NewJSONStore(*statePath).GetWorker(id)
+	st := store.NewJSONStore(*statePath)
+	initial, err := st.GetWorker(id)
 	if err != nil {
 		if errors.Is(err, store.ErrWorkerNotFound) {
 			return fmt.Errorf("worker %q not found", id)
@@ -749,7 +752,13 @@ func (c cli) send(args []string) error {
 	if initial.Engine == "appserver" {
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 		defer cancel()
-		appserverResult, appserverErr = c.runner().SendTurn(ctx, workerExecutionRoot(initial), initial.ThreadID, message)
+		prompt := message
+		snap, snapErr := workerSnapshot(st, initial)
+		if snapErr != nil {
+			return snapErr
+		}
+		prompt = appserverPromptWithSnapshot(snap, message)
+		appserverResult, appserverErr = c.runner().SendTurn(ctx, workerExecutionRoot(initial), initial.ThreadID, prompt)
 	}
 	return c.updateWorker(*statePath, id, func(worker *store.Worker, now time.Time) {
 		worker.Events = append(worker.Events, store.Event{At: now, Type: "message.sent", Message: message})
@@ -774,6 +783,10 @@ func (c cli) send(args []string) error {
 		fmt.Fprintf(c.out, "sent %s status=%s\n%s\n", worker.ID, displayWorkerStatus(worker), worker.LastMessage)
 		printWarnings(c.out, appserverResult.Warnings)
 	})
+}
+
+func appserverPromptWithSnapshot(snap snapshot.Snapshot, message string) string {
+	return snap.Text() + "\n\nUSER_MESSAGE\n" + strings.TrimSpace(message)
 }
 
 func (c cli) report(args []string) error {
@@ -896,6 +909,8 @@ func (c cli) inspectThread(args []string) error {
 func (c cli) show(args []string) error {
 	fs := c.flagSet("show")
 	statePath := fs.String("state", defaultStatePath(), "state file path")
+	printSnapshot := fs.Bool("snapshot", false, "print compact worker state snapshot")
+	jsonOutput := fs.Bool("json", false, "print snapshot as JSON; requires --snapshot")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -903,12 +918,32 @@ func (c cli) show(args []string) error {
 	if len(rest) != 1 {
 		return errors.New("show requires <worker>")
 	}
-	worker, err := store.NewJSONStore(*statePath).GetWorker(rest[0])
+	st := store.NewJSONStore(*statePath)
+	worker, err := st.GetWorker(rest[0])
 	if err != nil {
 		if errors.Is(err, store.ErrWorkerNotFound) {
 			return fmt.Errorf("worker %q not found", rest[0])
 		}
 		return err
+	}
+	if *jsonOutput && !*printSnapshot {
+		return errors.New("show --json requires --snapshot")
+	}
+	if *printSnapshot {
+		snap, err := workerSnapshot(st, worker)
+		if err != nil {
+			return err
+		}
+		if *jsonOutput {
+			data, err := json.MarshalIndent(snap, "", "  ")
+			if err != nil {
+				return fmt.Errorf("encode worker snapshot: %w", err)
+			}
+			fmt.Fprintln(c.out, string(data))
+			return nil
+		}
+		fmt.Fprintln(c.out, snap.Text())
+		return nil
 	}
 	fmt.Fprintf(c.out, "id=%s\nstatus=%s\nengine=%s\nthread=%s\n", worker.ID, displayWorkerStatus(worker), worker.Engine, worker.ThreadID)
 	if worker.Role != "" {
@@ -937,6 +972,22 @@ func (c cli) show(args []string) error {
 		fmt.Fprintf(c.out, "%s\t%s\t%s\n", event.At.Format(time.RFC3339), event.Type, event.Message)
 	}
 	return nil
+}
+
+func workerSnapshot(st *store.JSONStore, worker store.Worker) (snapshot.Snapshot, error) {
+	claims, err := st.ListClaims()
+	if err != nil {
+		return snapshot.Snapshot{}, err
+	}
+	gates, err := st.ListGateEvidence()
+	if err != nil {
+		return snapshot.Snapshot{}, err
+	}
+	return snapshot.Build(snapshot.Input{
+		Worker:       worker,
+		Claims:       claims,
+		GateEvidence: gates,
+	}), nil
 }
 
 func (c cli) updateWorker(statePath, id string, mutate func(*store.Worker, time.Time), print func(store.Worker)) error {
@@ -1001,6 +1052,8 @@ Usage:
   cs resume <worker>
   cs inspect-thread <worker>
   cs show <worker>
+  cs show --snapshot <worker>
+  cs show --snapshot --json <worker>
   cs schedule add --repo . --cron "0 8 * * 1" --prompt "weekly repo check"
   cs schedule list
   cs repo hints --repo .

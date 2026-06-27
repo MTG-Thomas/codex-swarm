@@ -66,12 +66,16 @@ go run ./cmd/cs repo hints --repo .
 go run ./cmd/cs resume <worker-id>
 go run ./cmd/cs inspect-thread <worker-id>
 go run ./cmd/cs show <worker-id>
+go run ./cmd/cs show --snapshot <worker-id>
+go run ./cmd/cs show --snapshot --json <worker-id>
 go run ./cmd/cs report --note "demo completed" <worker-id> done
 ```
 
 State is written to a machine-global user config path by default, for example `%AppData%\codex-swarm\state.json` on Windows. Use `--state <path>` or `CODEX_SWARM_STATE` for disposable demos and tests.
 
 `spawn --engine appserver` prints the Codex thread ID and a recovery command. Codex app visibility can lag briefly, especially on mobile; use `inspect-thread` to verify that the stored thread can still be resumed through app-server.
+
+Use `show --snapshot <worker-id>` to print a compact deterministic worker state snapshot for resume, validation, and handoff context. Add `--json` for the parseable `codex-swarm.worker-snapshot.v1` form. App-server `send` turns include the same snapshot before the user message so resumed Codex threads get current local state without replaying the full timeline.
 
 App-server runs use the normal `turn/completed` JSON-RPC event as their completion record. The internal completion policy also supports a separate text completion signal for shell-agent style runners: after that signal appears, `cs` waits briefly for trailing turn metadata and records a warning instead of failing the worker if finalization never arrives. No extra app-server completion flags are exposed while the default signal is empty.
 
