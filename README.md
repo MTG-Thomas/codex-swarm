@@ -58,6 +58,8 @@ go run ./cmd/cs issue dispatch --issue MTG-Thomas/codex-swarm#42 --repo . --prom
 go run ./cmd/cs issue sync --issue MTG-Thomas/codex-swarm#42
 go run ./cmd/cs issue pull --issue MTG-Thomas/codex-swarm#42
 go run ./cmd/cs issue report --issue MTG-Thomas/codex-swarm#42 --worker <worker-id>
+go run ./cmd/cs pr attach --worker <worker-id> --url https://github.com/MTG-Thomas/codex-swarm/pull/42
+go run ./cmd/cs pr status <worker-id>
 go run ./cmd/cs agent register --name "codex-thread" --role implementer
 go run ./cmd/cs legacy import-coordinator
 go run ./cmd/cs schedule add --repo . --cron "0 8 * * 1" --prompt "weekly repo check"
@@ -106,6 +108,8 @@ Use `issue dispatch --issue owner/repo#123 --repo <path> --prompt <task> --gate 
 Set `CODEX_SWARM_DAEMON_URL=http://127.0.0.1:8787` or pass `--daemon http://127.0.0.1:8787` to have `issue dispatch` perform the same explicit mutation through the daemon. Daemon dispatch requires loopback access and an idempotent request ID derived by the CLI.
 
 Use `issue report --issue owner/repo#123 --worker <worker-id>` only when you intentionally want to post that worker's current report or last message as a GitHub issue comment. When the worker's repo advertises quality gates, `issue report` fails closed unless the local state has fresh successful evidence for each gate. It does not run gate commands for you; refresh evidence with `cs gate record --repo <path> --worker <worker-id> --gate <id> --exit-code <code> --output <summary>`. Use `--bypass-gates` only for an intentional exception; the command prints `bypassed_gates=true` before mutating GitHub.
+
+Use `pr attach --worker <worker-id> --url <pr-url>` to explicitly link a pull request to a worker. Use `pr status <worker-id>` to refresh that PR through `gh pr view`, store the latest state on the worker, append a timeline event, and print a compact handoff summary with PR state, base/head branch, check counts, review decision, CodeRabbit status, and next action. It never merges or mutates the PR; next actions are advisory values such as `wait`, `fix-review`, `fix-ci`, `merge-ready`, and `blocked`.
 
 Use `validate start --issue owner/repo#123 --prompt <task> --gate <id>` to
 create an issue-linked implementer and validator pair. The validator gets fresh
