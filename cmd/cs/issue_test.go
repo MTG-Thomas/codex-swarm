@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
+	"github.com/MTG-Thomas/codex-swarm/internal/readiness"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
 
@@ -794,6 +798,36 @@ func TestIssueReadyReportsOpenClaimWithFakeGH(t *testing.T) {
 	}
 }
 
+func TestIssueReadyUsesDaemonURL(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	repo := t.TempDir()
+	writeIssueReadyRepoHints(t, repo)
+	server := httptest.NewServer(daemon.NewServerWithIssueProvider(state, store.NewJSONStore(state), issueReadyProvider{
+		issue: readiness.Issue{
+			Title: "Daemon ready issue",
+			Body:  "Acceptance criteria",
+		},
+	}).Handler())
+	defer server.Close()
+	t.Setenv("CODEX_SWARM_DAEMON_URL", server.URL)
+	var out bytes.Buffer
+	c := cli{out: &out, err: &bytes.Buffer{}, now: time.Now}
+
+	if err := c.run([]string{"issue", "ready", "--state", filepath.Join(t.TempDir(), "ignored.json"), "--repo", repo, "--issue", "MTG-Thomas/codex-swarm#27"}); err != nil {
+		t.Fatalf("issue ready daemon error = %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"ready=true issue=MTG-Thomas/codex-swarm#27",
+		"title=Daemon ready issue",
+		"gate=test scope=repo command=go test ./...",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("daemon issue ready output missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestIssueReadyRejectsMalformedIssue(t *testing.T) {
 	var out bytes.Buffer
 	c := cli{out: &out, err: &bytes.Buffer{}, now: time.Now}
@@ -969,6 +1003,16 @@ func dispatchRequestID(t *testing.T, worker store.Worker) string {
 	}
 	t.Fatalf("worker %s has no issue.dispatch event", worker.ID)
 	return ""
+}
+
+type issueReadyProvider struct {
+	issue readiness.Issue
+}
+
+func (p issueReadyProvider) IssueMetadata(ctx context.Context, issue string) (readiness.Issue, error) {
+	got := p.issue
+	got.Ref = issue
+	return got, nil
 }
 
 type fakeGHState struct {
