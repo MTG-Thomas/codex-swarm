@@ -1241,12 +1241,31 @@ type fakeGHState struct {
 	Comments      []fakeGHComment `json:"comments"`
 	Calls         []string        `json:"calls,omitempty"`
 	IssueViewFail string          `json:"issueViewFail,omitempty"`
+	PR            fakeGHPR        `json:"pr,omitempty"`
 }
 
 type fakeGHComment struct {
 	ID        string    `json:"id"`
 	Body      string    `json:"body"`
 	CreatedAt time.Time `json:"createdAt"`
+}
+
+type fakeGHPR struct {
+	URL            string        `json:"url,omitempty"`
+	State          string        `json:"state,omitempty"`
+	BaseRefName    string        `json:"baseRefName,omitempty"`
+	HeadRefName    string        `json:"headRefName,omitempty"`
+	ReviewDecision string        `json:"reviewDecision,omitempty"`
+	Checks         []fakeGHCheck `json:"statusCheckRollup,omitempty"`
+}
+
+type fakeGHCheck struct {
+	Type       string `json:"__typename,omitempty"`
+	Name       string `json:"name,omitempty"`
+	Context    string `json:"context,omitempty"`
+	Status     string `json:"status,omitempty"`
+	Conclusion string `json:"conclusion,omitempty"`
+	State      string `json:"state,omitempty"`
 }
 
 func installFakeGH(t *testing.T, initial fakeGHState) string {
@@ -1328,12 +1347,31 @@ type state struct {
 	Comments      []comment ` + "`json:\"comments\"`" + `
 	Calls         []string  ` + "`json:\"calls,omitempty\"`" + `
 	IssueViewFail string    ` + "`json:\"issueViewFail,omitempty\"`" + `
+	PR            pr        ` + "`json:\"pr,omitempty\"`" + `
 }
 
 type comment struct {
 	ID        string    ` + "`json:\"id\"`" + `
 	Body      string    ` + "`json:\"body\"`" + `
 	CreatedAt time.Time ` + "`json:\"createdAt\"`" + `
+}
+
+type pr struct {
+	URL            string  ` + "`json:\"url,omitempty\"`" + `
+	State          string  ` + "`json:\"state,omitempty\"`" + `
+	BaseRefName    string  ` + "`json:\"baseRefName,omitempty\"`" + `
+	HeadRefName    string  ` + "`json:\"headRefName,omitempty\"`" + `
+	ReviewDecision string  ` + "`json:\"reviewDecision,omitempty\"`" + `
+	Checks         []check ` + "`json:\"statusCheckRollup,omitempty\"`" + `
+}
+
+type check struct {
+	Type       string ` + "`json:\"__typename,omitempty\"`" + `
+	Name       string ` + "`json:\"name,omitempty\"`" + `
+	Context    string ` + "`json:\"context,omitempty\"`" + `
+	Status     string ` + "`json:\"status,omitempty\"`" + `
+	Conclusion string ` + "`json:\"conclusion,omitempty\"`" + `
+	State      string ` + "`json:\"state,omitempty\"`" + `
 }
 
 func main() {
@@ -1362,6 +1400,18 @@ func main() {
 		if len(response) == 0 {
 			response["body"] = st.Body
 			response["comments"] = st.Comments
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(response); err != nil {
+			fail(err.Error())
+		}
+	case len(args) >= 2 && args[0] == "pr" && args[1] == "view":
+		response := map[string]any{
+			"url":               firstNonEmpty(st.PR.URL, firstArgAfter(args, "view")),
+			"state":             firstNonEmpty(st.PR.State, "OPEN"),
+			"baseRefName":       st.PR.BaseRefName,
+			"headRefName":       st.PR.HeadRefName,
+			"reviewDecision":    st.PR.ReviewDecision,
+			"statusCheckRollup": st.PR.Checks,
 		}
 		if err := json.NewEncoder(os.Stdout).Encode(response); err != nil {
 			fail(err.Error())
@@ -1432,6 +1482,24 @@ func fieldValue(args []string, prefix string) string {
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == "-f" && strings.HasPrefix(args[i+1], prefix) {
 			return strings.TrimPrefix(args[i+1], prefix)
+		}
+	}
+	return ""
+}
+
+func firstArgAfter(args []string, value string) string {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == value {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
 		}
 	}
 	return ""

@@ -48,6 +48,7 @@ type Worker struct {
 	Prompt           string               `json:"prompt"`
 	LastMessage      string               `json:"last_message,omitempty"`
 	Report           string               `json:"report,omitempty"`
+	PullRequests     []PullRequestState   `json:"pull_requests,omitempty"`
 	CreatedAt        time.Time            `json:"created_at"`
 	UpdatedAt        time.Time            `json:"updated_at"`
 	Events           []Event              `json:"events,omitempty"`
@@ -210,6 +211,19 @@ type GateEvidence struct {
 	Output    string    `json:"output,omitempty"`
 	Commit    string    `json:"commit,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// PullRequestState records explicit PR stewardship state attached to a worker.
+type PullRequestState struct {
+	URL              string    `json:"url"`
+	State            string    `json:"state,omitempty"`
+	BaseBranch       string    `json:"base_branch,omitempty"`
+	HeadBranch       string    `json:"head_branch,omitempty"`
+	ReviewDecision   string    `json:"review_decision,omitempty"`
+	CheckSummary     string    `json:"check_summary,omitempty"`
+	CodeRabbitStatus string    `json:"coderabbit_status,omitempty"`
+	NextAction       string    `json:"next_action,omitempty"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // CompletedMutation stores an idempotency replay record.

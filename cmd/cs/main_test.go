@@ -1347,6 +1347,122 @@ func TestCLISpawnAppserverFailedResultSetsTerminatedAt(t *testing.T) {
 	}
 }
 
+func TestCLIPRAttachAndStatusRefreshesWorkerState(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 27, 19, 5, 0, 0, time.UTC)
+	state := filepath.Join(t.TempDir(), "state.json")
+	repo := t.TempDir()
+	worker := store.Worker{
+		ID:          "w-pr",
+		Issue:       "MTG-Thomas/codex-swarm#10",
+		ProjectRoot: repo,
+		ThreadID:    "thread-pr",
+		Engine:      "mock",
+		Status:      store.WorkerIdle,
+		Prompt:      "steward pr",
+		CreatedAt:   now.Add(-time.Hour),
+		UpdatedAt:   now.Add(-time.Hour),
+	}
+	if err := store.NewJSONStore(state).SaveWorker(worker); err != nil {
+		t.Fatalf("SaveWorker() error = %v", err)
+	}
+	installFakeGH(t, fakeGHState{PR: fakeGHPR{
+		URL:            "https://github.com/MTG-Thomas/codex-swarm/pull/40",
+		State:          "OPEN",
+		BaseRefName:    "main",
+		HeadRefName:    "codex/pr-stewardship-state",
+		ReviewDecision: "APPROVED",
+		Checks: []fakeGHCheck{
+			{Name: "go (ubuntu-latest, 1.26.x)", Conclusion: "SUCCESS", Status: "COMPLETED"},
+			{Context: "CodeRabbit", State: "SUCCESS"},
+		},
+	}})
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+
+	if err := c.run([]string{"pr", "attach", "--state", state, "--worker", "w-pr", "--url", "https://github.com/MTG-Thomas/codex-swarm/pull/40"}); err != nil {
+		t.Fatalf("pr attach error = %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, "attached pr worker=w-pr url=https://github.com/MTG-Thomas/codex-swarm/pull/40") {
+		t.Fatalf("pr attach output = %q", got)
+	}
+
+	now = now.Add(time.Minute)
+	out.Reset()
+	if err := c.run([]string{"pr", "status", "--state", state, "w-pr"}); err != nil {
+		t.Fatalf("pr status error = %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"pr worker=w-pr url=https://github.com/MTG-Thomas/codex-swarm/pull/40 state=OPEN base=main head=codex/pr-stewardship-state",
+		"checks=pass=2 fail=0 pending=0 review=APPROVED coderabbit=SUCCESS next=merge-ready",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("pr status output missing %q:\n%s", want, got)
+		}
+	}
+	updated := mustGetWorker(t, state, "w-pr")
+	if len(updated.PullRequests) != 1 {
+		t.Fatalf("PullRequests = %#v, want one", updated.PullRequests)
+	}
+	pr := updated.PullRequests[0]
+	if pr.NextAction != "merge-ready" || pr.CheckSummary != "pass=2 fail=0 pending=0" || pr.CodeRabbitStatus != "SUCCESS" {
+		t.Fatalf("stored PR state = %#v", pr)
+	}
+	var attached, refreshed bool
+	for _, event := range updated.Events {
+		if event.Type == "pr.attach" {
+			attached = true
+		}
+		if event.Type == "pr.status" && strings.Contains(event.Message, "next=merge-ready") {
+			refreshed = true
+		}
+	}
+	if !attached || !refreshed {
+		t.Fatalf("PR events attached=%t refreshed=%t events=%#v", attached, refreshed, updated.Events)
+	}
+}
+
+func TestCLIPRStatusReportsFixReviewNextAction(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 27, 19, 10, 0, 0, time.UTC)
+	state := filepath.Join(t.TempDir(), "state.json")
+	if err := store.NewJSONStore(state).SaveWorker(store.Worker{
+		ID:          "w-pr-review",
+		ProjectRoot: "/repo",
+		ThreadID:    "thread-pr-review",
+		Engine:      "mock",
+		Status:      store.WorkerIdle,
+		Prompt:      "fix review",
+		PullRequests: []store.PullRequestState{{
+			URL:       "https://github.com/MTG-Thomas/codex-swarm/pull/41",
+			UpdatedAt: now.Add(-time.Hour),
+		}},
+		CreatedAt: now.Add(-time.Hour),
+		UpdatedAt: now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveWorker() error = %v", err)
+	}
+	installFakeGH(t, fakeGHState{PR: fakeGHPR{
+		URL:            "https://github.com/MTG-Thomas/codex-swarm/pull/41",
+		State:          "OPEN",
+		BaseRefName:    "main",
+		HeadRefName:    "codex/pr-stewardship-state",
+		ReviewDecision: "CHANGES_REQUESTED",
+		Checks: []fakeGHCheck{
+			{Name: "go (windows-latest, 1.26.x)", Conclusion: "SUCCESS", Status: "COMPLETED"},
+			{Context: "CodeRabbit", State: "SUCCESS"},
+		},
+	}})
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+
+	if err := c.run([]string{"pr", "status", "--state", state, "w-pr-review"}); err != nil {
+		t.Fatalf("pr status error = %v", err)
+	}
+	if !strings.Contains(out.String(), "next=fix-review") {
+		t.Fatalf("pr status output = %q, want fix-review next action", out.String())
+	}
+}
+
 func TestCLISendAppserverFailureSetsTerminatedAt(t *testing.T) {
 	var out bytes.Buffer
 	now := time.Date(2026, 6, 26, 16, 30, 0, 0, time.UTC)

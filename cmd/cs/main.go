@@ -86,6 +86,8 @@ func (c cli) run(args []string) error {
 		return c.schedule(args[1:])
 	case "repo":
 		return c.repo(args[1:])
+	case "pr":
+		return c.pr(args[1:])
 	case "report":
 		return c.report(args[1:])
 	case "resume":
@@ -1072,6 +1074,8 @@ Usage:
   cs issue sync --issue owner/repo#123
   cs issue report --issue owner/repo#123 --worker <worker> --gate test
   cs issue report --issue owner/repo#123 --worker <worker> --bypass-gates
+  cs pr attach --worker <worker> --url https://github.com/owner/repo/pull/123
+  cs pr status <worker>
   cs agent register --name "codex-thread" --role implementer
   cs agent current
   cs legacy import-coordinator
