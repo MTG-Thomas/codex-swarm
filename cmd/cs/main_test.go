@@ -718,6 +718,68 @@ func TestCLIGateRecordRejectsMissingWorkerBeforeEvidenceWrite(t *testing.T) {
 	}
 }
 
+func TestCLIValidateStartCreatesIssueLinkedPair(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 27, 16, 0, 0, 0, time.UTC)
+	repo := t.TempDir()
+	state := filepath.Join(t.TempDir(), "state.json")
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+
+	if err := c.run([]string{"validate", "start", "--state", state, "--repo", repo, "--issue", "MTG-Thomas/codex-swarm#15", "--prompt", "implement issue #15", "--gate", "test,vet"}); err != nil {
+		t.Fatalf("validate start error = %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"validation issue=MTG-Thomas/codex-swarm#15 implementer=w-20260627-160000-",
+		"validator=w-20260627-160000-",
+		"status=pending",
+		"cs gate record",
+		"cs issue report --issue MTG-Thomas/codex-swarm#15 --worker",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("validate start output missing %q:\n%s", want, got)
+		}
+	}
+
+	workers, err := store.NewJSONStore(state).ListWorkers()
+	if err != nil {
+		t.Fatalf("ListWorkers() error = %v", err)
+	}
+	if len(workers) != 2 {
+		t.Fatalf("workers count = %d, want 2: %#v", len(workers), workers)
+	}
+	var implementer, validator store.Worker
+	for _, worker := range workers {
+		switch worker.Role {
+		case "implementer":
+			implementer = worker
+		case "validator":
+			validator = worker
+		}
+	}
+	if implementer.ID == "" || validator.ID == "" {
+		t.Fatalf("implementer=%#v validator=%#v", implementer, validator)
+	}
+	if validator.ParentID != implementer.ID || validator.ValidationOf != implementer.ID || validator.ValidationStatus != ValidationPending {
+		t.Fatalf("validator linkage = parent:%q validation_of:%q status:%q want implementer %q pending", validator.ParentID, validator.ValidationOf, validator.ValidationStatus, implementer.ID)
+	}
+	if implementer.Issue != "MTG-Thomas/codex-swarm#15" || validator.Issue != implementer.Issue {
+		t.Fatalf("issues = implementer:%q validator:%q", implementer.Issue, validator.Issue)
+	}
+	if validator.Prompt == implementer.Prompt || !strings.Contains(validator.Prompt, "Required gates: test, vet") || strings.Contains(validator.Prompt, implementer.LastMessage) {
+		t.Fatalf("validator prompt = %q, implementer prompt = %q last = %q", validator.Prompt, implementer.Prompt, implementer.LastMessage)
+	}
+
+	out.Reset()
+	if err := c.run([]string{"report", "--state", state, "--note", "rejected: missing test proof", validator.ID, "failed"}); err != nil {
+		t.Fatalf("report validator rejection error = %v", err)
+	}
+	validator = mustGetWorker(t, state, validator.ID)
+	if validator.ValidationStatus != ValidationRejected {
+		t.Fatalf("ValidationStatus = %q, want %q", validator.ValidationStatus, ValidationRejected)
+	}
+}
+
 func TestCLISpawnPrintsRepoHintsWhenConfigured(t *testing.T) {
 	var out bytes.Buffer
 	now := time.Date(2026, 6, 26, 16, 4, 0, 0, time.UTC)

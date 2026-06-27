@@ -47,6 +47,7 @@ go run ./cmd/cs claim conflicts --repo . --scope internal/store/json.go
 go run ./cmd/cs claim export --issue MTG-Thomas/codex-swarm#42
 go run ./cmd/cs gate list --repo .
 go run ./cmd/cs gate record --repo . --worker <worker-id> --gate test --exit-code 0 --output "go test ./... passed"
+go run ./cmd/cs validate start --repo . --issue MTG-Thomas/codex-swarm#42 --prompt "implement issue #42" --gate test
 go run ./cmd/cs issue export --issue MTG-Thomas/codex-swarm#42
 go run ./cmd/cs issue sync --issue MTG-Thomas/codex-swarm#42
 go run ./cmd/cs issue pull --issue MTG-Thomas/codex-swarm#42
@@ -81,6 +82,14 @@ Use `claim create`, `claim list`, `claim conflicts`, `claim show`, `claim block`
 Use `issue export --issue owner/repo#123` to include a hidden `codex-swarm:claims:v1` JSON marker that other machines can parse. Use `issue sync --issue owner/repo#123` only when you intentionally want to create or update that marker comment through `gh`. Use `issue pull --issue owner/repo#123` to import the latest marker-backed claim set from GitHub into local state; by default it skips remote claims older than a local claim with the same ID. Use `issue pull --force --issue owner/repo#123` only when the issue marker should overwrite newer local claim state.
 
 Use `issue report --issue owner/repo#123 --worker <worker-id>` only when you intentionally want to post that worker's current report or last message as a GitHub issue comment.
+
+Use `validate start --issue owner/repo#123 --prompt <task> --gate <id>` to
+create an issue-linked implementer and validator pair. The validator gets fresh
+issue, repo, worktree, branch, and gate context without inheriting the
+implementer's transcript. Use `cs gate record` to attach proof to the validator,
+then `cs report --note "approved: ..." <validator> done` or
+`cs report --note "rejected: ..." <validator> failed` to make the outcome
+visible locally and in later `issue report` output.
 
 Use `repo hints --repo <path>` to print opt-in execution guidance advertised by a repository. `cs` checks `codex-swarm.hints.json` first for committed project guidance, then `.codex-swarm/repo-hints.json` for local-only guidance. When hints exist, `spawn` prints the same advisory lines so agents see preferred execution surfaces before starting work. Hints are advisory only; they do not block local execution or inject secrets.
 

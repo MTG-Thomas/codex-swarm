@@ -31,24 +31,26 @@ const (
 
 // Worker is a durable local record for one agent or subagent.
 type Worker struct {
-	ID          string               `json:"id"`
-	ParentID    string               `json:"parent_id,omitempty"`
-	Role        string               `json:"role,omitempty"`
-	Issue       string               `json:"issue,omitempty"`
-	ProjectRoot string               `json:"project_root"`
-	Worktree    string               `json:"worktree"`
-	Branch      string               `json:"branch"`
-	ThreadID    string               `json:"thread_id"`
-	TurnID      string               `json:"turn_id,omitempty"`
-	Engine      string               `json:"engine"`
-	Status      WorkerStatus         `json:"status"`
-	Lifecycle   *lifecycle.Lifecycle `json:"lifecycle,omitempty"`
-	Prompt      string               `json:"prompt"`
-	LastMessage string               `json:"last_message,omitempty"`
-	Report      string               `json:"report,omitempty"`
-	CreatedAt   time.Time            `json:"created_at"`
-	UpdatedAt   time.Time            `json:"updated_at"`
-	Events      []Event              `json:"events,omitempty"`
+	ID               string               `json:"id"`
+	ParentID         string               `json:"parent_id,omitempty"`
+	Role             string               `json:"role,omitempty"`
+	Issue            string               `json:"issue,omitempty"`
+	ValidationOf     string               `json:"validation_of,omitempty"`
+	ValidationStatus string               `json:"validation_status,omitempty"`
+	ProjectRoot      string               `json:"project_root"`
+	Worktree         string               `json:"worktree"`
+	Branch           string               `json:"branch"`
+	ThreadID         string               `json:"thread_id"`
+	TurnID           string               `json:"turn_id,omitempty"`
+	Engine           string               `json:"engine"`
+	Status           WorkerStatus         `json:"status"`
+	Lifecycle        *lifecycle.Lifecycle `json:"lifecycle,omitempty"`
+	Prompt           string               `json:"prompt"`
+	LastMessage      string               `json:"last_message,omitempty"`
+	Report           string               `json:"report,omitempty"`
+	CreatedAt        time.Time            `json:"created_at"`
+	UpdatedAt        time.Time            `json:"updated_at"`
+	Events           []Event              `json:"events,omitempty"`
 }
 
 // ApplyStatus updates the worker lifecycle using the current time semantics.

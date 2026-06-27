@@ -32,11 +32,14 @@ func (s Status) String() string {
 
 // WorkerStatus is the compact daemon representation of one worker.
 type WorkerStatus struct {
-	ID       string `json:"id"`
-	Status   string `json:"status"`
-	Issue    string `json:"issue,omitempty"`
-	Worktree string `json:"worktree,omitempty"`
-	ThreadID string `json:"thread_id,omitempty"`
+	ID               string `json:"id"`
+	Status           string `json:"status"`
+	Role             string `json:"role,omitempty"`
+	Issue            string `json:"issue,omitempty"`
+	ValidationOf     string `json:"validation_of,omitempty"`
+	ValidationStatus string `json:"validation_status,omitempty"`
+	Worktree         string `json:"worktree,omitempty"`
+	ThreadID         string `json:"thread_id,omitempty"`
 }
 
 // WorkersResponse is returned by the daemon workers endpoint.
@@ -273,11 +276,14 @@ func summarizeWorkers(workers []store.Worker) []WorkerStatus {
 	summaries := make([]WorkerStatus, 0, len(workers))
 	for _, worker := range workers {
 		summaries = append(summaries, WorkerStatus{
-			ID:       worker.ID,
-			Status:   displayWorkerStatus(worker),
-			Issue:    worker.Issue,
-			Worktree: worker.Worktree,
-			ThreadID: worker.ThreadID,
+			ID:               worker.ID,
+			Status:           displayWorkerStatus(worker),
+			Role:             worker.Role,
+			Issue:            worker.Issue,
+			ValidationOf:     worker.ValidationOf,
+			ValidationStatus: worker.ValidationStatus,
+			Worktree:         worker.Worktree,
+			ThreadID:         worker.ThreadID,
 		})
 	}
 	return summaries
