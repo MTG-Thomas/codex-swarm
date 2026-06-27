@@ -4,13 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"time"
 
 	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
-	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
 
 func main() {
@@ -42,9 +41,9 @@ func run() error {
 func serve() error {
 	addr := envDefault("CODEX_SWARM_DAEMON_ADDR", "127.0.0.1:8787")
 	statePath := envDefault("CODEX_SWARM_STATE", defaultStatePath())
-	server := daemon.NewServer(statePath, store.NewJSONStore(statePath))
-	fmt.Printf("csd listening addr=%s state=%s\n", addr, statePath)
-	return http.ListenAndServe(addr, server.Handler())
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	return runServer(ctx, addr, statePath, os.Stdout)
 }
 
 func status() error {
