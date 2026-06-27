@@ -11,6 +11,8 @@ The first implementation target is deliberately narrow:
 - expose a small CLI for spawn, send, resume, report, and status
 - keep GitHub, scheduling, and daemon service installation behind explicit commands and package boundaries
 
+CI verifies Linux, macOS, and Windows for the CLI and daemon binaries.
+
 ## Commands
 
 Planned binaries:
