@@ -616,6 +616,46 @@ func TestCLISpawnAppserverPrintsLifecycleDisplayStatus(t *testing.T) {
 	}
 }
 
+func TestCLIRepoHints(t *testing.T) {
+	var out bytes.Buffer
+	c := cli{out: &out, err: &bytes.Buffer{}, now: time.Now}
+	repo := t.TempDir()
+	writeRepoHints(t, repo)
+
+	if err := c.run([]string{"repo", "hints", "--repo", repo}); err != nil {
+		t.Fatalf("repo hints error = %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"hints=1",
+		`repo hint: remote devcontainer command: just talos-dev-run "just --list"`,
+		"repo hint: remote devcontainer image: ghcr.io/mtg-thomas/bifrost-devcontainer:devcontainer-main-172fb07bd73f",
+		"prefer immutable image tags",
+		"No secrets are injected by default.",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("repo hints output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestCLISpawnPrintsRepoHintsWhenConfigured(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 26, 16, 4, 0, 0, time.UTC)
+	repo := t.TempDir()
+	writeRepoHints(t, repo)
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+	state := filepath.Join(t.TempDir(), "state.json")
+
+	if err := c.run([]string{"spawn", "--state", state, "--repo", repo, "--prompt", "inspect repo"}); err != nil {
+		t.Fatalf("spawn error = %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, `repo hint: remote devcontainer command: just talos-dev-run "just --list"`) {
+		t.Fatalf("spawn output missing repo hint:\n%s", got)
+	}
+}
+
 func TestCLISpawnAppserverWithWorktreeRunsInManagedWorktree(t *testing.T) {
 	var out bytes.Buffer
 	now := time.Date(2026, 6, 26, 16, 5, 0, 0, time.UTC)
@@ -924,6 +964,21 @@ func runCLITestGit(t *testing.T, dir string, args ...string) {
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v failed: %v\n%s", args, err, out)
+	}
+}
+
+func writeRepoHints(t *testing.T, repo string) {
+	t.Helper()
+	body := `{
+  "remote_devcontainer": {
+    "command": "just talos-dev-run \"just --list\"",
+    "image": "ghcr.io/mtg-thomas/bifrost-devcontainer:devcontainer-main-172fb07bd73f",
+    "docs": "docs/devcontainer.md",
+    "note": "No secrets are injected by default."
+  }
+}`
+	if err := os.WriteFile(filepath.Join(repo, "codex-swarm.hints.json"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write repo hints: %v", err)
 	}
 }
 

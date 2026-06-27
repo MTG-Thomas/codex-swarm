@@ -52,6 +52,7 @@ Exit criteria: one operator command can start a small set of role-based workers 
 
 - Import issue metadata through `gh` first.
 - Link workers to issues and PRs.
+- Print opt-in repo execution hints before issue-backed work, so agents see preferred remote devcontainer or Talos execution surfaces without hidden automation.
 - Link warning-only claims to GitHub issues.
 - Export or explicitly push claim summaries as issue comments.
 - Use `cs issue export/sync/pull` marker blocks to exchange claim state through GitHub issues across machines.
