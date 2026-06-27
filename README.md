@@ -107,7 +107,7 @@ Use `issue dispatch --issue owner/repo#123 --repo <path> --prompt <task> --gate 
 
 Set `CODEX_SWARM_DAEMON_URL=http://127.0.0.1:8787` or pass `--daemon http://127.0.0.1:8787` to have `issue dispatch` perform the same explicit mutation through the daemon. Daemon dispatch requires loopback access and an idempotent request ID derived by the CLI.
 
-Use `issue report --issue owner/repo#123 --worker <worker-id>` only when you intentionally want to post that worker's current report or last message as a GitHub issue comment. When the worker's repo advertises quality gates, `issue report` fails closed unless the local state has fresh successful evidence for each gate. It does not run gate commands for you; refresh evidence with `cs gate record --repo <path> --worker <worker-id> --gate <id> --exit-code <code> --output <summary>`. Use `--bypass-gates` only for an intentional exception; the command prints `bypassed_gates=true` before mutating GitHub.
+Use `issue report --issue owner/repo#123 --worker <worker-id>` only when you intentionally want to post that worker's current report or last message as a GitHub issue comment. When the worker's repo advertises quality gates, `issue report` fails closed unless the local proof cache has fresh successful evidence for each gate. Cached proof is reusable only when gate id, repo path, configured command, current HEAD, and worker freshness match. It does not run gate commands for you; refresh evidence with `cs gate record --repo <path> --worker <worker-id> --gate <id> --exit-code <code> --output <summary>`. Use `--bypass-gates` only for an intentional exception; the command prints `bypassed_gates=true` before mutating GitHub.
 
 Use `pr attach --worker <worker-id> --url <pr-url>` to explicitly link a pull request to a worker. Use `pr status <worker-id>` to refresh that PR through `gh pr view`, store the latest state on the worker, append a timeline event, and print a compact handoff summary with PR state, base/head branch, check counts, review decision, CodeRabbit status, and next action. It never merges or mutates the PR; next actions are advisory values such as `wait`, `fix-review`, `fix-ci`, `merge-ready`, and `blocked`.
 
@@ -153,7 +153,9 @@ entry point but no remote devcontainer lane:
 Quality gates define repo-owned verification commands that agents can reference
 and record as local proof. `gate list` reads these definitions; `gate record`
 stores observed evidence and appends a `quality.gate` event to the worker
-timeline. Recording evidence does not execute the command yet.
+timeline. Evidence includes timestamp, exit code, output summary, commit, and
+provenance worker id so later commands can reuse fresh local proof without
+rerunning expensive checks. Recording evidence does not execute the command yet.
 
 ```json
 {
