@@ -57,11 +57,37 @@ func uninstallService() error {
 		return fmt.Errorf("open service %s: %w", cfg.Name, err)
 	}
 	defer service.Close()
+	_ = stopWindowsService(service, 10*time.Second)
 	if err := service.Delete(); err != nil {
 		return fmt.Errorf("delete service %s: %w", cfg.Name, err)
 	}
 	fmt.Printf("uninstalled service=%s\n", cfg.Name)
 	return nil
+}
+
+func stopWindowsService(service *mgr.Service, timeout time.Duration) error {
+	status, err := service.Query()
+	if err != nil {
+		return err
+	}
+	if status.State == svc.Stopped {
+		return nil
+	}
+	if _, err := service.Control(svc.Stop); err != nil {
+		return err
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		status, err := service.Query()
+		if err != nil {
+			return err
+		}
+		if status.State == svc.Stopped {
+			return nil
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return fmt.Errorf("service did not stop within %s", timeout)
 }
 
 func maybeRunService() (bool, error) {

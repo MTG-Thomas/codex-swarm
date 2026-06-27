@@ -82,3 +82,88 @@ jobs:
           ./csd uninstall
           trap - EXIT
           test ! -f "$plist"
+
+      - name: Linux systemd service smoke
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CODEX_SWARM_DAEMON_ADDR="127.0.0.1:18788"
+          export CODEX_SWARM_STATE="$RUNNER_TEMP/codex-swarm-service-state.json"
+          unit="/etc/systemd/system/codex-swarm-daemon.service"
+          cleanup() {
+            sudo env CODEX_SWARM_DAEMON_ADDR="$CODEX_SWARM_DAEMON_ADDR" CODEX_SWARM_STATE="$CODEX_SWARM_STATE" ./csd uninstall || true
+          }
+          trap cleanup EXIT
+
+          sudo env CODEX_SWARM_DAEMON_ADDR="$CODEX_SWARM_DAEMON_ADDR" CODEX_SWARM_STATE="$CODEX_SWARM_STATE" ./csd uninstall || true
+          sudo env CODEX_SWARM_DAEMON_ADDR="$CODEX_SWARM_DAEMON_ADDR" CODEX_SWARM_STATE="$CODEX_SWARM_STATE" ./csd install
+
+          test -f "$unit"
+          grep -q "$CODEX_SWARM_DAEMON_ADDR" "$unit"
+          grep -q "$CODEX_SWARM_STATE" "$unit"
+          sudo systemctl start codex-swarm-daemon.service
+          sudo systemctl is-active --quiet codex-swarm-daemon.service
+
+          for i in {1..20}; do
+            if CODEX_SWARM_DAEMON_URL="http://$CODEX_SWARM_DAEMON_ADDR" ./csd status; then
+              break
+            fi
+            if [ "$i" -eq 20 ]; then
+              sudo journalctl -u codex-swarm-daemon.service --no-pager -n 50 || true
+              echo "daemon did not become ready" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+
+          sudo env CODEX_SWARM_DAEMON_ADDR="$CODEX_SWARM_DAEMON_ADDR" CODEX_SWARM_STATE="$CODEX_SWARM_STATE" ./csd uninstall
+          trap - EXIT
+          test ! -f "$unit"
+
+      - name: Windows service smoke
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:CODEX_SWARM_DAEMON_ADDR = '127.0.0.1:18789'
+          $env:CODEX_SWARM_STATE = Join-Path $env:RUNNER_TEMP 'codex-swarm-service-state.json'
+          $serviceName = 'codex-swarm-daemon'
+          try {
+            .\csd.exe uninstall | Out-Host
+          } catch {
+          }
+          try {
+            .\csd.exe install
+            $service = Get-Service -Name $serviceName
+            if ($service.Status -ne 'Stopped') {
+              throw "expected installed service to start stopped, got $($service.Status)"
+            }
+            Start-Service -Name $serviceName
+            $service.WaitForStatus('Running', [TimeSpan]::FromSeconds(20))
+
+            $env:CODEX_SWARM_DAEMON_URL = "http://$($env:CODEX_SWARM_DAEMON_ADDR)"
+            for ($i = 1; $i -le 20; $i++) {
+              try {
+                .\csd.exe status
+                break
+              } catch {
+                if ($i -eq 20) {
+                  throw
+                }
+                Start-Sleep -Seconds 1
+              }
+            }
+          } finally {
+            try {
+              Stop-Service -Name $serviceName -ErrorAction SilentlyContinue
+            } catch {
+            }
+            try {
+              .\csd.exe uninstall | Out-Host
+            } catch {
+            }
+          }
+          if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
+            throw "service still exists after uninstall"
+          }
