@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/MTG-Thomas/codex-swarm/internal/claims"
+	"github.com/MTG-Thomas/codex-swarm/internal/dispatch"
 	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
 	"github.com/MTG-Thomas/codex-swarm/internal/readiness"
 	"github.com/MTG-Thomas/codex-swarm/internal/repohints"
@@ -50,7 +51,7 @@ type claimImportPlanEntry struct {
 
 func (c cli) issue(args []string) error {
 	if len(args) == 0 {
-		return errors.New("issue requires <export|sync|pull|report|claim|ready>")
+		return errors.New("issue requires <export|sync|pull|report|claim|ready|dispatch>")
 	}
 	switch args[0] {
 	case "export":
@@ -65,6 +66,8 @@ func (c cli) issue(args []string) error {
 		return c.issueClaim(args[1:])
 	case "ready":
 		return c.issueReady(args[1:])
+	case "dispatch":
+		return c.issueDispatch(args[1:])
 	default:
 		return fmt.Errorf("unknown issue command %q", args[0])
 	}
@@ -213,21 +216,101 @@ func (c cli) issueReady(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	issue, err := normalizeRequiredIssue(*issueValue)
+	report, err := c.issueReadinessReport(*statePath, *issueValue, *repo)
 	if err != nil {
 		return err
 	}
-	repoRoot, err := filepath.Abs(*repo)
+	if *jsonOutput {
+		data, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return fmt.Errorf("encode readiness report: %w", err)
+		}
+		fmt.Fprintln(c.out, string(data))
+		return nil
+	}
+	printReadinessReport(c.out, report)
+	return nil
+}
+
+func (c cli) issueDispatch(args []string) error {
+	fs := c.flagSet("issue dispatch")
+	statePath := fs.String("state", defaultStatePath(), "state file path")
+	issueValue := fs.String("issue", "", "GitHub issue reference")
+	repo := fs.String("repo", ".", "repository root")
+	prompt := fs.String("prompt", "", "implementer prompt")
+	engine := fs.String("engine", "mock", "worker engine: mock")
+	gates := fs.String("gate", "", "comma-separated quality gate ids")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *engine != "mock" {
+		return errors.New("issue dispatch currently supports --engine mock")
+	}
+	report, err := c.issueReadinessReport(*statePath, *issueValue, *repo)
 	if err != nil {
-		return fmt.Errorf("resolve repo: %w", err)
+		return err
+	}
+	plan, err := dispatch.Plan(dispatch.Input{
+		Readiness: report,
+		Prompt:    *prompt,
+		Gates:     splitGateIDs(*gates),
+	})
+	if err != nil {
+		if !report.Ready {
+			printReadinessReport(c.out, report)
+		}
+		return err
+	}
+	st := store.NewJSONStore(*statePath)
+	workers, err := st.ListWorkers()
+	if err != nil {
+		return err
+	}
+	if replay, ok := findDispatchReplay(workers, plan.RequestID); ok {
+		printDispatchResult(c.out, plan, replay.Implementer, replay.Validator, true)
+		return nil
+	}
+
+	now := c.now().UTC()
+	implementer, validator, err := newValidationPair(plan.Issue, plan.Repo, *engine, plan.Prompt, plan.Gates, now)
+	if err != nil {
+		return err
+	}
+	event := store.Event{
+		At:        now,
+		Type:      "issue.dispatch",
+		Message:   fmt.Sprintf("issue=%s request=%s", plan.Issue, plan.RequestID),
+		Issue:     plan.Issue,
+		RequestID: plan.RequestID,
+	}
+	implementer.Events = append(implementer.Events, event)
+	validator.Events = append(validator.Events, event)
+	if err := st.SaveWorker(implementer); err != nil {
+		return err
+	}
+	if err := st.SaveWorker(validator); err != nil {
+		return err
+	}
+	printDispatchResult(c.out, plan, implementer, validator, false)
+	return nil
+}
+
+func (c cli) issueReadinessReport(statePath, issueValue, repo string) (readiness.Report, error) {
+	issue, err := normalizeRequiredIssue(issueValue)
+	if err != nil {
+		return readiness.Report{}, err
+	}
+	repoRoot, err := filepath.Abs(repo)
+	if err != nil {
+		return readiness.Report{}, fmt.Errorf("resolve repo: %w", err)
 	}
 	metadata, err := fetchIssueMetadata(context.Background(), issue)
 	if err != nil {
-		return err
+		return readiness.Report{}, err
 	}
 	hints, _, ok, err := repohints.Load(repoRoot)
 	if err != nil {
-		return err
+		return readiness.Report{}, err
 	}
 	var gates []readiness.Gate
 	if ok {
@@ -239,9 +322,9 @@ func (c cli) issueReady(args []string) error {
 			})
 		}
 	}
-	claimsForIssue, err := c.claimsForIssue(*statePath, issue)
+	claimsForIssue, err := c.claimsForIssue(statePath, issue)
 	if err != nil {
-		return err
+		return readiness.Report{}, err
 	}
 	var readinessClaims []readiness.Claim
 	for _, claim := range claimsForIssue {
@@ -252,7 +335,7 @@ func (c cli) issueReady(args []string) error {
 			Status:   string(claim.Status),
 		})
 	}
-	report := readiness.Evaluate(readiness.Input{
+	return readiness.Evaluate(readiness.Input{
 		Issue: readiness.Issue{
 			Ref:   issue,
 			Title: metadata.Title,
@@ -261,17 +344,50 @@ func (c cli) issueReady(args []string) error {
 		Repo:   repoRoot,
 		Gates:  gates,
 		Claims: readinessClaims,
-	})
-	if *jsonOutput {
-		data, err := json.MarshalIndent(report, "", "  ")
-		if err != nil {
-			return fmt.Errorf("encode readiness report: %w", err)
+	}), nil
+}
+
+type dispatchReplay struct {
+	Implementer store.Worker
+	Validator   store.Worker
+}
+
+func findDispatchReplay(workers []store.Worker, requestID string) (dispatchReplay, bool) {
+	var replay dispatchReplay
+	for _, worker := range workers {
+		if !workerHasDispatchRequest(worker, requestID) {
+			continue
 		}
-		fmt.Fprintln(c.out, string(data))
-		return nil
+		switch worker.Role {
+		case "implementer":
+			replay.Implementer = worker
+		case "validator":
+			replay.Validator = worker
+		}
 	}
-	printReadinessReport(c.out, report)
-	return nil
+	return replay, replay.Implementer.ID != "" && replay.Validator.ID != ""
+}
+
+func workerHasDispatchRequest(worker store.Worker, requestID string) bool {
+	for _, event := range worker.Events {
+		if event.Type == "issue.dispatch" && event.RequestID == requestID {
+			return true
+		}
+	}
+	return false
+}
+
+func printDispatchResult(out io.Writer, plan dispatch.PlanResult, implementer, validator store.Worker, replayed bool) {
+	fmt.Fprintf(out, "dispatch issue=%s implementer=%s validator=%s request=%s replayed=%t\n", plan.Issue, implementer.ID, validator.ID, plan.RequestID, replayed)
+	fmt.Fprintf(out, "implementer: cs send %s \"continue\"\n", implementer.ID)
+	if len(plan.Gates) > 0 {
+		for _, gate := range plan.Gates {
+			fmt.Fprintf(out, "gate: cs gate record --repo %s --worker %s --gate %s --exit-code <code> --output <summary>\n", plan.Repo, validator.ID, gate)
+		}
+	} else {
+		fmt.Fprintf(out, "gate: cs gate record --repo %s --worker %s --gate <gate-id> --exit-code <code> --output <summary>\n", plan.Repo, validator.ID)
+	}
+	fmt.Fprintf(out, "issue report: cs issue report --issue %s --worker %s\n", plan.Issue, validator.ID)
 }
 
 func claimIssueMarkerMarkdown(issue string, all []store.Claim, now time.Time) (string, error) {

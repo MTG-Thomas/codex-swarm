@@ -60,25 +60,11 @@ func (c cli) validateStart(args []string) error {
 	}
 
 	now := c.now().UTC()
-	implementerID, err := newWorkerID(now)
-	if err != nil {
-		return fmt.Errorf("generate implementer id: %w", err)
-	}
-	validatorID, err := newWorkerID(now)
-	if err != nil {
-		return fmt.Errorf("generate validator id: %w", err)
-	}
 	gateList := splitGateIDs(*gates)
-	implementer := newValidationWorker(implementerID, "", "implementer", issue, repoRoot, *engine, *prompt, now)
-	validatorPrompt := validatorPrompt(implementer, gateList)
-	validator := newValidationWorker(validatorID, implementer.ID, "validator", issue, repoRoot, *engine, validatorPrompt, now)
-	validator.ValidationOf = implementer.ID
-	validator.ValidationStatus = ValidationPending
-	validator.Events = append(validator.Events, store.Event{
-		At:      now,
-		Type:    "validation.started",
-		Message: fmt.Sprintf("validation_of=%s gates=%s", implementer.ID, strings.Join(gateList, ",")),
-	})
+	implementer, validator, err := newValidationPair(issue, repoRoot, *engine, *prompt, gateList, now)
+	if err != nil {
+		return err
+	}
 
 	st := store.NewJSONStore(*statePath)
 	if err := st.SaveWorker(implementer); err != nil {
@@ -101,6 +87,28 @@ func (c cli) validateStart(args []string) error {
 	fmt.Fprintf(c.out, "reject: cs report --note \"rejected: <findings>\" %s failed\n", validator.ID)
 	fmt.Fprintf(c.out, "issue report: cs issue report --issue %s --worker %s\n", issue, validator.ID)
 	return nil
+}
+
+func newValidationPair(issue, repoRoot, engine, prompt string, gates []string, now time.Time) (store.Worker, store.Worker, error) {
+	implementerID, err := newWorkerID(now)
+	if err != nil {
+		return store.Worker{}, store.Worker{}, fmt.Errorf("generate implementer id: %w", err)
+	}
+	validatorID, err := newWorkerID(now)
+	if err != nil {
+		return store.Worker{}, store.Worker{}, fmt.Errorf("generate validator id: %w", err)
+	}
+	implementer := newValidationWorker(implementerID, "", "implementer", issue, repoRoot, engine, prompt, now)
+	validatorPrompt := validatorPrompt(implementer, gates)
+	validator := newValidationWorker(validatorID, implementer.ID, "validator", issue, repoRoot, engine, validatorPrompt, now)
+	validator.ValidationOf = implementer.ID
+	validator.ValidationStatus = ValidationPending
+	validator.Events = append(validator.Events, store.Event{
+		At:      now,
+		Type:    "validation.started",
+		Message: fmt.Sprintf("validation_of=%s gates=%s", implementer.ID, strings.Join(gates, ",")),
+	})
+	return implementer, validator, nil
 }
 
 func newValidationWorker(id, parentID, role, issue, repoRoot, engine, prompt string, now time.Time) store.Worker {
