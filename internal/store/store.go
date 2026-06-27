@@ -196,6 +196,20 @@ type Event struct {
 	RequestID string    `json:"request_id,omitempty"`
 }
 
+// GateEvidence records proof that a named repo quality gate was evaluated.
+type GateEvidence struct {
+	ID        string    `json:"id"`
+	GateID    string    `json:"gate_id"`
+	WorkerID  string    `json:"worker_id,omitempty"`
+	Repo      string    `json:"repo,omitempty"`
+	Scope     string    `json:"scope,omitempty"`
+	Command   string    `json:"command"`
+	ExitCode  int       `json:"exit_code"`
+	Output    string    `json:"output,omitempty"`
+	Commit    string    `json:"commit,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // CompletedMutation stores an idempotency replay record.
 type CompletedMutation struct {
 	RequestID   string    `json:"request_id"`

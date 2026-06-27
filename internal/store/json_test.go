@@ -102,6 +102,29 @@ func TestJSONStoreRoundTrip(t *testing.T) {
 	if current.ID != agent.ID || current.Name != agent.Name {
 		t.Fatalf("CurrentAgent() = %#v", current)
 	}
+
+	evidence := GateEvidence{
+		ID:        "g-test",
+		GateID:    "test",
+		WorkerID:  "w-test",
+		Repo:      "/repo",
+		Scope:     "repo",
+		Command:   "go test ./...",
+		ExitCode:  0,
+		Output:    "ok",
+		Commit:    "abcdef",
+		CreatedAt: now.Add(time.Minute),
+	}
+	if err := s.SaveGateEvidence(evidence); err != nil {
+		t.Fatalf("SaveGateEvidence() error = %v", err)
+	}
+	gateEvidence, err := s.ListGateEvidence()
+	if err != nil {
+		t.Fatalf("ListGateEvidence() error = %v", err)
+	}
+	if len(gateEvidence) != 1 || gateEvidence[0].ID != evidence.ID || gateEvidence[0].GateID != evidence.GateID || gateEvidence[0].Command != evidence.Command {
+		t.Fatalf("ListGateEvidence() = %#v, want %#v", gateEvidence, evidence)
+	}
 }
 
 func TestJSONStoreImportClaimsSkipsNewerLocal(t *testing.T) {

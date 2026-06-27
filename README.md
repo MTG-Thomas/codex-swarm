@@ -45,6 +45,8 @@ go run ./cmd/cs handoff <from-worker-id> <to-worker-id> "ready for review"
 go run ./cmd/cs claim create --repo . --scope internal/store --worker <worker-id> --issue MTG-Thomas/codex-swarm#42 --note "editing store claims"
 go run ./cmd/cs claim conflicts --repo . --scope internal/store/json.go
 go run ./cmd/cs claim export --issue MTG-Thomas/codex-swarm#42
+go run ./cmd/cs gate list --repo .
+go run ./cmd/cs gate record --repo . --worker <worker-id> --gate test --exit-code 0 --output "go test ./... passed"
 go run ./cmd/cs issue export --issue MTG-Thomas/codex-swarm#42
 go run ./cmd/cs issue sync --issue MTG-Thomas/codex-swarm#42
 go run ./cmd/cs issue pull --issue MTG-Thomas/codex-swarm#42
@@ -106,6 +108,24 @@ entry point but no remote devcontainer lane:
       "command": "pwsh -NoProfile -File .\\scripts\\bifrost-local-sync.ps1 <scoped-authored-path>",
       "docs": "docs/FIRST_30_MINUTES.md",
       "note": "Use scoped sync after authored workspace edits."
+    }
+  ]
+}
+```
+
+Quality gates define repo-owned verification commands that agents can reference
+and record as local proof. `gate list` reads these definitions; `gate record`
+stores observed evidence and appends a `quality.gate` event to the worker
+timeline. Recording evidence does not execute the command yet.
+
+```json
+{
+  "quality_gates": [
+    {
+      "id": "test",
+      "command": "go test ./...",
+      "scope": "repo",
+      "description": "unit test suite"
     }
   ]
 }

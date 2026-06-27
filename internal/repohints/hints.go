@@ -17,6 +17,7 @@ const (
 type Hints struct {
 	RemoteDevcontainer *RemoteDevcontainer `json:"remote_devcontainer,omitempty"`
 	Commands           []CommandHint       `json:"commands,omitempty"`
+	QualityGates       []QualityGate       `json:"quality_gates,omitempty"`
 }
 
 type RemoteDevcontainer struct {
@@ -31,6 +32,13 @@ type CommandHint struct {
 	Command string `json:"command,omitempty"`
 	Docs    string `json:"docs,omitempty"`
 	Note    string `json:"note,omitempty"`
+}
+
+type QualityGate struct {
+	ID          string `json:"id,omitempty"`
+	Command     string `json:"command,omitempty"`
+	Description string `json:"description,omitempty"`
+	Scope       string `json:"scope,omitempty"`
 }
 
 type Source struct {
@@ -76,6 +84,20 @@ func (h Hints) Validate() error {
 			return fmt.Errorf("commands[%d].command is required", i)
 		}
 	}
+	seenGateIDs := map[string]bool{}
+	for i, gate := range h.QualityGates {
+		id := strings.TrimSpace(gate.ID)
+		if id == "" {
+			return fmt.Errorf("quality_gates[%d].id is required", i)
+		}
+		if strings.TrimSpace(gate.Command) == "" {
+			return fmt.Errorf("quality_gates[%d].command is required", i)
+		}
+		if seenGateIDs[id] {
+			return fmt.Errorf("quality_gates[%d].id %q is duplicated", i, id)
+		}
+		seenGateIDs[id] = true
+	}
 	return nil
 }
 
@@ -109,6 +131,16 @@ func (h Hints) Lines() []string {
 		}
 		if note := strings.TrimSpace(command.Note); note != "" {
 			lines = append(lines, "repo hint: "+note)
+		}
+	}
+	for _, gate := range h.QualityGates {
+		id := strings.TrimSpace(gate.ID)
+		lines = append(lines, "repo hint: quality gate "+id+": "+strings.TrimSpace(gate.Command))
+		if scope := strings.TrimSpace(gate.Scope); scope != "" {
+			lines = append(lines, "repo hint: quality gate "+id+" scope: "+scope)
+		}
+		if description := strings.TrimSpace(gate.Description); description != "" {
+			lines = append(lines, "repo hint: quality gate "+id+" description: "+description)
 		}
 	}
 	return lines
