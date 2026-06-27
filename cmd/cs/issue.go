@@ -317,6 +317,15 @@ func workerIssueReportMarkdown(issue string, worker store.Worker, note string, n
 	fmt.Fprintf(&buf, "_Generated: %s_\n\n", now.Format(time.RFC3339))
 	fmt.Fprintf(&buf, "- Worker: `%s`\n", worker.ID)
 	fmt.Fprintf(&buf, "- Status: `%s`\n", displayWorkerStatus(worker))
+	if worker.Role != "" {
+		fmt.Fprintf(&buf, "- Role: `%s`\n", worker.Role)
+	}
+	if worker.ValidationOf != "" {
+		fmt.Fprintf(&buf, "- Validation of: `%s`\n", worker.ValidationOf)
+	}
+	if worker.ValidationStatus != "" {
+		fmt.Fprintf(&buf, "- Validation status: `%s`\n", worker.ValidationStatus)
+	}
 	fmt.Fprintf(&buf, "- Engine: `%s`\n", worker.Engine)
 	if worker.ThreadID != "" {
 		fmt.Fprintf(&buf, "- Thread: `%s`\n", worker.ThreadID)

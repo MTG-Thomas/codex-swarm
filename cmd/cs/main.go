@@ -71,6 +71,8 @@ func (c cli) run(args []string) error {
 		return c.claim(args[1:])
 	case "gate":
 		return c.gate(args[1:])
+	case "validate":
+		return c.validate(args[1:])
 	case "issue":
 		return c.issue(args[1:])
 	case "agent":
@@ -683,8 +685,14 @@ func (c cli) report(args []string) error {
 		switch rest[1] {
 		case "done", "completed":
 			worker.ApplyStatusAt(store.WorkerDone, now)
+			if worker.Role == "validator" {
+				worker.ValidationStatus = ValidationApproved
+			}
 		case "failed":
 			worker.ApplyStatusAt(store.WorkerFailed, now)
+			if worker.Role == "validator" {
+				worker.ValidationStatus = ValidationRejected
+			}
 		default:
 			worker.ApplyStatus(store.WorkerIdle)
 		}
@@ -801,6 +809,12 @@ func (c cli) show(args []string) error {
 	if worker.Issue != "" {
 		fmt.Fprintf(c.out, "issue=%s\n", worker.Issue)
 	}
+	if worker.ValidationOf != "" {
+		fmt.Fprintf(c.out, "validation_of=%s\n", worker.ValidationOf)
+	}
+	if worker.ValidationStatus != "" {
+		fmt.Fprintf(c.out, "validation_status=%s\n", worker.ValidationStatus)
+	}
 	if worker.TurnID != "" {
 		fmt.Fprintf(c.out, "turn=%s\n", worker.TurnID)
 	}
@@ -861,6 +875,7 @@ Usage:
   cs claim push --issue owner/repo#123
   cs gate list --repo .
   cs gate record --repo . --worker <worker> --gate test --exit-code 0 --output "go test ./..."
+  cs validate start --repo . --issue owner/repo#123 --prompt "implement this issue" --gate test
   cs issue export --issue owner/repo#123
   cs issue pull --issue owner/repo#123
   cs issue sync --issue owner/repo#123

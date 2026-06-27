@@ -19,15 +19,18 @@ func TestJSONStoreRoundTrip(t *testing.T) {
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
 
 	worker := Worker{
-		ID:          "w-test",
-		Issue:       "MTG-Thomas/codex-swarm#42",
-		ProjectRoot: "/repo",
-		ThreadID:    "thread-test",
-		Status:      WorkerIdle,
-		Prompt:      "inspect repo",
-		CreatedAt:   now,
-		UpdatedAt:   now,
-		Events:      []Event{{At: now, Type: "spawned", Message: "worker created"}},
+		ID:               "w-test",
+		Role:             "validator",
+		Issue:            "MTG-Thomas/codex-swarm#42",
+		ValidationOf:     "w-implementer",
+		ValidationStatus: "pending",
+		ProjectRoot:      "/repo",
+		ThreadID:         "thread-test",
+		Status:           WorkerIdle,
+		Prompt:           "inspect repo",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+		Events:           []Event{{At: now, Type: "spawned", Message: "worker created"}},
 	}
 	if err := s.SaveWorker(worker); err != nil {
 		t.Fatalf("SaveWorker() error = %v", err)
@@ -37,7 +40,7 @@ func TestJSONStoreRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetWorker() error = %v", err)
 	}
-	if got.ID != worker.ID || got.ThreadID != worker.ThreadID || got.Issue != worker.Issue || got.Events[0].Type != "spawned" {
+	if got.ID != worker.ID || got.ThreadID != worker.ThreadID || got.Issue != worker.Issue || got.Role != worker.Role || got.ValidationOf != worker.ValidationOf || got.ValidationStatus != worker.ValidationStatus || got.Events[0].Type != "spawned" {
 		t.Fatalf("GetWorker() = %#v, want %#v", got, worker)
 	}
 

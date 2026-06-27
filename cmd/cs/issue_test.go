@@ -427,6 +427,30 @@ func TestWorkerIssueReportMarkdownUsesWorkerReport(t *testing.T) {
 	}
 }
 
+func TestWorkerIssueReportMarkdownIncludesValidatorState(t *testing.T) {
+	now := time.Date(2026, 6, 27, 16, 15, 0, 0, time.UTC)
+	body := workerIssueReportMarkdown("MTG-Thomas/codex-swarm#15", store.Worker{
+		ID:               "w-validator",
+		Role:             "validator",
+		Issue:            "MTG-Thomas/codex-swarm#15",
+		ValidationOf:     "w-implementer",
+		ValidationStatus: ValidationRejected,
+		Status:           store.WorkerFailed,
+		Engine:           "mock",
+		Report:           "rejected: missing gate evidence",
+	}, "", now)
+	for _, want := range []string{
+		"- Role: `validator`",
+		"- Validation of: `w-implementer`",
+		"- Validation status: `rejected`",
+		"rejected: missing gate evidence",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("validator report markdown missing %q:\n%s", want, body)
+		}
+	}
+}
+
 func TestIssueSyncUpdatesLatestMarkerCommentWithFakeGH(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "state.json")
 	ghStatePath := installFakeGH(t, fakeGHState{Body: "issue body"})
