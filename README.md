@@ -73,7 +73,7 @@ go run ./cmd/cs report --note "demo completed" <worker-id> done
 
 State is written to a machine-global user config path by default, for example `%AppData%\codex-swarm\state.json` on Windows. Use `--state <path>` or `CODEX_SWARM_STATE` for disposable demos and tests.
 
-`spawn --engine appserver` prints the Codex thread ID and a recovery command. Codex app visibility can lag briefly, especially on mobile; use `inspect-thread` to verify that the stored thread can still be resumed through app-server.
+`spawn --engine appserver` prints the Codex thread ID and a recovery command. When the worker is linked to an issue, the initial app-server turn receives a concise `ISSUE_LAUNCH_BUNDLE` with issue metadata, repo/worktree/branch context, active issue claims, repo hints, required verification commands, and explicit forbidden actions. Non-issue app-server spawns keep the raw prompt. Codex app visibility can lag briefly, especially on mobile; use `inspect-thread` to verify that the stored thread can still be resumed through app-server.
 
 Use `show --snapshot <worker-id>` to print a compact deterministic worker state snapshot for resume, validation, and handoff context. Add `--json` for the parseable `codex-swarm.worker-snapshot.v1` form. App-server `send` turns include the same snapshot before the user message so resumed Codex threads get current local state without replaying the full timeline.
 

@@ -19,6 +19,7 @@ import (
 	"github.com/MTG-Thomas/codex-swarm/internal/appserver"
 	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
 	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
+	"github.com/MTG-Thomas/codex-swarm/internal/launchbundle"
 	"github.com/MTG-Thomas/codex-swarm/internal/repohints"
 	"github.com/MTG-Thomas/codex-swarm/internal/snapshot"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
@@ -397,6 +398,7 @@ func (c cli) spawn(args []string) error {
 		Events:      events,
 	}
 
+	worktreeReady := false
 	if *createWorktree {
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 		defer cancel()
@@ -412,12 +414,36 @@ func (c cli) spawn(args []string) error {
 			worker.Events = append(worker.Events, store.Event{At: now, Type: "worktree.warning", Message: warning})
 		}
 		worker.Events = append(worker.Events, store.Event{At: now, Type: "worktree.created", Message: worker.Worktree})
+		worktreeReady = true
 	}
 
 	if *engine == "appserver" {
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 		defer cancel()
-		result, err := c.runner().RunTurn(ctx, workerExecutionRoot(worker), *prompt)
+		appserverPrompt := *prompt
+		if worker.Issue != "" {
+			bundle, err := launchbundle.BuildIssue(ctx, launchbundle.Input{
+				Worker:          worker,
+				UserPrompt:      *prompt,
+				Store:           store.NewJSONStore(*statePath),
+				IncludeWorktree: worktreeReady,
+			})
+			if err != nil {
+				worker.ApplyStatusAt(store.WorkerFailed, now)
+				worker.LastMessage = "app-server launch bundle failed: " + err.Error()
+				worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.launch.bundle.failed", Message: worker.LastMessage})
+				if saveErr := store.NewJSONStore(*statePath).SaveWorker(worker); saveErr != nil {
+					return errors.Join(
+						fmt.Errorf("build app-server launch bundle for worker=%s thread=%s repo=%s worktree=%s issue=%s: %w", worker.ID, worker.ThreadID, worker.ProjectRoot, worker.Worktree, worker.Issue, err),
+						fmt.Errorf("save failed app-server worker: %w", saveErr),
+					)
+				}
+				return fmt.Errorf("build app-server launch bundle for worker=%s thread=%s repo=%s worktree=%s issue=%s: %w", worker.ID, worker.ThreadID, worker.ProjectRoot, worker.Worktree, worker.Issue, err)
+			}
+			appserverPrompt = bundle.Prompt
+			worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.launch.bundle", Message: bundle.Source})
+		}
+		result, err := c.runner().RunTurn(ctx, workerExecutionRoot(worker), appserverPrompt)
 		if err != nil {
 			worker.ApplyStatusAt(store.WorkerFailed, now)
 			worker.LastMessage = "app-server spawn failed: " + err.Error()

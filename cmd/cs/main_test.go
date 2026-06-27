@@ -1139,6 +1139,190 @@ func TestCLISendAppserverIncludesCompactSnapshot(t *testing.T) {
 	}
 }
 
+func TestCLISpawnAppserverIssueIncludesLaunchBundle(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 27, 18, 35, 0, 0, time.UTC)
+	repo := initCLITestRepo(t)
+	writeRepoHintsWithQualityGate(t, repo)
+	state := filepath.Join(t.TempDir(), "state.json")
+	installFakeGH(t, fakeGHState{
+		Title: "Build richer appserver bundles",
+		Body:  "Acceptance criteria\n- Include issue context\n- Keep forbidden actions clear",
+	})
+	if err := store.NewJSONStore(state).SaveClaim(store.Claim{
+		ID:     "c-existing",
+		Repo:   repo,
+		Scope:  "cmd/cs",
+		Issue:  "MTG-Thomas/codex-swarm#9",
+		Status: store.ClaimActive,
+		Note:   "existing issue claim",
+	}); err != nil {
+		t.Fatalf("SaveClaim() error = %v", err)
+	}
+	var runPrompt string
+	c := cli{
+		out: &out,
+		err: &bytes.Buffer{},
+		now: func() time.Time { return now },
+		appserverRunner: fakeAppserverRunner{
+			runTurn: func(_ context.Context, _, prompt string) (appserver.RunResult, error) {
+				runPrompt = prompt
+				return appserver.RunResult{ThreadID: "thread-bundle", TurnID: "turn-bundle", Status: "completed"}, nil
+			},
+		},
+	}
+
+	if err := c.run([]string{"spawn", "--state", state, "--engine", "appserver", "--repo", repo, "--worktree", "--issue", "MTG-Thomas/codex-swarm#9", "--prompt", "implement issue #9"}); err != nil {
+		t.Fatalf("spawn appserver issue error = %v", err)
+	}
+	for _, want := range []string{
+		"ISSUE_LAUNCH_BUNDLE",
+		"issue=MTG-Thomas/codex-swarm#9",
+		"url=https://github.com/MTG-Thomas/codex-swarm/issues/9",
+		"title=Build richer appserver bundles",
+		"Acceptance criteria",
+		"repo=" + repo,
+		"worktree=" + filepath.Join(repo, ".codex-swarm", "worktrees", "w-20260627-183500-"),
+		"claim=c-existing status=active scope=cmd/cs",
+		"repo hint: quality gate test: go test ./...",
+		"required_verification=go test ./...",
+		"forbidden=no merge, deploy, close, or destructive cleanup unless explicitly requested",
+		"USER_TASK\nimplement issue #9",
+	} {
+		if !strings.Contains(runPrompt, want) {
+			t.Fatalf("launch bundle missing %q:\n%s", want, runPrompt)
+		}
+	}
+	worker := mustFindWorkerByPrompt(t, state, "implement issue #9")
+	found := false
+	for _, event := range worker.Events {
+		if event.Type == "appserver.launch.bundle" && strings.Contains(event.Message, "issue=MTG-Thomas/codex-swarm#9") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("worker events missing launch bundle source reference: %#v", worker.Events)
+	}
+}
+
+func TestCLISpawnAppserverIssueWithoutWorktreeOmitsCheckoutFields(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 27, 18, 37, 0, 0, time.UTC)
+	repo := initCLITestRepo(t)
+	state := filepath.Join(t.TempDir(), "state.json")
+	installFakeGH(t, fakeGHState{
+		Title: "Build richer appserver bundles",
+		Body:  "Acceptance criteria\n- Include issue context",
+	})
+	var runPrompt string
+	c := cli{
+		out: &out,
+		err: &bytes.Buffer{},
+		now: func() time.Time { return now },
+		appserverRunner: fakeAppserverRunner{
+			runTurn: func(_ context.Context, _, prompt string) (appserver.RunResult, error) {
+				runPrompt = prompt
+				return appserver.RunResult{ThreadID: "thread-bundle", TurnID: "turn-bundle", Status: "completed"}, nil
+			},
+		},
+	}
+
+	if err := c.run([]string{"spawn", "--state", state, "--engine", "appserver", "--repo", repo, "--issue", "MTG-Thomas/codex-swarm#9", "--prompt", "implement issue #9"}); err != nil {
+		t.Fatalf("spawn appserver issue error = %v", err)
+	}
+	for _, want := range []string{
+		"ISSUE_LAUNCH_BUNDLE",
+		"issue=MTG-Thomas/codex-swarm#9",
+		"repo=" + repo,
+		"USER_TASK\nimplement issue #9",
+	} {
+		if !strings.Contains(runPrompt, want) {
+			t.Fatalf("launch bundle missing %q:\n%s", want, runPrompt)
+		}
+	}
+	for _, notWant := range []string{"worktree=", "branch="} {
+		if strings.Contains(runPrompt, notWant) {
+			t.Fatalf("launch bundle unexpectedly contained %q:\n%s", notWant, runPrompt)
+		}
+	}
+}
+
+func TestCLISpawnAppserverIssueBundleFailurePersistsWorkerState(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 27, 18, 38, 0, 0, time.UTC)
+	repo := initCLITestRepo(t)
+	state := filepath.Join(t.TempDir(), "state.json")
+	installFakeGH(t, fakeGHState{IssueViewFail: "issue view unavailable"})
+	c := cli{
+		out: &out,
+		err: &bytes.Buffer{},
+		now: func() time.Time { return now },
+		appserverRunner: fakeAppserverRunner{
+			runTurn: func(context.Context, string, string) (appserver.RunResult, error) {
+				return appserver.RunResult{}, errors.New("RunTurn should not be called")
+			},
+		},
+	}
+
+	err := c.run([]string{"spawn", "--state", state, "--engine", "appserver", "--repo", repo, "--issue", "MTG-Thomas/codex-swarm#9", "--prompt", "implement issue #9"})
+	if err == nil {
+		t.Fatal("spawn error = nil, want launch bundle failure")
+	}
+	for _, want := range []string{
+		"build app-server launch bundle",
+		"worker=w-20260627-183800-",
+		"thread=mock-thread-w-20260627-183800-",
+		"repo=" + repo,
+		"issue=MTG-Thomas/codex-swarm#9",
+		"issue view unavailable",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("spawn error missing %q:\n%v", want, err)
+		}
+	}
+	worker := mustFindWorkerByPrompt(t, state, "implement issue #9")
+	if got := worker.Lifecycle.DeriveStatus(); got != lifecycle.DisplayFailed {
+		t.Fatalf("DeriveStatus() = %q, want failed", got)
+	}
+	if !strings.Contains(worker.LastMessage, "app-server launch bundle failed:") || !strings.Contains(worker.LastMessage, "issue view unavailable") {
+		t.Fatalf("LastMessage = %q, want launch bundle failure", worker.LastMessage)
+	}
+	found := false
+	for _, event := range worker.Events {
+		if event.Type == "appserver.launch.bundle.failed" && strings.Contains(event.Message, "issue view unavailable") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("worker events missing launch bundle failure: %#v", worker.Events)
+	}
+}
+
+func TestCLISpawnAppserverWithoutIssueKeepsRawPrompt(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 27, 18, 40, 0, 0, time.UTC)
+	var runPrompt string
+	c := cli{
+		out: &out,
+		err: &bytes.Buffer{},
+		now: func() time.Time { return now },
+		appserverRunner: fakeAppserverRunner{
+			runTurn: func(_ context.Context, _, prompt string) (appserver.RunResult, error) {
+				runPrompt = prompt
+				return appserver.RunResult{ThreadID: "thread-raw", TurnID: "turn-raw", Status: "completed"}, nil
+			},
+		},
+	}
+	state := filepath.Join(t.TempDir(), "state.json")
+
+	if err := c.run([]string{"spawn", "--state", state, "--engine", "appserver", "--repo", ".", "--prompt", "raw appserver task"}); err != nil {
+		t.Fatalf("spawn appserver non-issue error = %v", err)
+	}
+	if runPrompt != "raw appserver task" {
+		t.Fatalf("RunTurn prompt = %q, want raw prompt", runPrompt)
+	}
+}
+
 func TestCLISpawnAppserverFailedResultSetsTerminatedAt(t *testing.T) {
 	var out bytes.Buffer
 	now := time.Date(2026, 6, 26, 16, 15, 0, 0, time.UTC)
