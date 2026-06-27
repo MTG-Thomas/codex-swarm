@@ -639,6 +639,85 @@ func TestCLIRepoHints(t *testing.T) {
 	}
 }
 
+func TestCLIGateListAndRecord(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 27, 15, 0, 0, 0, time.UTC)
+	repo := initCLITestRepo(t)
+	writeRepoHintsWithQualityGate(t, repo)
+	state := filepath.Join(t.TempDir(), "state.json")
+	if err := store.NewJSONStore(state).SaveWorker(store.Worker{
+		ID:          "w-gate",
+		ProjectRoot: repo,
+		ThreadID:    "thread-gate",
+		Engine:      "mock",
+		Status:      store.WorkerIdle,
+		Prompt:      "run proof",
+		CreatedAt:   now.Add(-time.Hour),
+		UpdatedAt:   now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveWorker() error = %v", err)
+	}
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+
+	if err := c.run([]string{"gate", "list", "--repo", repo}); err != nil {
+		t.Fatalf("gate list error = %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"gates=1", "test\trepo\tgo test ./...\tunit test suite"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("gate list output missing %q:\n%s", want, got)
+		}
+	}
+
+	out.Reset()
+	if err := c.run([]string{"gate", "record", "--state", state, "--repo", repo, "--worker", "w-gate", "--gate", "test", "--exit-code", "0", "--output", "ok ./..."}); err != nil {
+		t.Fatalf("gate record error = %v", err)
+	}
+	got = out.String()
+	if !strings.Contains(got, "gate evidence g-20260627-150000-") || !strings.Contains(got, "gate=test exit=0 repo="+repo) || !strings.Contains(got, "commit=") {
+		t.Fatalf("gate record output = %q", got)
+	}
+
+	evidence, err := store.NewJSONStore(state).ListGateEvidence()
+	if err != nil {
+		t.Fatalf("ListGateEvidence() error = %v", err)
+	}
+	if len(evidence) != 1 {
+		t.Fatalf("evidence count = %d, want 1", len(evidence))
+	}
+	if evidence[0].GateID != "test" || evidence[0].Command != "go test ./..." || evidence[0].Scope != "repo" || evidence[0].Output != "ok ./..." || evidence[0].WorkerID != "w-gate" {
+		t.Fatalf("evidence = %#v", evidence[0])
+	}
+	worker := mustGetWorker(t, state, "w-gate")
+	if len(worker.Events) != 1 || worker.Events[0].Type != "quality.gate" || !strings.Contains(worker.Events[0].Message, "gate=test exit=0 command=go test ./...") {
+		t.Fatalf("worker events = %#v", worker.Events)
+	}
+}
+
+func TestCLIGateRecordRejectsMissingWorkerBeforeEvidenceWrite(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 27, 15, 30, 0, 0, time.UTC)
+	repo := t.TempDir()
+	writeRepoHintsWithQualityGate(t, repo)
+	state := filepath.Join(t.TempDir(), "state.json")
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+
+	err := c.run([]string{"gate", "record", "--state", state, "--repo", repo, "--worker", "w-missing", "--gate", "test", "--exit-code", "0"})
+	if err == nil {
+		t.Fatal("gate record error = nil, want missing worker error")
+	}
+	if !strings.Contains(err.Error(), `worker "w-missing" not found`) {
+		t.Fatalf("gate record error = %v", err)
+	}
+	evidence, listErr := store.NewJSONStore(state).ListGateEvidence()
+	if listErr != nil {
+		t.Fatalf("ListGateEvidence() error = %v", listErr)
+	}
+	if len(evidence) != 0 {
+		t.Fatalf("evidence count = %d, want 0: %#v", len(evidence), evidence)
+	}
+}
+
 func TestCLISpawnPrintsRepoHintsWhenConfigured(t *testing.T) {
 	var out bytes.Buffer
 	now := time.Date(2026, 6, 26, 16, 4, 0, 0, time.UTC)
@@ -976,6 +1055,23 @@ func writeRepoHints(t *testing.T, repo string) {
     "docs": "docs/devcontainer.md",
     "note": "No secrets are injected by default."
   }
+}`
+	if err := os.WriteFile(filepath.Join(repo, "codex-swarm.hints.json"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write repo hints: %v", err)
+	}
+}
+
+func writeRepoHintsWithQualityGate(t *testing.T, repo string) {
+	t.Helper()
+	body := `{
+  "quality_gates": [
+    {
+      "id": "test",
+      "command": "go test ./...",
+      "scope": "repo",
+      "description": "unit test suite"
+    }
+  ]
 }`
 	if err := os.WriteFile(filepath.Join(repo, "codex-swarm.hints.json"), []byte(body), 0o600); err != nil {
 		t.Fatalf("write repo hints: %v", err)

@@ -28,6 +28,7 @@ type stateFile struct {
 	Claims             []Claim             `json:"claims,omitempty"`
 	Agents             []Agent             `json:"agents,omitempty"`
 	Events             []Event             `json:"events,omitempty"`
+	GateEvidence       []GateEvidence      `json:"gate_evidence,omitempty"`
 	CompletedMutations []CompletedMutation `json:"completed_mutations,omitempty"`
 }
 
@@ -256,6 +257,47 @@ func (s *JSONStore) ListEvents() ([]Event, error) {
 		return nil
 	})
 	return events, err
+}
+
+// SaveGateEvidence inserts or replaces one quality gate evidence record.
+func (s *JSONStore) SaveGateEvidence(evidence GateEvidence) error {
+	return s.withStateLock(func() error {
+		state, err := s.read()
+		if err != nil {
+			return err
+		}
+
+		found := false
+		for i := range state.GateEvidence {
+			if state.GateEvidence[i].ID == evidence.ID {
+				state.GateEvidence[i] = evidence
+				found = true
+				break
+			}
+		}
+		if !found {
+			state.GateEvidence = append(state.GateEvidence, evidence)
+		}
+
+		return s.write(state)
+	})
+}
+
+// ListGateEvidence returns quality gate evidence sorted by newest first.
+func (s *JSONStore) ListGateEvidence() ([]GateEvidence, error) {
+	var evidence []GateEvidence
+	err := s.withStateLock(func() error {
+		state, err := s.read()
+		if err != nil {
+			return err
+		}
+		evidence = append([]GateEvidence(nil), state.GateEvidence...)
+		sort.Slice(evidence, func(i, j int) bool {
+			return evidence[i].CreatedAt.After(evidence[j].CreatedAt)
+		})
+		return nil
+	})
+	return evidence, err
 }
 
 // SaveSchedule inserts or replaces one schedule record.

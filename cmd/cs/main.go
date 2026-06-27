@@ -69,6 +69,8 @@ func (c cli) run(args []string) error {
 		return c.handoff(args[1:])
 	case "claim":
 		return c.claim(args[1:])
+	case "gate":
+		return c.gate(args[1:])
 	case "issue":
 		return c.issue(args[1:])
 	case "agent":
@@ -857,6 +859,8 @@ Usage:
   cs claim create --repo . --scope internal/store --worker <worker>
   cs claim conflicts --repo . --scope internal/store
   cs claim push --issue owner/repo#123
+  cs gate list --repo .
+  cs gate record --repo . --worker <worker> --gate test --exit-code 0 --output "go test ./..."
   cs issue export --issue owner/repo#123
   cs issue pull --issue owner/repo#123
   cs issue sync --issue owner/repo#123

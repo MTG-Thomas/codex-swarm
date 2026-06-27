@@ -12,5 +12,31 @@
       "docs": "AGENTS.md",
       "note": "Keep CLI output scriptable and prefer standard library code unless a dependency removes real cross-platform risk."
     }
+  ],
+  "quality_gates": [
+    {
+      "id": "test",
+      "command": "go test ./...",
+      "scope": "repo",
+      "description": "unit test suite"
+    },
+    {
+      "id": "vet",
+      "command": "go vet ./...",
+      "scope": "repo",
+      "description": "static analysis"
+    },
+    {
+      "id": "build-cs",
+      "command": "go build -trimpath ./cmd/cs",
+      "scope": "cmd/cs",
+      "description": "CLI build"
+    },
+    {
+      "id": "build-csd",
+      "command": "go build -trimpath ./cmd/csd",
+      "scope": "cmd/csd",
+      "description": "daemon build"
+    }
   ]
 }

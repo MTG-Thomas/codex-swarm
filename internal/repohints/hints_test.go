@@ -104,6 +104,44 @@ func TestLoadCommandHints(t *testing.T) {
 	}
 }
 
+func TestLoadQualityGateHints(t *testing.T) {
+	repo := t.TempDir()
+	body := `{
+  "quality_gates": [
+    {
+      "id": "test",
+      "command": "go test ./...",
+      "scope": "repo",
+      "description": "unit test suite"
+    }
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(repo, CommittedFile), []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	hints, _, ok, err := Load(repo)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("Load() ok = false")
+	}
+	if len(hints.QualityGates) != 1 || hints.QualityGates[0].ID != "test" {
+		t.Fatalf("QualityGates = %#v", hints.QualityGates)
+	}
+	lines := strings.Join(hints.Lines(), "\n")
+	for _, want := range []string{
+		"repo hint: quality gate test: go test ./...",
+		"repo hint: quality gate test scope: repo",
+		"repo hint: quality gate test description: unit test suite",
+	} {
+		if !strings.Contains(lines, want) {
+			t.Fatalf("Lines() missing %q:\n%s", want, lines)
+		}
+	}
+}
+
 func TestLoadRejectsIncompleteRemoteDevcontainerHint(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.WriteFile(filepath.Join(repo, CommittedFile), []byte(`{"remote_devcontainer":{"image":"image:tag"}}`), 0o600); err != nil {
@@ -130,6 +168,37 @@ func TestLoadRejectsIncompleteCommandHint(t *testing.T) {
 		t.Fatal("Load() error = nil, want validation error")
 	}
 	if !strings.Contains(err.Error(), "commands[0].command is required") {
+		t.Fatalf("Load() error = %v", err)
+	}
+}
+
+func TestLoadRejectsIncompleteQualityGate(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, CommittedFile), []byte(`{"quality_gates":[{"command":"go test ./..."}]}`), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, _, _, err := Load(repo)
+	if err == nil {
+		t.Fatal("Load() error = nil, want validation error")
+	}
+	if !strings.Contains(err.Error(), "quality_gates[0].id is required") {
+		t.Fatalf("Load() error = %v", err)
+	}
+}
+
+func TestLoadRejectsDuplicateQualityGateIDs(t *testing.T) {
+	repo := t.TempDir()
+	body := `{"quality_gates":[{"id":"test","command":"go test ./..."},{"id":"test","command":"go vet ./..."}]}`
+	if err := os.WriteFile(filepath.Join(repo, CommittedFile), []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, _, _, err := Load(repo)
+	if err == nil {
+		t.Fatal("Load() error = nil, want validation error")
+	}
+	if !strings.Contains(err.Error(), `quality_gates[1].id "test" is duplicated`) {
 		t.Fatalf("Load() error = %v", err)
 	}
 }
