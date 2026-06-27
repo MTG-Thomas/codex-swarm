@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/MTG-Thomas/codex-swarm/internal/lifecycle"
+	"github.com/MTG-Thomas/codex-swarm/internal/readiness"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
 
@@ -32,6 +35,20 @@ func (m memoryStore) ListWorkers() ([]store.Worker, error) {
 
 func (m memoryStore) ListClaims() ([]store.Claim, error) {
 	return m.claims, nil
+}
+
+type fakeIssueProvider struct {
+	issue readiness.Issue
+	err   error
+}
+
+func (p fakeIssueProvider) IssueMetadata(ctx context.Context, issue string) (readiness.Issue, error) {
+	if p.err != nil {
+		return readiness.Issue{}, p.err
+	}
+	got := p.issue
+	got.Ref = issue
+	return got, nil
 }
 
 func TestStatusString(t *testing.T) {
@@ -201,6 +218,52 @@ func TestServerClaims(t *testing.T) {
 	}
 }
 
+func TestServerReadiness(t *testing.T) {
+	repo := t.TempDir()
+	writeDaemonRepoHints(t, repo)
+	server := NewServerWithIssueProvider("state.json", memoryStore{claims: []store.Claim{{
+		ID:     "c-released",
+		Issue:  "MTG-Thomas/codex-swarm#27",
+		Status: store.ClaimReleased,
+	}}}, fakeIssueProvider{issue: readiness.Issue{
+		Title: "Expose issue readiness through daemon",
+		Body:  "Acceptance criteria",
+	}})
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/readiness?issue=MTG-Thomas/codex-swarm%2327&repo="+repo, nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var report readiness.Report
+	if err := json.NewDecoder(rec.Body).Decode(&report); err != nil {
+		t.Fatalf("decode readiness: %v", err)
+	}
+	if !report.Ready || report.Issue.Ref != "MTG-Thomas/codex-swarm#27" || report.Repo == "" || len(report.Gates) != 1 {
+		t.Fatalf("readiness report = %#v", report)
+	}
+}
+
+func TestClientReadiness(t *testing.T) {
+	repo := t.TempDir()
+	writeDaemonRepoHints(t, repo)
+	server := httptest.NewServer(NewServerWithIssueProvider("state.json", memoryStore{}, fakeIssueProvider{issue: readiness.Issue{
+		Title: "Ready issue",
+		Body:  "Body",
+	}}).Handler())
+	defer server.Close()
+
+	report, err := (Client{BaseURL: server.URL}).Readiness(context.Background(), "MTG-Thomas/codex-swarm#27", repo)
+	if err != nil {
+		t.Fatalf("Readiness() error = %v", err)
+	}
+	if !report.Ready || report.Issue.Ref != "MTG-Thomas/codex-swarm#27" {
+		t.Fatalf("readiness report = %#v", report)
+	}
+}
+
 func TestClientStatus(t *testing.T) {
 	server := httptest.NewServer(NewServer("state.json", memoryStore{workers: []store.Worker{{ID: "w-1"}}}).Handler())
 	defer server.Close()
@@ -265,7 +328,7 @@ func TestClientStatusDoesNotFallbackOnServerError(t *testing.T) {
 
 func TestReadOnlyEndpointsRejectPost(t *testing.T) {
 	server := NewServer("state.json", memoryStore{})
-	for _, path := range []string{"/healthz", "/status", "/workers", "/claims", "/v1/status"} {
+	for _, path := range []string{"/healthz", "/status", "/workers", "/claims", "/readiness", "/v1/status"} {
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, strings.NewReader(""))
 		rec := httptest.NewRecorder()
 		server.Handler().ServeHTTP(rec, req)
@@ -273,5 +336,21 @@ func TestReadOnlyEndpointsRejectPost(t *testing.T) {
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Fatalf("%s status code = %d, want %d", path, rec.Code, http.StatusMethodNotAllowed)
 		}
+	}
+}
+
+func writeDaemonRepoHints(t *testing.T, repo string) {
+	t.Helper()
+	body := `{
+  "quality_gates": [
+    {
+      "id": "test",
+      "command": "go test ./...",
+      "scope": "repo"
+    }
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(repo, "codex-swarm.hints.json"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write repo hints: %v", err)
 	}
 }

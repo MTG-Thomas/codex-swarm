@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
 	"github.com/MTG-Thomas/codex-swarm/internal/claims"
+	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
+	"github.com/MTG-Thomas/codex-swarm/internal/readiness"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
 
@@ -75,15 +78,21 @@ type readStore interface {
 
 // Server exposes read-only daemon HTTP endpoints over swarm state.
 type Server struct {
-	store     readStore
-	statePath string
+	store         readStore
+	statePath     string
+	issueProvider readiness.IssueMetadataProvider
 }
 
 // NewServer builds a read-only daemon server over the provided store.
 func NewServer(statePath string, st readStore) *Server {
+	return NewServerWithIssueProvider(statePath, st, gh.CLIssueMetadataProvider{})
+}
+
+func NewServerWithIssueProvider(statePath string, st readStore, provider readiness.IssueMetadataProvider) *Server {
 	return &Server{
-		store:     st,
-		statePath: statePath,
+		store:         st,
+		statePath:     statePath,
+		issueProvider: provider,
 	}
 }
 
@@ -94,6 +103,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/status", s.handleStatus)
 	mux.HandleFunc("/workers", s.handleWorkers)
 	mux.HandleFunc("/claims", s.handleClaims)
+	mux.HandleFunc("/readiness", s.handleReadiness)
 	mux.HandleFunc("/v1/status", s.handleLegacyStatus)
 	return mux
 }
@@ -158,6 +168,24 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		Claims:    claimList,
 		Conflicts: findClaimConflicts(claimList, time.Now().UTC()),
 	})
+}
+
+func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	report, err := readiness.Build(r.Context(), readiness.BuildInput{
+		Issue:    r.URL.Query().Get("issue"),
+		Repo:     r.URL.Query().Get("repo"),
+		Store:    s.store,
+		Provider: s.issueProvider,
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, report)
 }
 
 func (s *Server) handleLegacyStatus(w http.ResponseWriter, r *http.Request) {
@@ -241,6 +269,18 @@ func (c Client) Claims(ctx context.Context) (ClaimsResponse, error) {
 		return ClaimsResponse{}, err
 	}
 	return claimList, nil
+}
+
+// Readiness returns a read-only issue readiness report from the daemon.
+func (c Client) Readiness(ctx context.Context, issue, repo string) (readiness.Report, error) {
+	var report readiness.Report
+	query := url.Values{}
+	query.Set("issue", issue)
+	query.Set("repo", repo)
+	if err := c.get(ctx, "/readiness?"+query.Encode(), &report); err != nil {
+		return readiness.Report{}, err
+	}
+	return report, nil
 }
 
 func (c Client) get(ctx context.Context, path string, target any) error {

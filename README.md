@@ -88,7 +88,10 @@ dispatch preflight. It reads the issue title/body through `gh`, local
 issue-linked claims, and repo quality gates from `codex-swarm.hints.json`, then
 prints a scriptable `ready=<bool>` summary plus blockers. Add `--json` for a
 parseable readiness report. This command does not mutate GitHub or create
-workers.
+workers. Set `CODEX_SWARM_DAEMON_URL=http://127.0.0.1:8787` or pass
+`--daemon http://127.0.0.1:8787` to have the CLI ask a running daemon for the
+same readiness report; daemon errors are returned directly instead of falling
+back to local mode.
 
 Use `issue dispatch --issue owner/repo#123 --repo <path> --prompt <task> --gate <id>` to run the same readiness preflight and, only when ready, create a local implementer/validator pair. Dispatch is explicit and local-only: it does not post to GitHub or schedule future work. The request key is derived from issue, repo, prompt, and gate IDs; rerunning the same request prints the original worker IDs with `replayed=true` instead of creating duplicates.
 
@@ -157,7 +160,7 @@ Use `agent register --name <name> --role <role>` to record the current local age
 
 Set `CODEX_SWARM_DAEMON_URL=http://127.0.0.1:8787` or pass `cs status --daemon http://127.0.0.1:8787` to make `cs status` prefer a running daemon. Daemon-backed status prints the daemon version, state path, worker count, claim count, conflict count, and read-only worker lines with lifecycle status, issue, worktree, and thread ID.
 
-`csd serve` starts the daemon, `csd status` checks it, and `csd install` / `csd uninstall` are explicit service-manager stubs until platform-specific installers are added. The daemon exposes only read-only HTTP status surfaces in this task: `GET /status`, `GET /workers`, and `GET /claims`. Use the `cs` CLI for worker, claim, issue, and schedule mutations.
+`csd serve` starts the daemon, `csd status` checks it, and `csd install` / `csd uninstall` are explicit service-manager stubs until platform-specific installers are added. The daemon exposes only read-only HTTP status surfaces in this task: `GET /status`, `GET /workers`, `GET /claims`, and `GET /readiness?issue=owner/repo%23123&repo=<path>`. Use the `cs` CLI for worker, claim, issue, and schedule mutations.
 
 Use `--engine mock` when the demo needs to avoid live Codex calls:
 
