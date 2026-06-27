@@ -183,8 +183,13 @@ func (c cli) status(args []string) error {
 	fs := c.flagSet("status")
 	statePath := fs.String("state", defaultStatePath(), "state file path")
 	daemonURL := fs.String("daemon", "", "daemon base URL, for example http://127.0.0.1:8787")
+	issues := fs.Bool("issues", false, "print compact issue and worker operations dashboard")
+	detail := fs.Bool("detail", false, "include lower-priority dashboard rows")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *issues {
+		return c.statusIssues(*statePath, *detail)
 	}
 
 	if *daemonURL == "" {
@@ -218,6 +223,112 @@ func (c cli) status(args []string) error {
 		fmt.Fprintf(c.out, "%s\t%s\t%s\t%s\t%s\n", worker.ID, displayWorkerStatus(worker), worker.Engine, worker.ThreadID, short(worker.Prompt, 60))
 	}
 	return nil
+}
+
+func (c cli) statusIssues(statePath string, detail bool) error {
+	st := store.NewJSONStore(statePath)
+	workers, err := st.ListWorkers()
+	if err != nil {
+		return err
+	}
+	claims, err := st.ListClaims()
+	if err != nil {
+		return err
+	}
+	now := c.now().UTC()
+	rows := issueStatusRows(workers, now)
+	activeClaims := activeDashboardClaims(claims)
+	staleCount := 0
+	for _, row := range rows {
+		if row.Stale {
+			staleCount++
+		}
+	}
+	fmt.Fprintf(c.out, "issues=%d active_workers=%d stale_workers=%d active_claims=%d state=%s\n", countDashboardIssues(rows), len(rows), staleCount, len(activeClaims), statePath)
+	for _, row := range rows {
+		if !detail && !row.Stale && row.Next == "resume" {
+			continue
+		}
+		fmt.Fprintf(c.out, "issue=%s worker=%s status=%s stale=%t next=%s\n", row.Issue, row.WorkerID, row.Status, row.Stale, row.Next)
+	}
+	for _, claim := range activeClaims {
+		fmt.Fprintf(c.out, "claim=%s issue=%s worker=%s scope=%s next=release-or-sync\n", claim.ID, emptyDash(claim.Issue), emptyDash(claim.WorkerID), emptyDash(claim.Scope))
+	}
+	return nil
+}
+
+type issueDashboardRow struct {
+	Issue    string
+	WorkerID string
+	Status   string
+	Stale    bool
+	Next     string
+}
+
+func issueStatusRows(workers []store.Worker, now time.Time) []issueDashboardRow {
+	rows := []issueDashboardRow(nil)
+	for _, worker := range workers {
+		if strings.TrimSpace(worker.Issue) == "" || isTerminalWorker(worker) {
+			continue
+		}
+		stale := workerIsStale(worker, now)
+		rows = append(rows, issueDashboardRow{
+			Issue:    worker.Issue,
+			WorkerID: worker.ID,
+			Status:   displayWorkerStatus(worker),
+			Stale:    stale,
+			Next:     issueDashboardNext(worker, stale),
+		})
+	}
+	return rows
+}
+
+func activeDashboardClaims(claims []store.Claim) []store.Claim {
+	active := []store.Claim(nil)
+	for _, claim := range claims {
+		if claim.Status == store.ClaimActive {
+			active = append(active, claim)
+		}
+	}
+	return active
+}
+
+func countDashboardIssues(rows []issueDashboardRow) int {
+	seen := map[string]bool{}
+	for _, row := range rows {
+		seen[row.Issue] = true
+	}
+	return len(seen)
+}
+
+func workerIsStale(worker store.Worker, now time.Time) bool {
+	if worker.UpdatedAt.IsZero() {
+		return false
+	}
+	return now.Sub(worker.UpdatedAt.UTC()) > 24*time.Hour
+}
+
+func issueDashboardNext(worker store.Worker, stale bool) string {
+	if stale {
+		return "resume-or-release"
+	}
+	switch displayWorkerStatus(worker) {
+	case string(store.WorkerRunning), "working":
+		return "monitor"
+	case string(store.WorkerPending), string(store.WorkerIdle):
+		return "resume"
+	default:
+		return "inspect"
+	}
+}
+
+func isTerminalWorker(worker store.Worker) bool {
+	switch displayWorkerStatus(worker) {
+	case string(store.WorkerDone), string(store.WorkerFailed):
+		return true
+	default:
+		return false
+	}
 }
 
 func (c cli) spawn(args []string) error {
@@ -863,6 +974,7 @@ func (c cli) printUsage() {
 
 Usage:
   cs status
+  cs status --issues
   cs spawn --repo . --prompt "inspect this repo"
   cs spawn --engine appserver --repo . --prompt "summarize this repo in one sentence"
   cs spawn --issue owner/repo#123 --repo . --prompt "work this issue"

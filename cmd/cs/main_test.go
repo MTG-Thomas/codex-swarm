@@ -235,6 +235,113 @@ func TestCLIReportFailedSetsTerminatedAt(t *testing.T) {
 	}
 }
 
+func TestCLIStatusIssuesShowsCompactOperationsDashboard(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 27, 17, 30, 0, 0, time.UTC)
+	state := filepath.Join(t.TempDir(), "state.json")
+	st := store.NewJSONStore(state)
+	for _, worker := range []store.Worker{
+		{
+			ID:          "w-active",
+			Issue:       "MTG-Thomas/codex-swarm#11",
+			ProjectRoot: "/repo",
+			ThreadID:    "thread-active",
+			Engine:      "mock",
+			Status:      store.WorkerRunning,
+			Prompt:      "active issue work",
+			CreatedAt:   now.Add(-time.Hour),
+			UpdatedAt:   now.Add(-time.Hour),
+		},
+		{
+			ID:          "w-stale",
+			Issue:       "MTG-Thomas/codex-swarm#9",
+			ProjectRoot: "/repo",
+			ThreadID:    "thread-stale",
+			Engine:      "mock",
+			Status:      store.WorkerIdle,
+			Prompt:      "stale issue work",
+			CreatedAt:   now.Add(-49 * time.Hour),
+			UpdatedAt:   now.Add(-49 * time.Hour),
+		},
+		{
+			ID:          "w-done",
+			Issue:       "MTG-Thomas/codex-swarm#10",
+			ProjectRoot: "/repo",
+			ThreadID:    "thread-done",
+			Engine:      "mock",
+			Status:      store.WorkerDone,
+			Prompt:      "completed issue work",
+			CreatedAt:   now.Add(-time.Hour),
+			UpdatedAt:   now.Add(-time.Hour),
+		},
+	} {
+		worker.ApplyStatusAt(worker.Status, worker.UpdatedAt)
+		if err := st.SaveWorker(worker); err != nil {
+			t.Fatalf("SaveWorker(%s) error = %v", worker.ID, err)
+		}
+	}
+	if err := st.SaveClaim(store.Claim{
+		ID:        "c-active",
+		WorkerID:  "w-active",
+		Repo:      "/repo",
+		Scope:     "cmd/cs",
+		Issue:     "MTG-Thomas/codex-swarm#11",
+		Status:    store.ClaimActive,
+		CreatedAt: now.Add(-time.Hour),
+		UpdatedAt: now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveClaim() error = %v", err)
+	}
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+
+	if err := c.run([]string{"status", "--issues", "--state", state}); err != nil {
+		t.Fatalf("status --issues error = %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"issues=2 active_workers=2 stale_workers=1 active_claims=1",
+		"issue=MTG-Thomas/codex-swarm#9 worker=w-stale status=idle stale=true next=resume-or-release",
+		"issue=MTG-Thomas/codex-swarm#11 worker=w-active status=working stale=false next=monitor",
+		"claim=c-active issue=MTG-Thomas/codex-swarm#11 worker=w-active scope=cmd/cs next=release-or-sync",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("status --issues output missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "w-done") {
+		t.Fatalf("status --issues included terminal worker:\n%s", got)
+	}
+}
+
+func TestCLIStatusIssuesDetailIncludesFreshWorkers(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 27, 17, 35, 0, 0, time.UTC)
+	state := filepath.Join(t.TempDir(), "state.json")
+	worker := store.Worker{
+		ID:          "w-fresh",
+		Issue:       "MTG-Thomas/codex-swarm#11",
+		ProjectRoot: "/repo",
+		ThreadID:    "thread-fresh",
+		Engine:      "mock",
+		Status:      store.WorkerIdle,
+		Prompt:      "fresh issue work",
+		CreatedAt:   now.Add(-time.Hour),
+		UpdatedAt:   now.Add(-time.Hour),
+	}
+	worker.ApplyStatusAt(worker.Status, worker.UpdatedAt)
+	if err := store.NewJSONStore(state).SaveWorker(worker); err != nil {
+		t.Fatalf("SaveWorker() error = %v", err)
+	}
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+
+	if err := c.run([]string{"status", "--issues", "--detail", "--state", state}); err != nil {
+		t.Fatalf("status --issues --detail error = %v", err)
+	}
+	if !strings.Contains(out.String(), "issue=MTG-Thomas/codex-swarm#11 worker=w-fresh status=idle stale=false next=resume") {
+		t.Fatalf("detail output missing fresh idle worker:\n%s", out.String())
+	}
+}
+
 func TestCLIMessageRequestIDIsIdempotentAndRecordsOneSwarmEvent(t *testing.T) {
 	var out bytes.Buffer
 	now := time.Date(2026, 6, 26, 18, 30, 0, 0, time.UTC)

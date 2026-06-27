@@ -25,6 +25,7 @@ Current scaffold:
 ```powershell
 go test ./...
 go run ./cmd/cs status
+go run ./cmd/cs status --issues
 go run ./cmd/cs status --daemon http://127.0.0.1:8787
 go run ./cmd/csd
 ```
@@ -39,6 +40,7 @@ go run ./cmd/cs spawn --repo . --prompt "isolated mock worker" --worktree
 go run ./cmd/cs spawn --repo . --role reviewer --parent <worker-id> --prompt "review this worker"
 go run ./cmd/cs spawn --repo . --issue MTG-Thomas/codex-swarm#42 --prompt "work this issue"
 go run ./cmd/cs status
+go run ./cmd/cs status --issues
 go run ./cmd/cs doctor
 go run ./cmd/cs doctor --appserver
 go run ./cmd/cs send <worker-id> "continue with tests and docs"
@@ -163,6 +165,8 @@ For proof-sensitive Talos/ARC remote execution, prefer immutable image tags over
 Use `agent register --name <name> --role <role>` to record the current local agent identity. Use `legacy import-coordinator` once per machine, or with `--include-expired` for audit work, to import active warning-only claims from the old PowerShell coordinator.
 
 Set `CODEX_SWARM_DAEMON_URL=http://127.0.0.1:8787` or pass `cs status --daemon http://127.0.0.1:8787` to make `cs status` prefer a running daemon. Daemon-backed status prints the daemon version, state path, worker count, claim count, conflict count, and read-only worker lines with lifecycle status, issue, worktree, and thread ID.
+
+Use `cs status --issues` for a compact read-only operations dashboard over local state. It summarizes issue-linked non-terminal workers, active claims, workers stale for more than 24 hours, and suggested next actions. By default it suppresses lower-priority fresh idle rows; add `--detail` to print every active issue-linked worker.
 
 `csd serve` starts the daemon, `csd status` checks it, and `csd install` / `csd uninstall` install or remove the daemon service on supported platforms. Windows uses a service named `codex-swarm-daemon`; macOS installs a per-user LaunchAgent at `~/Library/LaunchAgents/codex-swarm-daemon.plist`. The daemon exposes read-only HTTP status surfaces with `GET /status`, `GET /workers`, `GET /claims`, and `GET /readiness?issue=owner/repo%23123&repo=<path>`. It also exposes the explicit loopback-only mutation `POST /dispatch` for daemon-backed `cs issue dispatch`. Use the `cs` CLI for worker, claim, issue, and schedule mutations.
 
