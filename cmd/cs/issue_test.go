@@ -926,6 +926,43 @@ func TestIssueDispatchReplaysExistingRequestWithFakeGH(t *testing.T) {
 	}
 }
 
+func TestIssueDispatchUsesDaemonURL(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	repo := t.TempDir()
+	writeIssueReadyRepoHints(t, repo)
+	server := httptest.NewServer(daemon.NewServerWithIssueProvider(state, store.NewJSONStore(state), issueReadyProvider{
+		issue: readiness.Issue{
+			Title: "Daemon dispatch issue",
+			Body:  "Acceptance criteria",
+		},
+	}).Handler())
+	defer server.Close()
+	var out bytes.Buffer
+	c := cli{out: &out, err: &bytes.Buffer{}, now: time.Now}
+
+	args := []string{"issue", "dispatch", "--state", filepath.Join(t.TempDir(), "ignored.json"), "--repo", repo, "--issue", "MTG-Thomas/codex-swarm#31", "--prompt", "implement issue #31", "--gate", "test", "--daemon", server.URL}
+	if err := c.run(args); err != nil {
+		t.Fatalf("issue dispatch daemon error = %v", err)
+	}
+	if !strings.Contains(out.String(), "replayed=false") {
+		t.Fatalf("first daemon dispatch output = %q", out.String())
+	}
+	out.Reset()
+	if err := c.run(args); err != nil {
+		t.Fatalf("issue dispatch daemon replay error = %v", err)
+	}
+	if !strings.Contains(out.String(), "replayed=true") {
+		t.Fatalf("second daemon dispatch output = %q", out.String())
+	}
+	workers, err := store.NewJSONStore(state).ListWorkers()
+	if err != nil {
+		t.Fatalf("ListWorkers() error = %v", err)
+	}
+	if len(workers) != 2 {
+		t.Fatalf("daemon dispatch workers = %d, want 2", len(workers))
+	}
+}
+
 func TestIssueDispatchBlockedReadinessDoesNotCreateWorkers(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "state.json")
 	repo := t.TempDir()
