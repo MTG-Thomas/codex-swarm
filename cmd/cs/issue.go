@@ -242,13 +242,14 @@ func (c cli) issueDispatch(args []string) error {
 	prompt := fs.String("prompt", "", "implementer prompt")
 	engine := fs.String("engine", "mock", "worker engine: mock")
 	gates := fs.String("gate", "", "comma-separated quality gate ids")
+	daemonURL := fs.String("daemon", "", "daemon base URL, for example http://127.0.0.1:8787")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *engine != "mock" {
 		return errors.New("issue dispatch currently supports --engine mock")
 	}
-	report, err := c.issueReadinessReport(*statePath, *issueValue, *repo, "")
+	report, err := c.issueReadinessReport(*statePath, *issueValue, *repo, *daemonURL)
 	if err != nil {
 		return err
 	}
@@ -263,34 +264,29 @@ func (c cli) issueDispatch(args []string) error {
 		}
 		return err
 	}
-	st := store.NewJSONStore(*statePath)
-	workers, err := st.ListWorkers()
-	if err != nil {
-		return err
-	}
-	if replay, ok := findDispatchReplay(workers, plan.RequestID); ok {
-		printDispatchResult(c.out, plan, replay.Implementer, replay.Validator, true)
+	if url := configuredDaemonURL(*daemonURL); url != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		response, err := (daemon.Client{BaseURL: url}).Dispatch(ctx, daemon.DispatchRequest{
+			RequestID: plan.RequestID,
+			Issue:     plan.Issue,
+			Repo:      plan.Repo,
+			Prompt:    plan.Prompt,
+			Gates:     plan.Gates,
+		})
+		if err != nil {
+			return fmt.Errorf("daemon dispatch: %w", err)
+		}
+		printDispatchIDs(c.out, plan, response.Implementer, response.Validator, response.Replayed)
 		return nil
 	}
-
+	st := store.NewJSONStore(*statePath)
 	now := c.now().UTC()
-	implementer, validator, err := newValidationPair(plan.Issue, plan.Repo, *engine, plan.Prompt, plan.Gates, now)
+	result, err := dispatch.Execute(st, plan, plan.RequestID, *engine, now)
 	if err != nil {
 		return err
 	}
-	event := store.Event{
-		At:        now,
-		Type:      "issue.dispatch",
-		Message:   fmt.Sprintf("issue=%s request=%s", plan.Issue, plan.RequestID),
-		Issue:     plan.Issue,
-		RequestID: plan.RequestID,
-	}
-	implementer.Events = append(implementer.Events, event)
-	validator.Events = append(validator.Events, event)
-	if err := st.SaveWorkers(implementer, validator); err != nil {
-		return err
-	}
-	printDispatchResult(c.out, plan, implementer, validator, false)
+	printDispatchIDs(c.out, plan, result.Implementer, result.Validator, result.Replayed)
 	return nil
 }
 
@@ -299,13 +295,10 @@ func (c cli) issueReadinessReport(statePath, issueValue, repo, daemonURL string)
 	if err != nil {
 		return readiness.Report{}, err
 	}
-	if daemonURL == "" {
-		daemonURL = os.Getenv("CODEX_SWARM_DAEMON_URL")
-	}
-	if daemonURL != "" {
+	if url := configuredDaemonURL(daemonURL); url != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		report, err := (daemon.Client{BaseURL: daemonURL}).Readiness(ctx, issue, repo)
+		report, err := (daemon.Client{BaseURL: url}).Readiness(ctx, issue, repo)
 		if err != nil {
 			return readiness.Report{}, fmt.Errorf("daemon readiness: %w", err)
 		}
@@ -317,6 +310,13 @@ func (c cli) issueReadinessReport(statePath, issueValue, repo, daemonURL string)
 		Store:    store.NewJSONStore(statePath),
 		Provider: gh.CLIssueMetadataProvider{},
 	})
+}
+
+func configuredDaemonURL(value string) string {
+	if strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value)
+	}
+	return strings.TrimSpace(os.Getenv("CODEX_SWARM_DAEMON_URL"))
 }
 
 type dispatchReplay struct {
@@ -350,16 +350,20 @@ func workerHasDispatchRequest(worker store.Worker, requestID string) bool {
 }
 
 func printDispatchResult(out io.Writer, plan dispatch.PlanResult, implementer, validator store.Worker, replayed bool) {
-	fmt.Fprintf(out, "dispatch issue=%s implementer=%s validator=%s request=%s replayed=%t\n", plan.Issue, implementer.ID, validator.ID, plan.RequestID, replayed)
-	fmt.Fprintf(out, "implementer: cs send %s \"continue\"\n", implementer.ID)
+	printDispatchIDs(out, plan, implementer.ID, validator.ID, replayed)
+}
+
+func printDispatchIDs(out io.Writer, plan dispatch.PlanResult, implementerID, validatorID string, replayed bool) {
+	fmt.Fprintf(out, "dispatch issue=%s implementer=%s validator=%s request=%s replayed=%t\n", plan.Issue, implementerID, validatorID, plan.RequestID, replayed)
+	fmt.Fprintf(out, "implementer: cs send %s \"continue\"\n", implementerID)
 	if len(plan.Gates) > 0 {
 		for _, gate := range plan.Gates {
-			fmt.Fprintf(out, "gate: cs gate record --repo %s --worker %s --gate %s --exit-code <code> --output <summary>\n", plan.Repo, validator.ID, gate)
+			fmt.Fprintf(out, "gate: cs gate record --repo %s --worker %s --gate %s --exit-code <code> --output <summary>\n", plan.Repo, validatorID, gate)
 		}
 	} else {
-		fmt.Fprintf(out, "gate: cs gate record --repo %s --worker %s --gate <gate-id> --exit-code <code> --output <summary>\n", plan.Repo, validator.ID)
+		fmt.Fprintf(out, "gate: cs gate record --repo %s --worker %s --gate <gate-id> --exit-code <code> --output <summary>\n", plan.Repo, validatorID)
 	}
-	fmt.Fprintf(out, "issue report: cs issue report --issue %s --worker %s\n", plan.Issue, validator.ID)
+	fmt.Fprintf(out, "issue report: cs issue report --issue %s --worker %s\n", plan.Issue, validatorID)
 }
 
 func claimIssueMarkerMarkdown(issue string, all []store.Claim, now time.Time) (string, error) {

@@ -21,19 +21,20 @@ type memoryStore struct {
 	claims  []store.Claim
 }
 
-func (m memoryStore) SaveWorker(worker store.Worker) error {
+func (m *memoryStore) SaveWorkers(workers ...store.Worker) error {
+	m.workers = append(m.workers, workers...)
 	return nil
 }
 
-func (m memoryStore) GetWorker(id string) (store.Worker, error) {
+func (m *memoryStore) GetWorker(id string) (store.Worker, error) {
 	return store.Worker{}, store.ErrWorkerNotFound
 }
 
-func (m memoryStore) ListWorkers() ([]store.Worker, error) {
+func (m *memoryStore) ListWorkers() ([]store.Worker, error) {
 	return m.workers, nil
 }
 
-func (m memoryStore) ListClaims() ([]store.Claim, error) {
+func (m *memoryStore) ListClaims() ([]store.Claim, error) {
 	return m.claims, nil
 }
 
@@ -62,7 +63,7 @@ func TestStatusString(t *testing.T) {
 
 func TestServerStatus(t *testing.T) {
 	now := time.Now().UTC()
-	server := NewServer("state.json", memoryStore{
+	server := NewServer("state.json", &memoryStore{
 		workers: []store.Worker{{
 			ID:        "w-1",
 			Status:    store.WorkerIdle,
@@ -106,7 +107,7 @@ func TestServerStatus(t *testing.T) {
 }
 
 func TestServerLegacyStatusShape(t *testing.T) {
-	server := NewServer("state.json", memoryStore{workers: []store.Worker{{
+	server := NewServer("state.json", &memoryStore{workers: []store.Worker{{
 		ID:       "w-legacy",
 		Status:   store.WorkerIdle,
 		Engine:   "mock",
@@ -133,7 +134,7 @@ func TestServerWorkers(t *testing.T) {
 	staleLifecycle := lifecycle.NewWorkerLifecycle()
 	staleLifecycle.Runtime.State = lifecycle.RuntimeDead
 	staleLifecycle.Runtime.Reason = lifecycle.ReasonRuntimeLost
-	server := NewServer("state.json", memoryStore{workers: []store.Worker{{
+	server := NewServer("state.json", &memoryStore{workers: []store.Worker{{
 		ID:        "w-1",
 		Status:    store.WorkerRunning,
 		Lifecycle: &staleLifecycle,
@@ -167,7 +168,7 @@ func TestServerWorkers(t *testing.T) {
 
 func TestServerClaims(t *testing.T) {
 	now := time.Now().UTC()
-	server := NewServer("state.json", memoryStore{claims: []store.Claim{{
+	server := NewServer("state.json", &memoryStore{claims: []store.Claim{{
 		ID:        "c-parent",
 		WorkerID:  "w-1",
 		Repo:      "/repo",
@@ -221,7 +222,7 @@ func TestServerClaims(t *testing.T) {
 func TestServerReadiness(t *testing.T) {
 	repo := t.TempDir()
 	writeDaemonRepoHints(t, repo)
-	server := NewServerWithIssueProvider("state.json", memoryStore{claims: []store.Claim{{
+	server := NewServerWithIssueProvider("state.json", &memoryStore{claims: []store.Claim{{
 		ID:     "c-released",
 		Issue:  "MTG-Thomas/codex-swarm#27",
 		Status: store.ClaimReleased,
@@ -249,7 +250,7 @@ func TestServerReadiness(t *testing.T) {
 func TestClientReadiness(t *testing.T) {
 	repo := t.TempDir()
 	writeDaemonRepoHints(t, repo)
-	server := httptest.NewServer(NewServerWithIssueProvider("state.json", memoryStore{}, fakeIssueProvider{issue: readiness.Issue{
+	server := httptest.NewServer(NewServerWithIssueProvider("state.json", &memoryStore{}, fakeIssueProvider{issue: readiness.Issue{
 		Title: "Ready issue",
 		Body:  "Body",
 	}}).Handler())
@@ -264,8 +265,60 @@ func TestClientReadiness(t *testing.T) {
 	}
 }
 
+func TestServerDispatchCreatesAndReplaysWorkers(t *testing.T) {
+	repo := t.TempDir()
+	writeDaemonRepoHints(t, repo)
+	st := &memoryStore{}
+	server := NewServerWithIssueProvider("state.json", st, fakeIssueProvider{issue: readiness.Issue{
+		Title: "Dispatch issue",
+		Body:  "Acceptance criteria",
+	}})
+	body := `{"request_id":"r-dispatch","issue":"MTG-Thomas/codex-swarm#31","repo":` + quoteJSON(repo) + `,"prompt":"implement issue #31","gates":["test"]}`
+
+	first := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/dispatch", strings.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:45678"
+	server.Handler().ServeHTTP(first, req)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status code = %d, want %d body=%s", first.Code, http.StatusOK, first.Body.String())
+	}
+	var firstResponse DispatchResponse
+	if err := json.NewDecoder(first.Body).Decode(&firstResponse); err != nil {
+		t.Fatalf("decode first dispatch: %v", err)
+	}
+	if firstResponse.Replayed || firstResponse.Implementer == "" || firstResponse.Validator == "" || len(st.workers) != 2 {
+		t.Fatalf("first response=%#v workers=%#v", firstResponse, st.workers)
+	}
+
+	second := httptest.NewRecorder()
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/dispatch", strings.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:45678"
+	server.Handler().ServeHTTP(second, req)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status code = %d, want %d body=%s", second.Code, http.StatusOK, second.Body.String())
+	}
+	var secondResponse DispatchResponse
+	if err := json.NewDecoder(second.Body).Decode(&secondResponse); err != nil {
+		t.Fatalf("decode second dispatch: %v", err)
+	}
+	if !secondResponse.Replayed || secondResponse.Implementer != firstResponse.Implementer || secondResponse.Validator != firstResponse.Validator || len(st.workers) != 2 {
+		t.Fatalf("second response=%#v first=%#v workers=%#v", secondResponse, firstResponse, st.workers)
+	}
+}
+
+func TestServerDispatchRejectsNonLoopbackRemote(t *testing.T) {
+	server := NewServerWithIssueProvider("state.json", &memoryStore{}, fakeIssueProvider{issue: readiness.Issue{Title: "Issue", Body: "Body"}})
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/dispatch", strings.NewReader(`{}`))
+	req.RemoteAddr = "203.0.113.10:45678"
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status code = %d, want %d body=%s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+}
+
 func TestClientStatus(t *testing.T) {
-	server := httptest.NewServer(NewServer("state.json", memoryStore{workers: []store.Worker{{ID: "w-1"}}}).Handler())
+	server := httptest.NewServer(NewServer("state.json", &memoryStore{workers: []store.Worker{{ID: "w-1"}}}).Handler())
 	defer server.Close()
 
 	status, err := (Client{BaseURL: server.URL}).Status(context.Background())
@@ -275,6 +328,11 @@ func TestClientStatus(t *testing.T) {
 	if status.StatePath != "state.json" || status.WorkerCount != 1 {
 		t.Fatalf("status = %#v", status)
 	}
+}
+
+func quoteJSON(value string) string {
+	data, _ := json.Marshal(value)
+	return string(data)
 }
 
 func TestClientFallsBackToLegacyStatus(t *testing.T) {
@@ -327,7 +385,7 @@ func TestClientStatusDoesNotFallbackOnServerError(t *testing.T) {
 }
 
 func TestReadOnlyEndpointsRejectPost(t *testing.T) {
-	server := NewServer("state.json", memoryStore{})
+	server := NewServer("state.json", &memoryStore{})
 	for _, path := range []string{"/healthz", "/status", "/workers", "/claims", "/readiness", "/v1/status"} {
 		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, strings.NewReader(""))
 		rec := httptest.NewRecorder()

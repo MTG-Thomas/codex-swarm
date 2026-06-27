@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/MTG-Thomas/codex-swarm/internal/claims"
+	"github.com/MTG-Thomas/codex-swarm/internal/dispatch"
 	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
 	"github.com/MTG-Thomas/codex-swarm/internal/readiness"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
@@ -56,6 +58,21 @@ type ClaimsResponse struct {
 	Conflicts []ClaimConflict `json:"conflicts"`
 }
 
+type DispatchRequest struct {
+	RequestID string   `json:"request_id"`
+	Issue     string   `json:"issue"`
+	Repo      string   `json:"repo"`
+	Prompt    string   `json:"prompt"`
+	Gates     []string `json:"gates,omitempty"`
+}
+
+type DispatchResponse struct {
+	RequestID   string `json:"request_id"`
+	Implementer string `json:"implementer"`
+	Validator   string `json:"validator"`
+	Replayed    bool   `json:"replayed"`
+}
+
 // LegacyStatus is the compatibility response for older daemon clients.
 type LegacyStatus struct {
 	Daemon    string         `json:"daemon"`
@@ -74,6 +91,7 @@ type ClaimConflict struct {
 type readStore interface {
 	ListWorkers() ([]store.Worker, error)
 	ListClaims() ([]store.Claim, error)
+	SaveWorkers(...store.Worker) error
 }
 
 // Server exposes read-only daemon HTTP endpoints over swarm state.
@@ -104,6 +122,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/workers", s.handleWorkers)
 	mux.HandleFunc("/claims", s.handleClaims)
 	mux.HandleFunc("/readiness", s.handleReadiness)
+	mux.HandleFunc("/dispatch", s.handleDispatch)
 	mux.HandleFunc("/v1/status", s.handleLegacyStatus)
 	return mux
 }
@@ -186,6 +205,61 @@ func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, report)
+}
+
+func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !isLoopbackRemote(r.RemoteAddr) {
+		http.Error(w, "dispatch requires loopback daemon access", http.StatusForbidden)
+		return
+	}
+	var req DispatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "parse dispatch request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.RequestID) == "" {
+		http.Error(w, "request_id is required", http.StatusBadRequest)
+		return
+	}
+	report, err := readiness.Build(r.Context(), readiness.BuildInput{
+		Issue:    req.Issue,
+		Repo:     req.Repo,
+		Store:    s.store,
+		Provider: s.issueProvider,
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	plan, err := dispatch.Plan(dispatch.Input{Readiness: report, Prompt: req.Prompt, Gates: req.Gates})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	result, err := dispatch.Execute(s.store, plan, req.RequestID, "mock", time.Now().UTC())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, DispatchResponse{
+		RequestID:   result.RequestID,
+		Implementer: result.Implementer,
+		Validator:   result.Validator,
+		Replayed:    result.Replayed,
+	})
+}
+
+func isLoopbackRemote(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func (s *Server) handleLegacyStatus(w http.ResponseWriter, r *http.Request) {
@@ -283,6 +357,14 @@ func (c Client) Readiness(ctx context.Context, issue, repo string) (readiness.Re
 	return report, nil
 }
 
+func (c Client) Dispatch(ctx context.Context, request DispatchRequest) (DispatchResponse, error) {
+	var response DispatchResponse
+	if err := c.post(ctx, "/dispatch", request, &response); err != nil {
+		return DispatchResponse{}, err
+	}
+	return response, nil
+}
+
 func (c Client) get(ctx context.Context, path string, target any) error {
 	baseURL := strings.TrimRight(c.BaseURL, "/")
 	if baseURL == "" {
@@ -292,6 +374,35 @@ func (c Client) get(ctx context.Context, path string, target any) error {
 	if err != nil {
 		return err
 	}
+	client := c.HTTPClient
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return statusError{StatusCode: resp.StatusCode, Status: resp.Status}
+	}
+	return json.NewDecoder(resp.Body).Decode(target)
+}
+
+func (c Client) post(ctx context.Context, path string, body, target any) error {
+	baseURL := strings.TrimRight(c.BaseURL, "/")
+	if baseURL == "" {
+		return fmt.Errorf("daemon base URL is required")
+	}
+	data, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+path, strings.NewReader(string(data)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
 	client := c.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
