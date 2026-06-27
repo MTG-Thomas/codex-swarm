@@ -881,7 +881,8 @@ Usage:
   cs issue dispatch --issue owner/repo#123 --repo . --prompt "implement this issue" --gate test
   cs issue pull --issue owner/repo#123
   cs issue sync --issue owner/repo#123
-  cs issue report --issue owner/repo#123 --worker <worker>
+  cs issue report --issue owner/repo#123 --worker <worker> --gate test
+  cs issue report --issue owner/repo#123 --worker <worker> --bypass-gates
   cs agent register --name "codex-thread" --role implementer
   cs agent current
   cs legacy import-coordinator

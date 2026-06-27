@@ -677,10 +677,12 @@ func TestIssueReportPostsWorkerReportWithFakeGH(t *testing.T) {
 	ghStatePath := installFakeGH(t, fakeGHState{})
 	issue := "MTG-Thomas/codex-swarm#42"
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	repo := initCLITestRepo(t)
+	writeIssueReadyRepoHints(t, repo)
 	if err := store.NewJSONStore(state).SaveWorker(store.Worker{
 		ID:          "w-1",
 		Issue:       issue,
-		ProjectRoot: `C:\repo`,
+		ProjectRoot: repo,
 		ThreadID:    "mock-thread-w-1",
 		Engine:      "mock",
 		Status:      store.WorkerDone,
@@ -689,6 +691,20 @@ func TestIssueReportPostsWorkerReportWithFakeGH(t *testing.T) {
 		UpdatedAt:   now,
 	}); err != nil {
 		t.Fatalf("save worker: %v", err)
+	}
+	if err := store.NewJSONStore(state).SaveGateEvidence(store.GateEvidence{
+		ID:        "g-test",
+		GateID:    "test",
+		WorkerID:  "w-1",
+		Repo:      repo,
+		Scope:     "repo",
+		Command:   "go test ./...",
+		ExitCode:  0,
+		Output:    "ok ./...",
+		Commit:    gitHead(t, repo),
+		CreatedAt: now.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("save gate evidence: %v", err)
 	}
 	var out bytes.Buffer
 	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
@@ -705,6 +721,173 @@ func TestIssueReportPostsWorkerReportWithFakeGH(t *testing.T) {
 			t.Fatalf("posted report missing %q:\n%s", want, got.Comments[0].Body)
 		}
 	}
+}
+
+func TestIssueReportRejectsMissingGateEvidenceBeforeGitHubMutation(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	ghStatePath := installFakeGH(t, fakeGHState{})
+	issue := "MTG-Thomas/codex-swarm#42"
+	now := time.Date(2026, 6, 27, 17, 30, 0, 0, time.UTC)
+	repo := initCLITestRepo(t)
+	writeIssueReadyRepoHints(t, repo)
+	saveIssueReportWorker(t, state, issue, repo, now)
+	var out bytes.Buffer
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+
+	err := c.run([]string{"issue", "report", "--state", state, "--issue", issue, "--worker", "w-report"})
+	if err == nil {
+		t.Fatal("issue report error = nil, want missing gate rejection")
+	}
+	if !strings.Contains(err.Error(), "quality gate test missing evidence") || !strings.Contains(err.Error(), "cs gate record --repo "+repo+" --worker w-report --gate test") {
+		t.Fatalf("issue report error = %v", err)
+	}
+	got := readFakeGHState(t, ghStatePath)
+	if len(got.Calls) != 0 || len(got.Comments) != 0 {
+		t.Fatalf("GitHub was mutated despite missing gate: %#v", got)
+	}
+}
+
+func TestIssueReportRejectsFailingGateEvidenceBeforeGitHubMutation(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	ghStatePath := installFakeGH(t, fakeGHState{})
+	issue := "MTG-Thomas/codex-swarm#42"
+	now := time.Date(2026, 6, 27, 17, 31, 0, 0, time.UTC)
+	repo := initCLITestRepo(t)
+	writeIssueReadyRepoHints(t, repo)
+	saveIssueReportWorker(t, state, issue, repo, now)
+	saveIssueReportGate(t, state, repo, "test", 1, gitHead(t, repo), now.Add(time.Minute))
+	var out bytes.Buffer
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+
+	err := c.run([]string{"issue", "report", "--state", state, "--issue", issue, "--worker", "w-report"})
+	if err == nil {
+		t.Fatal("issue report error = nil, want failing gate rejection")
+	}
+	if !strings.Contains(err.Error(), "quality gate test failed with exit code 1") {
+		t.Fatalf("issue report error = %v", err)
+	}
+	got := readFakeGHState(t, ghStatePath)
+	if len(got.Calls) != 0 || len(got.Comments) != 0 {
+		t.Fatalf("GitHub was mutated despite failing gate: %#v", got)
+	}
+}
+
+func TestIssueReportRejectsGateEvidenceOlderThanWorkerUpdate(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	ghStatePath := installFakeGH(t, fakeGHState{})
+	issue := "MTG-Thomas/codex-swarm#42"
+	now := time.Date(2026, 6, 27, 17, 32, 0, 0, time.UTC)
+	repo := initCLITestRepo(t)
+	writeIssueReadyRepoHints(t, repo)
+	saveIssueReportWorker(t, state, issue, repo, now)
+	saveIssueReportGate(t, state, repo, "test", 0, gitHead(t, repo), now.Add(-time.Minute))
+	var out bytes.Buffer
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+
+	err := c.run([]string{"issue", "report", "--state", state, "--issue", issue, "--worker", "w-report"})
+	if err == nil {
+		t.Fatal("issue report error = nil, want stale gate rejection")
+	}
+	if !strings.Contains(err.Error(), "quality gate test is stale") || !strings.Contains(err.Error(), "older than worker update") {
+		t.Fatalf("issue report error = %v", err)
+	}
+	got := readFakeGHState(t, ghStatePath)
+	if len(got.Calls) != 0 || len(got.Comments) != 0 {
+		t.Fatalf("GitHub was mutated despite stale gate: %#v", got)
+	}
+}
+
+func TestIssueReportRejectsGateEvidenceFromOlderCommit(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	ghStatePath := installFakeGH(t, fakeGHState{})
+	issue := "MTG-Thomas/codex-swarm#42"
+	now := time.Date(2026, 6, 27, 17, 33, 0, 0, time.UTC)
+	repo := initCLITestRepo(t)
+	writeIssueReadyRepoHints(t, repo)
+	saveIssueReportWorker(t, state, issue, repo, now)
+	saveIssueReportGate(t, state, repo, "test", 0, "old-commit", now.Add(time.Minute))
+	var out bytes.Buffer
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+
+	err := c.run([]string{"issue", "report", "--state", state, "--issue", issue, "--worker", "w-report"})
+	if err == nil {
+		t.Fatal("issue report error = nil, want stale commit rejection")
+	}
+	if !strings.Contains(err.Error(), "quality gate test is stale") || !strings.Contains(err.Error(), "old-commit") {
+		t.Fatalf("issue report error = %v", err)
+	}
+	got := readFakeGHState(t, ghStatePath)
+	if len(got.Calls) != 0 || len(got.Comments) != 0 {
+		t.Fatalf("GitHub was mutated despite stale commit: %#v", got)
+	}
+}
+
+func TestIssueReportBypassGatesIsExplicitAndMutatesGitHub(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	ghStatePath := installFakeGH(t, fakeGHState{})
+	issue := "MTG-Thomas/codex-swarm#42"
+	now := time.Date(2026, 6, 27, 17, 34, 0, 0, time.UTC)
+	repo := initCLITestRepo(t)
+	writeIssueReadyRepoHints(t, repo)
+	saveIssueReportWorker(t, state, issue, repo, now)
+	var out bytes.Buffer
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+
+	if err := c.run([]string{"issue", "report", "--state", state, "--issue", issue, "--worker", "w-report", "--bypass-gates"}); err != nil {
+		t.Fatalf("issue report --bypass-gates error = %v", err)
+	}
+	if !strings.Contains(out.String(), "bypassed_gates=true") {
+		t.Fatalf("bypass output missing explicit marker: %q", out.String())
+	}
+	got := readFakeGHState(t, ghStatePath)
+	if len(got.Calls) != 1 || got.Calls[0] != "comment" {
+		t.Fatalf("GitHub mutation calls = %#v, want one comment", got.Calls)
+	}
+}
+
+func saveIssueReportWorker(t *testing.T, state, issue, repo string, now time.Time) {
+	t.Helper()
+	if err := store.NewJSONStore(state).SaveWorker(store.Worker{
+		ID:          "w-report",
+		Issue:       issue,
+		ProjectRoot: repo,
+		ThreadID:    "mock-thread-w-report",
+		Engine:      "mock",
+		Status:      store.WorkerDone,
+		Report:      "implemented and verified",
+		CreatedAt:   now.Add(-time.Hour),
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("save worker: %v", err)
+	}
+}
+
+func saveIssueReportGate(t *testing.T, state, repo, gateID string, exitCode int, commit string, createdAt time.Time) {
+	t.Helper()
+	if err := store.NewJSONStore(state).SaveGateEvidence(store.GateEvidence{
+		ID:        "g-" + gateID,
+		GateID:    gateID,
+		WorkerID:  "w-report",
+		Repo:      repo,
+		Scope:     "repo",
+		Command:   "go test ./...",
+		ExitCode:  exitCode,
+		Output:    "gate output",
+		Commit:    commit,
+		CreatedAt: createdAt,
+	}); err != nil {
+		t.Fatalf("save gate evidence: %v", err)
+	}
+}
+
+func gitHead(t *testing.T, repo string) string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", repo, "rev-parse", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v", err)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func TestIssueReadyReportsReadyIssueWithFakeGH(t *testing.T) {
