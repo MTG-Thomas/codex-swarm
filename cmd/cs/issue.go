@@ -6,13 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/MTG-Thomas/codex-swarm/internal/claims"
 	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
+	"github.com/MTG-Thomas/codex-swarm/internal/readiness"
+	"github.com/MTG-Thomas/codex-swarm/internal/repohints"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
 
@@ -46,7 +50,7 @@ type claimImportPlanEntry struct {
 
 func (c cli) issue(args []string) error {
 	if len(args) == 0 {
-		return errors.New("issue requires <export|sync|pull|report|claim>")
+		return errors.New("issue requires <export|sync|pull|report|claim|ready>")
 	}
 	switch args[0] {
 	case "export":
@@ -59,6 +63,8 @@ func (c cli) issue(args []string) error {
 		return c.issueReport(args[1:])
 	case "claim":
 		return c.issueClaim(args[1:])
+	case "ready":
+		return c.issueReady(args[1:])
 	default:
 		return fmt.Errorf("unknown issue command %q", args[0])
 	}
@@ -196,6 +202,76 @@ func (c cli) issueClaim(args []string) error {
 		return fmt.Errorf("unknown issue claim command %q", args[0])
 	}
 	return c.claimCreate(args[1:])
+}
+
+func (c cli) issueReady(args []string) error {
+	fs := c.flagSet("issue ready")
+	statePath := fs.String("state", defaultStatePath(), "state file path")
+	issueValue := fs.String("issue", "", "GitHub issue reference")
+	repo := fs.String("repo", ".", "repository root")
+	jsonOutput := fs.Bool("json", false, "print readiness as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	issue, err := normalizeRequiredIssue(*issueValue)
+	if err != nil {
+		return err
+	}
+	repoRoot, err := filepath.Abs(*repo)
+	if err != nil {
+		return fmt.Errorf("resolve repo: %w", err)
+	}
+	metadata, err := fetchIssueMetadata(context.Background(), issue)
+	if err != nil {
+		return err
+	}
+	hints, _, ok, err := repohints.Load(repoRoot)
+	if err != nil {
+		return err
+	}
+	var gates []readiness.Gate
+	if ok {
+		for _, gate := range hints.QualityGates {
+			gates = append(gates, readiness.Gate{
+				ID:      strings.TrimSpace(gate.ID),
+				Command: strings.TrimSpace(gate.Command),
+				Scope:   strings.TrimSpace(gate.Scope),
+			})
+		}
+	}
+	claimsForIssue, err := c.claimsForIssue(*statePath, issue)
+	if err != nil {
+		return err
+	}
+	var readinessClaims []readiness.Claim
+	for _, claim := range claimsForIssue {
+		readinessClaims = append(readinessClaims, readiness.Claim{
+			ID:       claim.ID,
+			WorkerID: claim.WorkerID,
+			Scope:    claim.Scope,
+			Status:   string(claim.Status),
+		})
+	}
+	report := readiness.Evaluate(readiness.Input{
+		Issue: readiness.Issue{
+			Ref:   issue,
+			Title: metadata.Title,
+			Body:  metadata.Body,
+		},
+		Repo:   repoRoot,
+		Gates:  gates,
+		Claims: readinessClaims,
+	})
+	if *jsonOutput {
+		data, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return fmt.Errorf("encode readiness report: %w", err)
+		}
+		fmt.Fprintln(c.out, string(data))
+		return nil
+	}
+	printReadinessReport(c.out, report)
+	return nil
 }
 
 func claimIssueMarkerMarkdown(issue string, all []store.Claim, now time.Time) (string, error) {
@@ -346,6 +422,11 @@ type ghIssueView struct {
 	} `json:"comments"`
 }
 
+type ghIssueMetadata struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
+}
+
 func latestClaimSnapshot(raw []byte) (issueClaimSnapshot, error) {
 	var view ghIssueView
 	if err := json.Unmarshal(raw, &view); err != nil {
@@ -424,6 +505,45 @@ func fetchIssueJSON(ctx context.Context, issue string) ([]byte, error) {
 		return nil, fmt.Errorf("read GitHub issue: %s", message)
 	}
 	return stdout.Bytes(), nil
+}
+
+func fetchIssueMetadata(ctx context.Context, issue string) (ghIssueMetadata, error) {
+	ref, err := gh.ParseIssueRef(issue)
+	if err != nil {
+		return ghIssueMetadata{}, err
+	}
+	cmd := exec.CommandContext(ctx, "gh", "issue", "view", fmt.Sprintf("%d", ref.Number), "--repo", ref.Owner+"/"+ref.Repo, "--json", "title,body")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if message == "" {
+			message = err.Error()
+		}
+		return ghIssueMetadata{}, fmt.Errorf("read GitHub issue metadata: %s", message)
+	}
+	var metadata ghIssueMetadata
+	if err := json.Unmarshal(stdout.Bytes(), &metadata); err != nil {
+		return ghIssueMetadata{}, fmt.Errorf("parse GitHub issue metadata: %w", err)
+	}
+	return metadata, nil
+}
+
+func printReadinessReport(out io.Writer, report readiness.Report) {
+	fmt.Fprintf(out, "ready=%t issue=%s repo=%s blockers=%d\n", report.Ready, report.Issue.Ref, report.Repo, len(report.Blockers))
+	if report.Issue.Title != "" {
+		fmt.Fprintf(out, "title=%s\n", report.Issue.Title)
+	}
+	for _, gate := range report.Gates {
+		fmt.Fprintf(out, "gate=%s scope=%s command=%s\n", gate.ID, emptyDash(gate.Scope), gate.Command)
+	}
+	for _, claim := range report.Claims {
+		fmt.Fprintf(out, "claim=%s status=%s worker=%s scope=%s\n", claim.ID, claim.Status, emptyDash(claim.WorkerID), emptyDash(claim.Scope))
+	}
+	for _, blocker := range report.Blockers {
+		fmt.Fprintf(out, "blocker=%s\n", blocker)
+	}
 }
 
 func upsertIssueMarkerComment(ctx context.Context, issue, body string) (string, error) {

@@ -49,6 +49,7 @@ go run ./cmd/cs gate list --repo .
 go run ./cmd/cs gate record --repo . --worker <worker-id> --gate test --exit-code 0 --output "go test ./... passed"
 go run ./cmd/cs validate start --repo . --issue MTG-Thomas/codex-swarm#42 --prompt "implement issue #42" --gate test
 go run ./cmd/cs issue export --issue MTG-Thomas/codex-swarm#42
+go run ./cmd/cs issue ready --issue MTG-Thomas/codex-swarm#42 --repo .
 go run ./cmd/cs issue sync --issue MTG-Thomas/codex-swarm#42
 go run ./cmd/cs issue pull --issue MTG-Thomas/codex-swarm#42
 go run ./cmd/cs issue report --issue MTG-Thomas/codex-swarm#42 --worker <worker-id>
@@ -80,6 +81,13 @@ Pass `--issue owner/repo#123` to link a worker to a GitHub issue. Scheduling is 
 Use `claim create`, `claim list`, `claim conflicts`, `claim show`, `claim block`, and `claim release` for warning-only coordination claims. Use `claim export --issue owner/repo#123` to print GitHub-ready claim markdown. Use `claim push --issue owner/repo#123` only when you intentionally want to post the current local claim summary as a GitHub issue comment through `gh`.
 
 Use `issue export --issue owner/repo#123` to include a hidden `codex-swarm:claims:v1` JSON marker that other machines can parse. Use `issue sync --issue owner/repo#123` only when you intentionally want to create or update that marker comment through `gh`. Use `issue pull --issue owner/repo#123` to import the latest marker-backed claim set from GitHub into local state; by default it skips remote claims older than a local claim with the same ID. Use `issue pull --force --issue owner/repo#123` only when the issue marker should overwrite newer local claim state.
+
+Use `issue ready --issue owner/repo#123 --repo <path>` to run a read-only
+dispatch preflight. It reads the issue title/body through `gh`, local
+issue-linked claims, and repo quality gates from `codex-swarm.hints.json`, then
+prints a scriptable `ready=<bool>` summary plus blockers. Add `--json` for a
+parseable readiness report. This command does not mutate GitHub or create
+workers.
 
 Use `issue report --issue owner/repo#123 --worker <worker-id>` only when you intentionally want to post that worker's current report or last message as a GitHub issue comment.
 

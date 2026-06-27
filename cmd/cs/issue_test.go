@@ -703,7 +703,112 @@ func TestIssueReportPostsWorkerReportWithFakeGH(t *testing.T) {
 	}
 }
 
+func TestIssueReadyReportsReadyIssueWithFakeGH(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	repo := t.TempDir()
+	writeIssueReadyRepoHints(t, repo)
+	installFakeGH(t, fakeGHState{
+		Title: "Add issue dispatch readiness",
+		Body:  "Acceptance criteria",
+	})
+	var out bytes.Buffer
+	c := cli{out: &out, err: &bytes.Buffer{}, now: time.Now}
+
+	if err := c.run([]string{"issue", "ready", "--state", state, "--repo", repo, "--issue", "MTG-Thomas/codex-swarm#18"}); err != nil {
+		t.Fatalf("issue ready error = %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"ready=true issue=MTG-Thomas/codex-swarm#18",
+		"blockers=0",
+		"title=Add issue dispatch readiness",
+		"gate=test scope=repo command=go test ./...",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("issue ready output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestIssueReadyJSONReportsMissingBodyWithFakeGH(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	repo := t.TempDir()
+	writeIssueReadyRepoHints(t, repo)
+	installFakeGH(t, fakeGHState{Title: "Missing body"})
+	var out bytes.Buffer
+	c := cli{out: &out, err: &bytes.Buffer{}, now: time.Now}
+
+	if err := c.run([]string{"issue", "ready", "--json", "--state", state, "--repo", repo, "--issue", "MTG-Thomas/codex-swarm#18"}); err != nil {
+		t.Fatalf("issue ready --json error = %v", err)
+	}
+	var report struct {
+		Ready    bool     `json:"ready"`
+		Blockers []string `json:"blockers"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("readiness JSON parse error = %v\n%s", err, out.String())
+	}
+	if report.Ready {
+		t.Fatal("Ready = true, want false")
+	}
+	if len(report.Blockers) != 1 || report.Blockers[0] != "issue body is missing" {
+		t.Fatalf("Blockers = %#v", report.Blockers)
+	}
+}
+
+func TestIssueReadyReportsOpenClaimWithFakeGH(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	repo := t.TempDir()
+	writeIssueReadyRepoHints(t, repo)
+	installFakeGH(t, fakeGHState{
+		Title: "Claimed issue",
+		Body:  "Body",
+	})
+	now := time.Date(2026, 6, 27, 15, 30, 0, 0, time.UTC)
+	if err := store.NewJSONStore(state).SaveClaim(store.Claim{
+		ID:        "c-ready",
+		Issue:     "MTG-Thomas/codex-swarm#18",
+		Repo:      repo,
+		Scope:     "cmd/cs",
+		Status:    store.ClaimActive,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("SaveClaim() error = %v", err)
+	}
+	var out bytes.Buffer
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+
+	if err := c.run([]string{"issue", "ready", "--state", state, "--repo", repo, "--issue", "MTG-Thomas/codex-swarm#18"}); err != nil {
+		t.Fatalf("issue ready error = %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"ready=false",
+		"claim=c-ready status=active",
+		"blocker=issue has open claim c-ready",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("issue ready output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestIssueReadyRejectsMalformedIssue(t *testing.T) {
+	var out bytes.Buffer
+	c := cli{out: &out, err: &bytes.Buffer{}, now: time.Now}
+
+	err := c.run([]string{"issue", "ready", "--repo", ".", "--issue", "not-an-issue"})
+	if err == nil {
+		t.Fatal("issue ready error = nil, want malformed issue error")
+	}
+	if !strings.Contains(err.Error(), "issue reference must look like owner/repo#123") {
+		t.Fatalf("issue ready error = %v", err)
+	}
+}
+
 type fakeGHState struct {
+	Title    string          `json:"title,omitempty"`
 	Body     string          `json:"body"`
 	Comments []fakeGHComment `json:"comments"`
 	Calls    []string        `json:"calls,omitempty"`
@@ -762,6 +867,22 @@ func readFakeGHState(t *testing.T, path string) fakeGHState {
 	return state
 }
 
+func writeIssueReadyRepoHints(t *testing.T, repo string) {
+	t.Helper()
+	body := `{
+  "quality_gates": [
+    {
+      "id": "test",
+      "command": "go test ./...",
+      "scope": "repo"
+    }
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(repo, "codex-swarm.hints.json"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write repo hints: %v", err)
+	}
+}
+
 const fakeGHSource = `package main
 
 import (
@@ -773,6 +894,7 @@ import (
 )
 
 type state struct {
+	Title    string    ` + "`json:\"title,omitempty\"`" + `
 	Body     string    ` + "`json:\"body\"`" + `
 	Comments []comment ` + "`json:\"comments\"`" + `
 	Calls    []string  ` + "`json:\"calls,omitempty\"`" + `
@@ -793,10 +915,22 @@ func main() {
 	args := os.Args[1:]
 	switch {
 	case len(args) >= 2 && args[0] == "issue" && args[1] == "view":
-		if err := json.NewEncoder(os.Stdout).Encode(struct {
-			Body     string    ` + "`json:\"body\"`" + `
-			Comments []comment ` + "`json:\"comments\"`" + `
-		}{Body: st.Body, Comments: st.Comments}); err != nil {
+		response := map[string]any{}
+		for _, field := range strings.Split(flagValue(args, "--json"), ",") {
+			switch strings.TrimSpace(field) {
+			case "title":
+				response["title"] = st.Title
+			case "body":
+				response["body"] = st.Body
+			case "comments":
+				response["comments"] = st.Comments
+			}
+		}
+		if len(response) == 0 {
+			response["body"] = st.Body
+			response["comments"] = st.Comments
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(response); err != nil {
 			fail(err.Error())
 		}
 	case len(args) >= 2 && args[0] == "issue" && args[1] == "comment":

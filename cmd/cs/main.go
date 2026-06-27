@@ -877,6 +877,7 @@ Usage:
   cs gate record --repo . --worker <worker> --gate test --exit-code 0 --output "go test ./..."
   cs validate start --repo . --issue owner/repo#123 --prompt "implement this issue" --gate test
   cs issue export --issue owner/repo#123
+  cs issue ready --issue owner/repo#123 --repo .
   cs issue pull --issue owner/repo#123
   cs issue sync --issue owner/repo#123
   cs issue report --issue owner/repo#123 --worker <worker>
