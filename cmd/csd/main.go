@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"errors"
+	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -20,30 +20,45 @@ func main() {
 }
 
 func run() error {
+	if handled, err := maybeRunService(); handled || err != nil {
+		return err
+	}
 	args := os.Args[1:]
 	if len(args) > 0 {
 		switch args[0] {
 		case "serve":
-			return serve()
+			return serve(args[1:])
 		case "status":
 			return status()
 		case "install":
-			return serviceStub("install")
+			return installService()
 		case "uninstall":
-			return serviceStub("uninstall")
+			return uninstallService()
 		default:
 			return fmt.Errorf("unknown command %q", args[0])
 		}
 	}
-	return serve()
+	return serve(nil)
 }
 
-func serve() error {
-	addr := envDefault("CODEX_SWARM_DAEMON_ADDR", "127.0.0.1:8787")
-	statePath := envDefault("CODEX_SWARM_STATE", defaultStatePath())
+func serve(args []string) error {
+	addr, statePath, err := serveOptions(args)
+	if err != nil {
+		return err
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	return runServer(ctx, addr, statePath, os.Stdout)
+}
+
+func serveOptions(args []string) (string, string, error) {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	addr := fs.String("addr", envDefault("CODEX_SWARM_DAEMON_ADDR", "127.0.0.1:8787"), "daemon listen address")
+	statePath := fs.String("state", envDefault("CODEX_SWARM_STATE", defaultStatePath()), "state file path")
+	if err := fs.Parse(args); err != nil {
+		return "", "", err
+	}
+	return *addr, *statePath, nil
 }
 
 func status() error {
@@ -55,14 +70,6 @@ func status() error {
 		return fmt.Errorf("daemon status: %w", err)
 	}
 	fmt.Println(status.String())
-	return nil
-}
-
-func serviceStub(action string) error {
-	if action == "" {
-		return errors.New("service action is required")
-	}
-	fmt.Printf("service %s is not implemented yet; run `csd serve` or install it with your OS service manager\n", action)
 	return nil
 }
 
