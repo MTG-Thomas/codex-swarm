@@ -1,0 +1,16 @@
+{
+  "commands": [
+    {
+      "name": "doctor",
+      "command": "cs doctor",
+      "docs": "AGENTS.md",
+      "note": "Use the installed cs binary for local coordination and smoke checks before relying on daemon/app-server behavior."
+    },
+    {
+      "name": "go verification",
+      "command": "go test ./...",
+      "docs": "AGENTS.md",
+      "note": "Keep CLI output scriptable and prefer standard library code unless a dependency removes real cross-platform risk."
+    }
+  ]
+}

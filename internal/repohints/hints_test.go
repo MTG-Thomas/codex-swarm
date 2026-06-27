@@ -69,6 +69,41 @@ func TestLoadLocalHintsWhenCommittedMissing(t *testing.T) {
 	}
 }
 
+func TestLoadCommandHints(t *testing.T) {
+	repo := t.TempDir()
+	body := `{
+  "commands": [
+    {
+      "name": "scoped sync",
+      "command": "pwsh -NoProfile -File .\\scripts\\bifrost-local-sync.ps1 <scoped-authored-path>",
+      "docs": "docs/FIRST_30_MINUTES.md",
+      "note": "Use scoped sync after authored workspace edits."
+    }
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(repo, CommittedFile), []byte(body), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	hints, _, ok, err := Load(repo)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("Load() ok = false")
+	}
+	lines := strings.Join(hints.Lines(), "\n")
+	for _, want := range []string{
+		`repo hint: command scoped sync: pwsh -NoProfile -File .\scripts\bifrost-local-sync.ps1 <scoped-authored-path>`,
+		"repo hint: docs: docs/FIRST_30_MINUTES.md",
+		"Use scoped sync after authored workspace edits.",
+	} {
+		if !strings.Contains(lines, want) {
+			t.Fatalf("Lines() missing %q:\n%s", want, lines)
+		}
+	}
+}
+
 func TestLoadRejectsIncompleteRemoteDevcontainerHint(t *testing.T) {
 	repo := t.TempDir()
 	if err := os.WriteFile(filepath.Join(repo, CommittedFile), []byte(`{"remote_devcontainer":{"image":"image:tag"}}`), 0o600); err != nil {
@@ -80,6 +115,21 @@ func TestLoadRejectsIncompleteRemoteDevcontainerHint(t *testing.T) {
 		t.Fatal("Load() error = nil, want validation error")
 	}
 	if !strings.Contains(err.Error(), "remote_devcontainer.command is required") {
+		t.Fatalf("Load() error = %v", err)
+	}
+}
+
+func TestLoadRejectsIncompleteCommandHint(t *testing.T) {
+	repo := t.TempDir()
+	if err := os.WriteFile(filepath.Join(repo, CommittedFile), []byte(`{"commands":[{"name":"empty"}]}`), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	_, _, _, err := Load(repo)
+	if err == nil {
+		t.Fatal("Load() error = nil, want validation error")
+	}
+	if !strings.Contains(err.Error(), "commands[0].command is required") {
 		t.Fatalf("Load() error = %v", err)
 	}
 }

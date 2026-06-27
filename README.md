@@ -95,6 +95,22 @@ Example committed hint file:
 }
 ```
 
+Generic command hints can be used when a repo has a preferred local or live-ops
+entry point but no remote devcontainer lane:
+
+```json
+{
+  "commands": [
+    {
+      "name": "scoped sync",
+      "command": "pwsh -NoProfile -File .\\scripts\\bifrost-local-sync.ps1 <scoped-authored-path>",
+      "docs": "docs/FIRST_30_MINUTES.md",
+      "note": "Use scoped sync after authored workspace edits."
+    }
+  ]
+}
+```
+
 For proof-sensitive Talos/ARC remote execution, prefer immutable image tags over mutable tags such as `latest`, `main`, or `devcontainer-main`.
 
 Use `agent register --name <name> --role <role>` to record the current local agent identity. Use `legacy import-coordinator` once per machine, or with `--include-expired` for audit work, to import active warning-only claims from the old PowerShell coordinator.

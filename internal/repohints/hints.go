@@ -16,11 +16,19 @@ const (
 
 type Hints struct {
 	RemoteDevcontainer *RemoteDevcontainer `json:"remote_devcontainer,omitempty"`
+	Commands           []CommandHint       `json:"commands,omitempty"`
 }
 
 type RemoteDevcontainer struct {
 	Command string `json:"command,omitempty"`
 	Image   string `json:"image,omitempty"`
+	Docs    string `json:"docs,omitempty"`
+	Note    string `json:"note,omitempty"`
+}
+
+type CommandHint struct {
+	Name    string `json:"name,omitempty"`
+	Command string `json:"command,omitempty"`
 	Docs    string `json:"docs,omitempty"`
 	Note    string `json:"note,omitempty"`
 }
@@ -60,33 +68,48 @@ func Load(repoRoot string) (Hints, Source, bool, error) {
 }
 
 func (h Hints) Validate() error {
-	if h.RemoteDevcontainer == nil {
-		return nil
-	}
-	if strings.TrimSpace(h.RemoteDevcontainer.Command) == "" {
+	if h.RemoteDevcontainer != nil && strings.TrimSpace(h.RemoteDevcontainer.Command) == "" {
 		return errors.New("remote_devcontainer.command is required")
+	}
+	for i, command := range h.Commands {
+		if strings.TrimSpace(command.Command) == "" {
+			return fmt.Errorf("commands[%d].command is required", i)
+		}
 	}
 	return nil
 }
 
 func (h Hints) Lines() []string {
 	lines := []string(nil)
-	if h.RemoteDevcontainer == nil {
-		return lines
-	}
-	remote := *h.RemoteDevcontainer
-	lines = append(lines, "repo hint: remote devcontainer command: "+strings.TrimSpace(remote.Command))
-	if image := strings.TrimSpace(remote.Image); image != "" {
-		lines = append(lines, "repo hint: remote devcontainer image: "+image)
-		if looksMutableImageTag(image) {
-			lines = append(lines, "repo hint: prefer immutable image tags for proof-sensitive remote execution")
+	if h.RemoteDevcontainer != nil {
+		remote := *h.RemoteDevcontainer
+		lines = append(lines, "repo hint: remote devcontainer command: "+strings.TrimSpace(remote.Command))
+		if image := strings.TrimSpace(remote.Image); image != "" {
+			lines = append(lines, "repo hint: remote devcontainer image: "+image)
+			if looksMutableImageTag(image) {
+				lines = append(lines, "repo hint: prefer immutable image tags for proof-sensitive remote execution")
+			}
+		}
+		if docs := strings.TrimSpace(remote.Docs); docs != "" {
+			lines = append(lines, "repo hint: docs: "+docs)
+		}
+		if note := strings.TrimSpace(remote.Note); note != "" {
+			lines = append(lines, "repo hint: "+note)
 		}
 	}
-	if docs := strings.TrimSpace(remote.Docs); docs != "" {
-		lines = append(lines, "repo hint: docs: "+docs)
-	}
-	if note := strings.TrimSpace(remote.Note); note != "" {
-		lines = append(lines, "repo hint: "+note)
+	for _, command := range h.Commands {
+		name := strings.TrimSpace(command.Name)
+		prefix := "repo hint: command"
+		if name != "" {
+			prefix += " " + name
+		}
+		lines = append(lines, prefix+": "+strings.TrimSpace(command.Command))
+		if docs := strings.TrimSpace(command.Docs); docs != "" {
+			lines = append(lines, "repo hint: docs: "+docs)
+		}
+		if note := strings.TrimSpace(command.Note); note != "" {
+			lines = append(lines, "repo hint: "+note)
+		}
 	}
 	return lines
 }
