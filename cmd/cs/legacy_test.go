@@ -71,6 +71,9 @@ func TestLegacyImportCoordinator(t *testing.T) {
 	if claim.WorkerID != "legacy-owner" {
 		t.Fatalf("WorkerID = %q, want legacy-owner", claim.WorkerID)
 	}
+	if claim.WorkerSource != "legacy-coordinator" {
+		t.Fatalf("WorkerSource = %q, want legacy-coordinator", claim.WorkerSource)
+	}
 	if !claimrules.IsExternalWorker(claim) {
 		t.Fatalf("legacy claim = %#v, want external marker", claim)
 	}

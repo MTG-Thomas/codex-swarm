@@ -58,16 +58,9 @@ func (c cli) claimCreate(args []string) error {
 	}
 	workerIDValue := strings.TrimSpace(*workerID)
 	st := store.NewJSONStore(*statePath)
-	workers, err := st.ListWorkers()
-	if err != nil {
-		return err
-	}
 	repoRoot, err := filepath.Abs(*repo)
 	if err != nil {
 		return fmt.Errorf("resolve repo: %w", err)
-	}
-	if err := claims.ValidateWorkerForRepo(workerIDValue, repoRoot, workers); err != nil {
-		return err
 	}
 	issue, err := normalizeIssue(*issueValue)
 	if err != nil {
@@ -86,14 +79,13 @@ func (c cli) claimCreate(args []string) error {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	all, err := st.ListClaims()
+	all, err := st.SaveClaimValidated(claim, func(workers []store.Worker, existing []store.Claim) error {
+		return claims.ValidateWorkerForRepo(workerIDValue, repoRoot, workers)
+	})
 	if err != nil {
 		return err
 	}
 	conflicts := claims.FindConflicts(all, claim, now)
-	if err := st.SaveClaim(claim); err != nil {
-		return err
-	}
 	fmt.Fprintf(c.out, "claim %s status=%s scope=%s repo=%s\n", claim.ID, claim.Status, claim.Scope, claim.Repo)
 	if claim.WorkerID != "" {
 		fmt.Fprintf(c.out, "worker=%s\n", claim.WorkerID)

@@ -394,6 +394,33 @@ func TestJSONStorePersistsLifecycleTransitionHelper(t *testing.T) {
 	}
 }
 
+func TestWorkerApplyStatusPreservesOrchestratorReason(t *testing.T) {
+	now := time.Date(2026, 6, 26, 2, 30, 0, 0, time.UTC)
+	lc := lifecycle.NewOrchestratorLifecycle()
+	worker := Worker{
+		ID:          "w-orchestrator",
+		ProjectRoot: "/repo",
+		ThreadID:    "thread-orchestrator",
+		Engine:      "mock",
+		Status:      WorkerRunning,
+		Lifecycle:   &lc,
+		Prompt:      "coordinate work",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+
+	worker.ApplyStatusAt(WorkerIdle, now.Add(time.Minute))
+	if worker.Lifecycle == nil {
+		t.Fatal("Lifecycle = nil")
+	}
+	if worker.Lifecycle.Session.State != lifecycle.SessionIdle {
+		t.Fatalf("Session.State = %q, want idle", worker.Lifecycle.Session.State)
+	}
+	if worker.Lifecycle.Session.Reason != lifecycle.ReasonOrchestrating {
+		t.Fatalf("Session.Reason = %q, want orchestrating", worker.Lifecycle.Session.Reason)
+	}
+}
+
 func TestJSONStorePreservesExplicitStaleLifecycleOnSave(t *testing.T) {
 	now := time.Date(2026, 6, 26, 2, 5, 0, 0, time.UTC)
 	for _, status := range []WorkerStatus{WorkerRunning, WorkerIdle, WorkerDone, WorkerFailed} {
@@ -877,5 +904,38 @@ func TestJSONStoreReplacesExistingTargetWithParseableState(t *testing.T) {
 	}
 	if len(state.Claims) != 1 || state.Claims[0].ID != "c-second" {
 		t.Fatalf("claims = %#v, want second claim installed", state.Claims)
+	}
+}
+
+func TestJSONStoreUpdateWorkersWithRequestRequiresVerifiableFingerprint(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	now := time.Date(2026, 6, 26, 12, 30, 0, 0, time.UTC)
+	s := NewJSONStore(path)
+	if err := s.SaveWorker(Worker{
+		ID:          "w-1",
+		ProjectRoot: "/repo",
+		ThreadID:    "thread-1",
+		Status:      WorkerIdle,
+		Prompt:      "worker",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}); err != nil {
+		t.Fatalf("SaveWorker() error = %v", err)
+	}
+
+	if _, _, err := s.UpdateWorkersWithRequest("", "message", "fp", []string{"w-1"}, func(workers map[string]*Worker) (WorkerMutationResult, error) {
+		return WorkerMutationResult{Fingerprint: "fp"}, nil
+	}); err == nil {
+		t.Fatal("UpdateWorkersWithRequest empty requestID error = nil")
+	}
+	if _, _, err := s.UpdateWorkersWithRequest("r-1", "message", "", []string{"w-1"}, func(workers map[string]*Worker) (WorkerMutationResult, error) {
+		return WorkerMutationResult{Fingerprint: ""}, nil
+	}); err == nil {
+		t.Fatal("UpdateWorkersWithRequest empty fingerprint error = nil")
+	}
+	if _, _, err := s.UpdateWorkersWithRequest("r-1", "message", "fp", []string{"w-1"}, func(workers map[string]*Worker) (WorkerMutationResult, error) {
+		return WorkerMutationResult{Output: "missing fingerprint"}, nil
+	}); err == nil {
+		t.Fatal("UpdateWorkersWithRequest missing result fingerprint error = nil")
 	}
 }

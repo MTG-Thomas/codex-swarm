@@ -86,8 +86,8 @@ func TestWaitTurnCompleted(t *testing.T) {
 func TestWaitTurnCompletedWithPolicyReturnsWarningAfterCompletionSignalGrace(t *testing.T) {
 	var written bytes.Buffer
 	reader, writer := io.Pipe()
-	defer reader.Close()
-	defer writer.Close()
+	defer func() { _ = reader.Close() }()
+	defer func() { _ = writer.Close() }()
 	go func() {
 		_, _ = writer.Write([]byte(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thread-1","delta":"work is DONE"}}` + "\n"))
 	}()
@@ -114,8 +114,8 @@ func TestWaitTurnCompletedWithPolicyReturnsWarningAfterCompletionSignalGrace(t *
 func TestWaitTurnCompletedWithPolicyFailsWithoutCompletionSignal(t *testing.T) {
 	var written bytes.Buffer
 	reader, writer := io.Pipe()
-	defer reader.Close()
-	defer writer.Close()
+	defer func() { _ = reader.Close() }()
+	defer func() { _ = writer.Close() }()
 	client := NewClient(&written, reader)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -136,8 +136,8 @@ func TestWaitTurnCompletedWithPolicyFailsWithoutCompletionSignal(t *testing.T) {
 func TestWaitTurnCompletedWithPolicyIgnoresSignalInUnrelatedNotification(t *testing.T) {
 	var written bytes.Buffer
 	reader, writer := io.Pipe()
-	defer reader.Close()
-	defer writer.Close()
+	defer func() { _ = reader.Close() }()
+	defer func() { _ = writer.Close() }()
 	go func() {
 		_, _ = writer.Write([]byte(`{"jsonrpc":"2.0","method":"item/userMessage/delta","params":{"threadId":"thread-1","delta":"DONE"}}` + "\n"))
 	}()
@@ -161,8 +161,8 @@ func TestWaitTurnCompletedWithPolicyIgnoresSignalInUnrelatedNotification(t *test
 func TestWaitTurnCompletedWithPolicyRequiresMatchingThreadForSignal(t *testing.T) {
 	var written bytes.Buffer
 	reader, writer := io.Pipe()
-	defer reader.Close()
-	defer writer.Close()
+	defer func() { _ = reader.Close() }()
+	defer func() { _ = writer.Close() }()
 	go func() {
 		_, _ = writer.Write([]byte(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"other-thread","delta":"DONE"}}` + "\n"))
 	}()
@@ -186,8 +186,8 @@ func TestWaitTurnCompletedWithPolicyRequiresMatchingThreadForSignal(t *testing.T
 func TestWaitTurnCompletedWithPolicyRequiresThreadForSignal(t *testing.T) {
 	var written bytes.Buffer
 	reader, writer := io.Pipe()
-	defer reader.Close()
-	defer writer.Close()
+	defer func() { _ = reader.Close() }()
+	defer func() { _ = writer.Close() }()
 	go func() {
 		_, _ = writer.Write([]byte(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"delta":"DONE"}}` + "\n"))
 	}()
@@ -211,8 +211,8 @@ func TestWaitTurnCompletedWithPolicyRequiresThreadForSignal(t *testing.T) {
 func TestWaitTurnCompletedWithPolicyPreservesTrailingMetadataWithinGrace(t *testing.T) {
 	var written bytes.Buffer
 	reader, writer := io.Pipe()
-	defer reader.Close()
-	defer writer.Close()
+	defer func() { _ = reader.Close() }()
+	defer func() { _ = writer.Close() }()
 	go func() {
 		_, _ = writer.Write([]byte(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thread-1","delta":"DONE"}}` + "\n"))
 		time.Sleep(5 * time.Millisecond)

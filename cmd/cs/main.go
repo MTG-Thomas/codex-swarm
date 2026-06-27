@@ -299,6 +299,12 @@ func (c cli) spawn(args []string) error {
 		defer cancel()
 		result, err := c.runner().RunTurn(ctx, workerExecutionRoot(worker), *prompt)
 		if err != nil {
+			worker.ApplyStatusAt(store.WorkerFailed, now)
+			worker.LastMessage = "app-server spawn failed: " + err.Error()
+			worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.spawn.failed", Message: worker.LastMessage})
+			if saveErr := store.NewJSONStore(*statePath).SaveWorker(worker); saveErr != nil {
+				return errors.Join(fmt.Errorf("run app-server worker: %w", err), fmt.Errorf("save failed app-server worker: %w", saveErr))
+			}
 			return fmt.Errorf("run app-server worker: %w", err)
 		}
 		threadID = result.ThreadID
@@ -699,7 +705,7 @@ func (c cli) inspectThread(args []string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	result, err := (appserver.Runner{}).Resume(ctx, workerExecutionRoot(worker), worker.ThreadID)
+	result, err := c.runner().Resume(ctx, workerExecutionRoot(worker), worker.ThreadID)
 	if err != nil {
 		return fmt.Errorf("inspect app-server thread %s: %w", worker.ThreadID, err)
 	}

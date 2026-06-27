@@ -69,7 +69,7 @@ func TestServerStatus(t *testing.T) {
 		}},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/status", nil)
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 
@@ -96,7 +96,7 @@ func TestServerLegacyStatusShape(t *testing.T) {
 		ThreadID: "thread-legacy",
 	}}})
 
-	req := httptest.NewRequest(http.MethodGet, "/v1/status", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/status", nil)
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 
@@ -128,7 +128,7 @@ func TestServerWorkers(t *testing.T) {
 		UpdatedAt: time.Date(2026, 6, 25, 1, 0, 0, 0, time.UTC),
 	}}})
 
-	req := httptest.NewRequest(http.MethodGet, "/workers", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/workers", nil)
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 
@@ -179,7 +179,7 @@ func TestServerClaims(t *testing.T) {
 		UpdatedAt: now,
 	}}})
 
-	req := httptest.NewRequest(http.MethodGet, "/claims", nil)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/claims", nil)
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec, req)
 
@@ -243,10 +243,30 @@ func TestClientFallsBackToLegacyStatus(t *testing.T) {
 	}
 }
 
+func TestClientStatusDoesNotFallbackOnServerError(t *testing.T) {
+	handler := http.NewServeMux()
+	handler.HandleFunc("/status", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "broken", http.StatusInternalServerError)
+	})
+	handler.HandleFunc("/v1/status", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, LegacyStatus{Daemon: "running", StatePath: "legacy-state.json"})
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	_, err := (Client{BaseURL: server.URL}).Status(context.Background())
+	if err == nil {
+		t.Fatal("Status() error = nil, want server error")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Fatalf("Status() error = %v, want original /status failure", err)
+	}
+}
+
 func TestReadOnlyEndpointsRejectPost(t *testing.T) {
 	server := NewServer("state.json", memoryStore{})
 	for _, path := range []string{"/healthz", "/status", "/workers", "/claims", "/v1/status"} {
-		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(""))
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, strings.NewReader(""))
 		rec := httptest.NewRecorder()
 		server.Handler().ServeHTTP(rec, req)
 

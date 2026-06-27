@@ -232,9 +232,11 @@ func planClaimSnapshotImport(st *store.JSONStore, issue string, snapshot issueCl
 	}
 	workerSource := importedClaimWorkerSource(snapshot)
 	for _, claim := range snapshot.Claims {
-		if claim.Issue == "" {
-			claim.Issue = issue
+		claimIssue := strings.TrimSpace(claim.Issue)
+		if claimIssue != "" && claimIssue != issue {
+			return plan, fmt.Errorf("claim %q is for %s, expected %s", claim.ID, claimIssue, issue)
 		}
+		claim.Issue = issue
 		claim = normalizeImportedClaimWorker(claim, workers, workerSource)
 		local, err := st.GetClaim(claim.ID)
 		if err != nil && !errors.Is(err, store.ErrClaimNotFound) {
@@ -390,11 +392,10 @@ func extractClaimSnapshot(body string) (issueClaimSnapshot, bool, error) {
 }
 
 func currentMachineID() string {
-	hostname, err := os.Hostname()
-	if err != nil || strings.TrimSpace(hostname) == "" {
-		return "unknown"
+	if id := strings.TrimSpace(os.Getenv("CODEX_SWARM_MACHINE_ID")); id != "" {
+		return id
 	}
-	return hostname
+	return ""
 }
 
 func fetchIssueJSON(ctx context.Context, issue string) ([]byte, error) {

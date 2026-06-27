@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,10 +31,12 @@ type stateFile struct {
 	CompletedMutations []CompletedMutation `json:"completed_mutations,omitempty"`
 }
 
+// NewJSONStore returns a file-backed store rooted at path.
 func NewJSONStore(path string) *JSONStore {
 	return &JSONStore{path: path}
 }
 
+// SaveWorker inserts or replaces one worker record.
 func (s *JSONStore) SaveWorker(worker Worker) error {
 	return s.withStateLock(func() error {
 		normalizeWorkerLifecycleForSave(&worker)
@@ -58,6 +61,7 @@ func (s *JSONStore) SaveWorker(worker Worker) error {
 	})
 }
 
+// UpdateWorker mutates one worker while holding the state lock.
 func (s *JSONStore) UpdateWorker(id string, mutate func(*Worker) error) (Worker, error) {
 	var updated Worker
 	err := s.withStateLock(func() error {
@@ -84,6 +88,7 @@ func (s *JSONStore) UpdateWorker(id string, mutate func(*Worker) error) (Worker,
 	return updated, nil
 }
 
+// UpdateWorkers mutates multiple workers while holding one state lock.
 func (s *JSONStore) UpdateWorkers(ids []string, mutate func(map[string]*Worker) error) (map[string]Worker, error) {
 	updated := map[string]Worker{}
 	err := s.withStateLock(func() error {
@@ -125,9 +130,16 @@ func (s *JSONStore) UpdateWorkers(ids []string, mutate func(map[string]*Worker) 
 	return updated, nil
 }
 
+// UpdateWorkersWithRequest applies an idempotent multi-worker mutation.
 func (s *JSONStore) UpdateWorkersWithRequest(requestID, command, fingerprint string, ids []string, mutate func(map[string]*Worker) (WorkerMutationResult, error)) (WorkerMutationResult, bool, error) {
 	var result WorkerMutationResult
 	replayed := false
+	if strings.TrimSpace(requestID) == "" {
+		return WorkerMutationResult{}, false, errors.New("request id is required")
+	}
+	if strings.TrimSpace(fingerprint) == "" {
+		return WorkerMutationResult{}, false, errors.New("mutation fingerprint is required")
+	}
 	err := s.withStateLock(func() error {
 		state, err := s.read()
 		if err != nil {
@@ -136,7 +148,10 @@ func (s *JSONStore) UpdateWorkersWithRequest(requestID, command, fingerprint str
 
 		for _, completed := range state.CompletedMutations {
 			if completed.RequestID == requestID && completed.Command == command {
-				if completed.Fingerprint != "" && completed.Fingerprint != fingerprint {
+				if completed.Fingerprint == "" {
+					return fmt.Errorf("request %q for %s cannot be replayed without a stored fingerprint", requestID, command)
+				}
+				if completed.Fingerprint != fingerprint {
 					return fmt.Errorf("request %q for %s does not match original mutation fingerprint", requestID, command)
 				}
 				result.Output = completed.Output
@@ -167,6 +182,9 @@ func (s *JSONStore) UpdateWorkersWithRequest(requestID, command, fingerprint str
 		if err != nil {
 			return err
 		}
+		if strings.TrimSpace(mutated.Fingerprint) == "" {
+			return errors.New("mutation result fingerprint is required")
+		}
 		for _, worker := range targets {
 			normalizeWorkerLifecycleForSave(worker)
 		}
@@ -187,6 +205,7 @@ func (s *JSONStore) UpdateWorkersWithRequest(requestID, command, fingerprint str
 	return result, replayed, nil
 }
 
+// GetWorker returns one worker by ID.
 func (s *JSONStore) GetWorker(id string) (Worker, error) {
 	var got Worker
 	err := s.withStateLock(func() error {
@@ -208,6 +227,7 @@ func (s *JSONStore) GetWorker(id string) (Worker, error) {
 	return got, nil
 }
 
+// ListWorkers returns workers sorted by most recent update.
 func (s *JSONStore) ListWorkers() ([]Worker, error) {
 	var workers []Worker
 	err := s.withStateLock(func() error {
@@ -224,6 +244,7 @@ func (s *JSONStore) ListWorkers() ([]Worker, error) {
 	return workers, err
 }
 
+// ListEvents returns the durable swarm event log.
 func (s *JSONStore) ListEvents() ([]Event, error) {
 	var events []Event
 	err := s.withStateLock(func() error {
@@ -237,6 +258,7 @@ func (s *JSONStore) ListEvents() ([]Event, error) {
 	return events, err
 }
 
+// SaveSchedule inserts or replaces one schedule record.
 func (s *JSONStore) SaveSchedule(schedule Schedule) error {
 	return s.withStateLock(func() error {
 		state, err := s.read()
@@ -260,6 +282,7 @@ func (s *JSONStore) SaveSchedule(schedule Schedule) error {
 	})
 }
 
+// ListSchedules returns schedules sorted by most recent update.
 func (s *JSONStore) ListSchedules() ([]Schedule, error) {
 	var schedules []Schedule
 	err := s.withStateLock(func() error {
@@ -276,6 +299,7 @@ func (s *JSONStore) ListSchedules() ([]Schedule, error) {
 	return schedules, err
 }
 
+// SaveClaim inserts or replaces one claim record.
 func (s *JSONStore) SaveClaim(claim Claim) error {
 	return s.withStateLock(func() error {
 		state, err := s.read()
@@ -299,6 +323,43 @@ func (s *JSONStore) SaveClaim(claim Claim) error {
 	})
 }
 
+// SaveClaimValidated validates workers and existing claims, then saves a claim
+// under the same state lock and returns the previous claim snapshot.
+func (s *JSONStore) SaveClaimValidated(claim Claim, validate func([]Worker, []Claim) error) ([]Claim, error) {
+	var previous []Claim
+	err := s.withStateLock(func() error {
+		state, err := s.read()
+		if err != nil {
+			return err
+		}
+		if validate != nil {
+			if err := validate(state.Workers, state.Claims); err != nil {
+				return err
+			}
+		}
+		previous = append([]Claim(nil), state.Claims...)
+
+		found := false
+		for i := range state.Claims {
+			if state.Claims[i].ID == claim.ID {
+				state.Claims[i] = claim
+				found = true
+				break
+			}
+		}
+		if !found {
+			state.Claims = append(state.Claims, claim)
+		}
+
+		return s.write(state)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return previous, nil
+}
+
+// ImportClaims imports issue-backed claims with optional conflict override.
 func (s *JSONStore) ImportClaims(claims []Claim, force bool) (imported int, skipped int, conflicted int, err error) {
 	err = s.withStateLock(func() error {
 		state, err := s.read()
@@ -333,6 +394,7 @@ func (s *JSONStore) ImportClaims(claims []Claim, force bool) (imported int, skip
 	return imported, skipped, conflicted, err
 }
 
+// GetClaim returns one claim by ID.
 func (s *JSONStore) GetClaim(id string) (Claim, error) {
 	var got Claim
 	err := s.withStateLock(func() error {
@@ -354,6 +416,7 @@ func (s *JSONStore) GetClaim(id string) (Claim, error) {
 	return got, nil
 }
 
+// ListClaims returns claims sorted by most recent update.
 func (s *JSONStore) ListClaims() ([]Claim, error) {
 	var claims []Claim
 	err := s.withStateLock(func() error {
@@ -370,6 +433,7 @@ func (s *JSONStore) ListClaims() ([]Claim, error) {
 	return claims, err
 }
 
+// SaveAgent inserts or replaces one agent identity record.
 func (s *JSONStore) SaveAgent(agent Agent) error {
 	return s.withStateLock(func() error {
 		state, err := s.read()
@@ -400,6 +464,7 @@ func (s *JSONStore) SaveAgent(agent Agent) error {
 	})
 }
 
+// GetAgent returns one registered agent by ID.
 func (s *JSONStore) GetAgent(id string) (Agent, error) {
 	var got Agent
 	err := s.withStateLock(func() error {
@@ -421,6 +486,7 @@ func (s *JSONStore) GetAgent(id string) (Agent, error) {
 	return got, nil
 }
 
+// CurrentAgent returns the agent identity marked current.
 func (s *JSONStore) CurrentAgent() (Agent, error) {
 	var got Agent
 	err := s.withStateLock(func() error {
@@ -442,6 +508,7 @@ func (s *JSONStore) CurrentAgent() (Agent, error) {
 	return got, nil
 }
 
+// ListAgents returns agents sorted by most recent update.
 func (s *JSONStore) ListAgents() ([]Agent, error) {
 	var agents []Agent
 	err := s.withStateLock(func() error {
@@ -545,7 +612,7 @@ type stateLock struct {
 }
 
 func acquireStateLock(statePath string) (*stateLock, error) {
-	if err := os.MkdirAll(filepath.Dir(statePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
 		return nil, fmt.Errorf("create state dir: %w", err)
 	}
 
@@ -609,7 +676,7 @@ func (l *stateLock) release() error {
 	}
 	if closeErr := l.file.Close(); closeErr != nil {
 		if err != nil {
-			return fmt.Errorf("%v; close state lock %s: %w", err, l.path, closeErr)
+			return errors.Join(err, fmt.Errorf("close state lock %s: %w", l.path, closeErr))
 		}
 		return fmt.Errorf("close state lock %s: %w", l.path, closeErr)
 	}
@@ -638,23 +705,23 @@ func normalizeWorkerLifecycleForSave(worker *Worker) {
 	worker.Status = workerStatusFromLifecycle(*worker.Lifecycle)
 }
 
-func appendBoundedEvents(existing []Event, added []Event, cap int) []Event {
+func appendBoundedEvents(existing []Event, added []Event, maxItems int) []Event {
 	if len(added) == 0 {
 		return existing
 	}
 	events := append(existing, added...)
-	if cap <= 0 || len(events) <= cap {
+	if maxItems <= 0 || len(events) <= maxItems {
 		return events
 	}
-	return append([]Event(nil), events[len(events)-cap:]...)
+	return append([]Event(nil), events[len(events)-maxItems:]...)
 }
 
-func appendBoundedCompletedMutations(existing []CompletedMutation, added CompletedMutation, cap int) []CompletedMutation {
+func appendBoundedCompletedMutations(existing []CompletedMutation, added CompletedMutation, maxItems int) []CompletedMutation {
 	mutations := append(existing, added)
-	if cap <= 0 || len(mutations) <= cap {
+	if maxItems <= 0 || len(mutations) <= maxItems {
 		return mutations
 	}
-	return append([]CompletedMutation(nil), mutations[len(mutations)-cap:]...)
+	return append([]CompletedMutation(nil), mutations[len(mutations)-maxItems:]...)
 }
 
 func completedMutationTime(events []Event) time.Time {

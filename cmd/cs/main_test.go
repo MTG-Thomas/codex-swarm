@@ -652,6 +652,38 @@ func TestCLISpawnAppserverWithWorktreeRunsInManagedWorktree(t *testing.T) {
 	}
 }
 
+func TestCLISpawnAppserverFailurePersistsWorkerState(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 26, 16, 7, 0, 0, time.UTC)
+	repo := initCLITestRepo(t)
+	c := cli{
+		out: &out,
+		err: &bytes.Buffer{},
+		now: func() time.Time { return now },
+		appserverRunner: fakeAppserverRunner{
+			runTurn: func(context.Context, string, string) (appserver.RunResult, error) {
+				return appserver.RunResult{}, errors.New("appserver unavailable")
+			},
+		},
+	}
+	state := filepath.Join(t.TempDir(), "state.json")
+
+	err := c.run([]string{"spawn", "--state", state, "--engine", "appserver", "--repo", repo, "--worktree", "--prompt", "continue"})
+	if err == nil {
+		t.Fatal("spawn error = nil, want appserver failure")
+	}
+	worker := mustFindWorkerByPrompt(t, state, "continue")
+	if worker.Worktree == "" {
+		t.Fatal("Worktree = empty, want failed worker to retain managed worktree path")
+	}
+	if got := worker.Lifecycle.DeriveStatus(); got != lifecycle.DisplayFailed {
+		t.Fatalf("DeriveStatus() = %q, want failed", got)
+	}
+	if !strings.Contains(worker.LastMessage, "app-server spawn failed") {
+		t.Fatalf("LastMessage = %q, want app-server spawn failed", worker.LastMessage)
+	}
+}
+
 func TestCLISendAndResumeAppserverUseExistingWorktree(t *testing.T) {
 	var out bytes.Buffer
 	now := time.Date(2026, 6, 26, 16, 10, 0, 0, time.UTC)

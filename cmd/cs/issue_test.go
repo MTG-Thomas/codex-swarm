@@ -17,6 +17,7 @@ import (
 func TestIssueExportIncludesParsableClaimMarker(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "state.json")
 	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	t.Setenv("CODEX_SWARM_MACHINE_ID", "opaque-machine")
 	var out bytes.Buffer
 	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
 	if err := store.NewJSONStore(state).SaveWorker(store.Worker{
@@ -57,8 +58,25 @@ func TestIssueExportIncludesParsableClaimMarker(t *testing.T) {
 	if snapshot.SnapshotID == "" {
 		t.Fatal("snapshot_id is empty")
 	}
-	if snapshot.MachineID == "" {
-		t.Fatal("machine_id is empty")
+	if snapshot.MachineID != "opaque-machine" {
+		t.Fatalf("machine_id = %q, want opaque-machine", snapshot.MachineID)
+	}
+}
+
+func TestIssueExportOmitsMachineIDByDefault(t *testing.T) {
+	body, err := claimIssueMarkerMarkdown("MTG-Thomas/codex-swarm#42", nil, time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("claimIssueMarkerMarkdown error = %v", err)
+	}
+	snapshot, ok, err := extractClaimSnapshot(body)
+	if err != nil {
+		t.Fatalf("extractClaimSnapshot error = %v", err)
+	}
+	if !ok {
+		t.Fatal("extractClaimSnapshot ok = false")
+	}
+	if snapshot.MachineID != "" {
+		t.Fatalf("machine_id = %q, want empty default", snapshot.MachineID)
 	}
 }
 
@@ -309,6 +327,32 @@ func TestImportClaimSnapshotKeepsKnownWorkerLocal(t *testing.T) {
 	}
 	if got.ExternalWorker || got.WorkerSource != "" {
 		t.Fatalf("external provenance = external:%t source:%q, want local worker", got.ExternalWorker, got.WorkerSource)
+	}
+}
+
+func TestImportClaimSnapshotRejectsClaimForDifferentIssue(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	st := store.NewJSONStore(state)
+	updated := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+
+	_, _, err := importClaimSnapshot(st, "MTG-Thomas/codex-swarm#42", issueClaimSnapshot{
+		Issue: "MTG-Thomas/codex-swarm#42",
+		Claims: []store.Claim{{
+			ID:        "c-foreign",
+			Issue:     "MTG-Thomas/codex-swarm#99",
+			Repo:      "C:/repo",
+			Status:    store.ClaimActive,
+			UpdatedAt: updated,
+		}},
+	}, false)
+	if err == nil {
+		t.Fatal("importClaimSnapshot error = nil, want foreign issue rejection")
+	}
+	if !strings.Contains(err.Error(), "expected MTG-Thomas/codex-swarm#42") {
+		t.Fatalf("importClaimSnapshot error = %v", err)
+	}
+	if _, getErr := st.GetClaim("c-foreign"); getErr == nil {
+		t.Fatal("foreign-issue claim was imported")
 	}
 }
 

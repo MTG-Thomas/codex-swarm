@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -24,10 +25,12 @@ type Status struct {
 	ConflictCount int    `json:"conflict_count"`
 }
 
+// String renders a compact human-readable daemon status line.
 func (s Status) String() string {
 	return fmt.Sprintf("daemon=%s version=%s workers=%d claims=%d conflicts=%d state=%s", s.Daemon, s.Version, s.WorkerCount, s.ClaimCount, s.ConflictCount, s.StatePath)
 }
 
+// WorkerStatus is the compact daemon representation of one worker.
 type WorkerStatus struct {
 	ID       string `json:"id"`
 	Status   string `json:"status"`
@@ -36,21 +39,25 @@ type WorkerStatus struct {
 	ThreadID string `json:"thread_id,omitempty"`
 }
 
+// WorkersResponse is returned by the daemon workers endpoint.
 type WorkersResponse struct {
 	Workers []WorkerStatus `json:"workers"`
 }
 
+// ClaimsResponse is returned by the daemon claims endpoint.
 type ClaimsResponse struct {
 	Claims    []store.Claim   `json:"claims"`
 	Conflicts []ClaimConflict `json:"conflicts"`
 }
 
+// LegacyStatus is the compatibility response for older daemon clients.
 type LegacyStatus struct {
 	Daemon    string         `json:"daemon"`
 	StatePath string         `json:"state_path"`
 	Workers   []store.Worker `json:"workers"`
 }
 
+// ClaimConflict describes one pair of overlapping open claims.
 type ClaimConflict struct {
 	ClaimID    string `json:"claim_id"`
 	ConflictID string `json:"conflict_id"`
@@ -63,11 +70,13 @@ type readStore interface {
 	ListClaims() ([]store.Claim, error)
 }
 
+// Server exposes read-only daemon HTTP endpoints over swarm state.
 type Server struct {
 	store     readStore
 	statePath string
 }
 
+// NewServer builds a read-only daemon server over the provided store.
 func NewServer(statePath string, st readStore) *Server {
 	return &Server{
 		store:     st,
@@ -75,6 +84,7 @@ func NewServer(statePath string, st readStore) *Server {
 	}
 }
 
+// Handler returns the daemon HTTP handler.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.handleHealth)
@@ -164,14 +174,19 @@ func (s *Server) handleLegacyStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Client reads status from a running codex-swarm daemon.
 type Client struct {
 	BaseURL    string
 	HTTPClient *http.Client
 }
 
+// Status returns compact daemon state, falling back only for legacy daemons.
 func (c Client) Status(ctx context.Context) (Status, error) {
 	var status Status
 	if err := c.get(ctx, "/status", &status); err != nil {
+		if !isLegacyFallbackStatus(err) {
+			return Status{}, err
+		}
 		var legacy LegacyStatus
 		if legacyErr := c.get(ctx, "/v1/status", &legacy); legacyErr != nil {
 			return Status{}, err
@@ -186,9 +201,13 @@ func (c Client) Status(ctx context.Context) (Status, error) {
 	return status, nil
 }
 
+// Workers returns compact worker summaries from the daemon.
 func (c Client) Workers(ctx context.Context) (WorkersResponse, error) {
 	var workers WorkersResponse
 	if err := c.get(ctx, "/workers", &workers); err != nil {
+		if !isLegacyFallbackStatus(err) {
+			return WorkersResponse{}, err
+		}
 		var legacy LegacyStatus
 		if legacyErr := c.get(ctx, "/v1/status", &legacy); legacyErr != nil {
 			return WorkersResponse{}, err
@@ -198,6 +217,21 @@ func (c Client) Workers(ctx context.Context) (WorkersResponse, error) {
 	return workers, nil
 }
 
+type statusError struct {
+	StatusCode int
+	Status     string
+}
+
+func (e statusError) Error() string {
+	return "daemon returned " + e.Status
+}
+
+func isLegacyFallbackStatus(err error) bool {
+	var status statusError
+	return errors.As(err, &status) && (status.StatusCode == http.StatusNotFound || status.StatusCode == http.StatusNotImplemented)
+}
+
+// Claims returns claims and conflict summaries from the daemon.
 func (c Client) Claims(ctx context.Context) (ClaimsResponse, error) {
 	var claimList ClaimsResponse
 	if err := c.get(ctx, "/claims", &claimList); err != nil {
@@ -225,7 +259,7 @@ func (c Client) get(ctx context.Context, path string, target any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("daemon returned %s", resp.Status)
+		return statusError{StatusCode: resp.StatusCode, Status: resp.Status}
 	}
 	return json.NewDecoder(resp.Body).Decode(target)
 }

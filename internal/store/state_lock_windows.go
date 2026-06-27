@@ -34,7 +34,7 @@ func tryLockStateFile(file *os.File) (bool, error) {
 		return true, nil
 	}
 	if errno, ok := err.(syscall.Errno); ok {
-		if errno == errorLockViolation || errno == syscall.ERROR_ACCESS_DENIED {
+		if errno == errorLockViolation {
 			return false, nil
 		}
 	}

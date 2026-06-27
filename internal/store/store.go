@@ -18,6 +18,7 @@ const (
 	CompletedMutationCacheCap = 500
 )
 
+// WorkerStatus is the legacy display status retained for compatibility.
 type WorkerStatus string
 
 const (
@@ -28,6 +29,7 @@ const (
 	WorkerFailed  WorkerStatus = "failed"
 )
 
+// Worker is a durable local record for one agent or subagent.
 type Worker struct {
 	ID          string               `json:"id"`
 	ParentID    string               `json:"parent_id,omitempty"`
@@ -49,12 +51,14 @@ type Worker struct {
 	Events      []Event              `json:"events,omitempty"`
 }
 
+// ApplyStatus updates the worker lifecycle using the current time semantics.
 func (w *Worker) ApplyStatus(status WorkerStatus) {
 	w.Status = status
-	lc := lifecycleFromWorkerStatus(status)
+	lc := lifecycleFromWorkerStatusWithPrevious(status, w.Lifecycle)
 	w.Lifecycle = &lc
 }
 
+// ApplyStatusAt updates status and terminal timestamps at a known time.
 func (w *Worker) ApplyStatusAt(status WorkerStatus, at time.Time) {
 	w.ApplyStatus(status)
 	if w.Lifecycle == nil {
@@ -73,36 +77,57 @@ func (w *Worker) ApplyStatusAt(status WorkerStatus, at time.Time) {
 }
 
 func lifecycleFromWorkerStatus(status WorkerStatus) lifecycle.Lifecycle {
+	return lifecycleFromWorkerStatusWithPrevious(status, nil)
+}
+
+func lifecycleFromWorkerStatusWithPrevious(status WorkerStatus, previous *lifecycle.Lifecycle) lifecycle.Lifecycle {
+	preserveOrchestrator := previous != nil && previous.Session.Reason == lifecycle.ReasonOrchestrating
 	switch status {
 	case WorkerRunning:
+		if preserveOrchestrator {
+			return lifecycle.NewOrchestratorLifecycle()
+		}
 		return lifecycle.NewWorkerLifecycle()
 	case WorkerDone:
+		reason := lifecycle.ReasonCompleted
+		if preserveOrchestrator {
+			reason = lifecycle.ReasonOrchestrating
+		}
 		return lifecycle.Lifecycle{
 			Version: lifecycle.CurrentVersion,
 			Session: lifecycle.SessionLifecycle{
 				State:  lifecycle.SessionDone,
-				Reason: lifecycle.ReasonCompleted,
+				Reason: reason,
 			},
 			Runtime: lifecycle.RuntimeLifecycle{
 				State: lifecycle.RuntimeStopped,
 			},
 		}
 	case WorkerFailed:
+		reason := lifecycle.ReasonFailed
+		if preserveOrchestrator {
+			reason = lifecycle.ReasonOrchestrating
+		}
 		return lifecycle.Lifecycle{
 			Version: lifecycle.CurrentVersion,
 			Session: lifecycle.SessionLifecycle{
 				State:  lifecycle.SessionFailed,
-				Reason: lifecycle.ReasonFailed,
+				Reason: reason,
 			},
 			Runtime: lifecycle.RuntimeLifecycle{
 				State: lifecycle.RuntimeStopped,
 			},
 		}
 	case WorkerIdle:
+		reason := lifecycle.Reason("")
+		if preserveOrchestrator {
+			reason = lifecycle.ReasonOrchestrating
+		}
 		return lifecycle.Lifecycle{
 			Version: lifecycle.CurrentVersion,
 			Session: lifecycle.SessionLifecycle{
-				State: lifecycle.SessionIdle,
+				State:  lifecycle.SessionIdle,
+				Reason: reason,
 			},
 			Runtime: lifecycle.RuntimeLifecycle{
 				State: lifecycle.RuntimeStopped,
@@ -112,13 +137,21 @@ func lifecycleFromWorkerStatus(status WorkerStatus) lifecycle.Lifecycle {
 		return lifecycle.Lifecycle{
 			Version: lifecycle.CurrentVersion,
 			Session: lifecycle.SessionLifecycle{
-				State: statusToSessionState(status),
+				State:  statusToSessionState(status),
+				Reason: previousSessionReason(previous),
 			},
 			Runtime: lifecycle.RuntimeLifecycle{
 				State: lifecycle.RuntimeUnknown,
 			},
 		}
 	}
+}
+
+func previousSessionReason(previous *lifecycle.Lifecycle) lifecycle.Reason {
+	if previous == nil {
+		return ""
+	}
+	return previous.Session.Reason
 }
 
 func statusToSessionState(status WorkerStatus) lifecycle.SessionState {
@@ -151,6 +184,7 @@ func workerStatusFromLifecycle(lc lifecycle.Lifecycle) WorkerStatus {
 	}
 }
 
+// Event records one durable swarm timeline entry.
 type Event struct {
 	At        time.Time `json:"at"`
 	Type      string    `json:"type"`
@@ -162,6 +196,7 @@ type Event struct {
 	RequestID string    `json:"request_id,omitempty"`
 }
 
+// CompletedMutation stores an idempotency replay record.
 type CompletedMutation struct {
 	RequestID   string    `json:"request_id"`
 	Command     string    `json:"command"`
@@ -170,12 +205,14 @@ type CompletedMutation struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+// WorkerMutationResult is the durable output of a multi-worker mutation.
 type WorkerMutationResult struct {
 	Fingerprint string
 	Output      string
 	Events      []Event
 }
 
+// Schedule describes a recurring prompt against a repository.
 type Schedule struct {
 	ID        string    `json:"id"`
 	Repo      string    `json:"repo"`
@@ -186,6 +223,7 @@ type Schedule struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// ClaimStatus is the state of a warning-only ownership claim.
 type ClaimStatus string
 
 const (
@@ -194,6 +232,7 @@ const (
 	ClaimBlocked  ClaimStatus = "blocked"
 )
 
+// Claim records warning-only ownership of a repo scope.
 type Claim struct {
 	ID             string      `json:"id"`
 	WorkerID       string      `json:"worker_id,omitempty"`
@@ -211,6 +250,7 @@ type Claim struct {
 	UpdatedAt      time.Time   `json:"updated_at"`
 }
 
+// Agent is a named local agent identity.
 type Agent struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
@@ -220,6 +260,7 @@ type Agent struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// Store is the minimal worker store interface used by simple consumers.
 type Store interface {
 	SaveWorker(worker Worker) error
 	GetWorker(id string) (Worker, error)

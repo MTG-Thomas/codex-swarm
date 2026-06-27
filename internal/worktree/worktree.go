@@ -20,20 +20,25 @@ import (
 const (
 	malformedLockRetryInterval = 25 * time.Millisecond
 	malformedLockStaleAge      = 30 * time.Second
+	privateDirPerm             = 0o700
+	privateFilePerm            = 0o600
 )
 
+// Spec describes a managed Git worktree request.
 type Spec struct {
 	RepoRoot string
 	Branch   string
 	Path     string
 }
 
+// Status is the porcelain status summary for a worktree.
 type Status struct {
 	Path  string
 	Dirty bool
 	Lines []string
 }
 
+// Result describes the outcome of creating or reusing a managed worktree.
 type Result struct {
 	Path     string
 	Branch   string
@@ -41,10 +46,12 @@ type Result struct {
 	Warnings []string
 }
 
+// Git wraps the git executable used for managed worktree operations.
 type Git struct {
 	Binary string
 }
 
+// Create creates or reuses a managed worktree for the requested branch.
 func (g Git) Create(ctx context.Context, spec Spec) (Result, error) {
 	if spec.RepoRoot == "" {
 		return Result{}, fmt.Errorf("repo root is required")
@@ -65,7 +72,7 @@ func (g Git) Create(ctx context.Context, spec Spec) (Result, error) {
 	}
 	spec = Spec{RepoRoot: repoRoot, Branch: spec.Branch, Path: worktreePath}
 
-	lock, err := acquireLock(spec.RepoRoot, spec.Branch, spec.Path)
+	lock, err := acquireLock(ctx, spec.RepoRoot, spec.Branch, spec.Path)
 	if err != nil {
 		return Result{}, err
 	}
@@ -98,7 +105,7 @@ func (g Git) Create(ctx context.Context, spec Spec) (Result, error) {
 	} else if !os.IsNotExist(err) {
 		return Result{}, fmt.Errorf("inspect worktree path: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(spec.Path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(spec.Path), privateDirPerm); err != nil {
 		return Result{}, fmt.Errorf("create worktree parent: %w", err)
 	}
 	_, err = g.run(ctx, spec.RepoRoot, "worktree", "add", "-b", spec.Branch, spec.Path, "HEAD")
@@ -108,6 +115,7 @@ func (g Git) Create(ctx context.Context, spec Spec) (Result, error) {
 	return Result{Path: spec.Path, Branch: spec.Branch}, nil
 }
 
+// Status returns whether a worktree has uncommitted porcelain changes.
 func (g Git) Status(ctx context.Context, path string) (Status, error) {
 	if path == "" {
 		return Status{}, fmt.Errorf("worktree path is required")
@@ -168,9 +176,9 @@ type heldLock struct {
 	path string
 }
 
-func acquireLock(repoRoot, branch, worktreePath string) (heldLock, error) {
+func acquireLock(ctx context.Context, repoRoot, branch, worktreePath string) (heldLock, error) {
 	lockPath := lockFilePath(repoRoot, branch)
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(lockPath), privateDirPerm); err != nil {
 		return heldLock{}, fmt.Errorf("create worktree lock dir: %w", err)
 	}
 	lock := worktreeLock{
@@ -180,7 +188,12 @@ func acquireLock(repoRoot, branch, worktreePath string) (heldLock, error) {
 		AcquiredAt: time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	for {
-		file, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		select {
+		case <-ctx.Done():
+			return heldLock{}, ctx.Err()
+		default:
+		}
+		file, err := os.OpenFile(lockPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, privateFilePerm)
 		if err == nil {
 			if err := json.NewEncoder(file).Encode(lock); err != nil {
 				_ = file.Close()
@@ -206,7 +219,9 @@ func acquireLock(repoRoot, branch, worktreePath string) (heldLock, error) {
 				return heldLock{}, fmt.Errorf("inspect unreadable worktree lock %s: %w", lockPath, statErr)
 			}
 			if !stale {
-				time.Sleep(malformedLockRetryInterval)
+				if err := sleepWithContext(ctx, malformedLockRetryInterval); err != nil {
+					return heldLock{}, err
+				}
 				continue
 			}
 			if err := os.Remove(lockPath); err != nil && !os.IsNotExist(err) {
@@ -257,17 +272,31 @@ func safeLockName(value string) string {
 	return fmt.Sprintf("%s-%x", b.String(), sum[:6])
 }
 
-func readLockFile(path string) (worktreeLock, error) {
+func readLockFile(path string) (lock worktreeLock, err error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return worktreeLock{}, err
 	}
-	defer file.Close()
-	var lock worktreeLock
+	defer func() {
+		if closeErr := file.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+	}()
 	if err := json.NewDecoder(file).Decode(&lock); err != nil {
 		return worktreeLock{}, err
 	}
 	return lock, nil
+}
+
+func sleepWithContext(ctx context.Context, duration time.Duration) error {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func unreadableLockStale(path string, now time.Time) (bool, error) {
