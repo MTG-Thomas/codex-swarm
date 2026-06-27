@@ -46,3 +46,39 @@ jobs:
         run: |
           go build -trimpath ./cmd/cs
           go build -trimpath ./cmd/csd
+
+      - name: macOS LaunchAgent service smoke
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export CODEX_SWARM_DAEMON_ADDR="127.0.0.1:18787"
+          export CODEX_SWARM_STATE="$RUNNER_TEMP/codex-swarm-service-state.json"
+          plist="$HOME/Library/LaunchAgents/codex-swarm-daemon.plist"
+          cleanup() {
+            ./csd uninstall || true
+          }
+          trap cleanup EXIT
+
+          ./csd uninstall || true
+          ./csd install
+
+          test -f "$plist"
+          grep -q "$CODEX_SWARM_DAEMON_ADDR" "$plist"
+          grep -q "$CODEX_SWARM_STATE" "$plist"
+          launchctl list | grep -q "codex-swarm-daemon"
+
+          for i in {1..20}; do
+            if CODEX_SWARM_DAEMON_URL="http://$CODEX_SWARM_DAEMON_ADDR" ./csd status; then
+              break
+            fi
+            if [ "$i" -eq 20 ]; then
+              echo "daemon did not become ready" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+
+          ./csd uninstall
+          trap - EXIT
+          test ! -f "$plist"
