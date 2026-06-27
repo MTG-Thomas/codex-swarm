@@ -807,6 +807,170 @@ func TestIssueReadyRejectsMalformedIssue(t *testing.T) {
 	}
 }
 
+func TestIssueDispatchCreatesImplementerValidatorWithFakeGH(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	repo := t.TempDir()
+	writeIssueReadyRepoHints(t, repo)
+	installFakeGH(t, fakeGHState{
+		Title: "Dispatch issue",
+		Body:  "Acceptance criteria",
+	})
+	now := time.Date(2026, 6, 27, 16, 0, 0, 0, time.UTC)
+	var out bytes.Buffer
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+
+	if err := c.run([]string{"issue", "dispatch", "--state", state, "--repo", repo, "--issue", "MTG-Thomas/codex-swarm#24", "--prompt", "implement issue #24", "--gate", "test"}); err != nil {
+		t.Fatalf("issue dispatch error = %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"dispatch issue=MTG-Thomas/codex-swarm#24",
+		"request=dispatch-",
+		"replayed=false",
+		"implementer: cs send",
+		"gate: cs gate record --repo " + repo,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("issue dispatch output missing %q:\n%s", want, got)
+		}
+	}
+	workers, err := store.NewJSONStore(state).ListWorkers()
+	if err != nil {
+		t.Fatalf("ListWorkers() error = %v", err)
+	}
+	implementer, validator := dispatchWorkersByRole(t, workers)
+	if implementer.Issue != "MTG-Thomas/codex-swarm#24" || validator.Issue != "MTG-Thomas/codex-swarm#24" {
+		t.Fatalf("worker issues = %q/%q", implementer.Issue, validator.Issue)
+	}
+	if validator.ValidationOf != implementer.ID {
+		t.Fatalf("validator.ValidationOf = %q, want %q", validator.ValidationOf, implementer.ID)
+	}
+	requestID := dispatchRequestID(t, implementer)
+	if got := dispatchRequestID(t, validator); got != requestID {
+		t.Fatalf("validator request id = %q, want %q", got, requestID)
+	}
+}
+
+func TestIssueDispatchReplaysExistingRequestWithFakeGH(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	repo := t.TempDir()
+	writeIssueReadyRepoHints(t, repo)
+	installFakeGH(t, fakeGHState{
+		Title: "Dispatch issue",
+		Body:  "Acceptance criteria",
+	})
+	now := time.Date(2026, 6, 27, 16, 0, 0, 0, time.UTC)
+	var out bytes.Buffer
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+	args := []string{"issue", "dispatch", "--state", state, "--repo", repo, "--issue", "MTG-Thomas/codex-swarm#24", "--prompt", "implement issue #24", "--gate", "test"}
+
+	if err := c.run(args); err != nil {
+		t.Fatalf("first issue dispatch error = %v", err)
+	}
+	firstWorkers, err := store.NewJSONStore(state).ListWorkers()
+	if err != nil {
+		t.Fatalf("ListWorkers(first) error = %v", err)
+	}
+	firstImplementer, firstValidator := dispatchWorkersByRole(t, firstWorkers)
+	out.Reset()
+	if err := c.run(args); err != nil {
+		t.Fatalf("second issue dispatch error = %v", err)
+	}
+	if !strings.Contains(out.String(), "replayed=true") {
+		t.Fatalf("second dispatch output missing replayed=true:\n%s", out.String())
+	}
+	secondWorkers, err := store.NewJSONStore(state).ListWorkers()
+	if err != nil {
+		t.Fatalf("ListWorkers(second) error = %v", err)
+	}
+	if len(secondWorkers) != 2 {
+		t.Fatalf("workers after replay = %d, want 2", len(secondWorkers))
+	}
+	secondImplementer, secondValidator := dispatchWorkersByRole(t, secondWorkers)
+	if firstImplementer.ID != secondImplementer.ID || firstValidator.ID != secondValidator.ID {
+		t.Fatalf("replay worker ids = %s/%s then %s/%s", firstImplementer.ID, firstValidator.ID, secondImplementer.ID, secondValidator.ID)
+	}
+}
+
+func TestIssueDispatchBlockedReadinessDoesNotCreateWorkers(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	repo := t.TempDir()
+	writeIssueReadyRepoHints(t, repo)
+	installFakeGH(t, fakeGHState{
+		Title: "Claimed issue",
+		Body:  "Acceptance criteria",
+	})
+	now := time.Date(2026, 6, 27, 16, 0, 0, 0, time.UTC)
+	if err := store.NewJSONStore(state).SaveClaim(store.Claim{
+		ID:        "c-dispatch",
+		Issue:     "MTG-Thomas/codex-swarm#24",
+		Repo:      repo,
+		Scope:     "issue #24",
+		Status:    store.ClaimActive,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("SaveClaim() error = %v", err)
+	}
+	var out, stderr bytes.Buffer
+	c := cli{out: &out, err: &stderr, now: func() time.Time { return now }}
+
+	err := c.run([]string{"issue", "dispatch", "--state", state, "--repo", repo, "--issue", "MTG-Thomas/codex-swarm#24", "--prompt", "implement issue #24", "--gate", "test"})
+	if err == nil {
+		t.Fatal("issue dispatch error = nil, want blocked readiness error")
+	}
+	if out.String() != "" {
+		t.Fatalf("blocked dispatch stdout = %q, want empty", out.String())
+	}
+	got := stderr.String()
+	for _, want := range []string{"ready=false", "blocker=issue has open claim c-dispatch"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("blocked dispatch output missing %q:\n%s", want, got)
+		}
+	}
+	workers, err := store.NewJSONStore(state).ListWorkers()
+	if err != nil {
+		t.Fatalf("ListWorkers() error = %v", err)
+	}
+	if len(workers) != 0 {
+		t.Fatalf("workers after blocked dispatch = %d, want 0", len(workers))
+	}
+}
+
+func dispatchWorkersByRole(t *testing.T, workers []store.Worker) (store.Worker, store.Worker) {
+	t.Helper()
+	if len(workers) != 2 {
+		t.Fatalf("workers = %d, want 2", len(workers))
+	}
+	var implementer, validator store.Worker
+	for _, worker := range workers {
+		switch worker.Role {
+		case "implementer":
+			implementer = worker
+		case "validator":
+			validator = worker
+		}
+	}
+	if implementer.ID == "" || validator.ID == "" {
+		t.Fatalf("workers missing implementer/validator roles: %#v", workers)
+	}
+	return implementer, validator
+}
+
+func dispatchRequestID(t *testing.T, worker store.Worker) string {
+	t.Helper()
+	for _, event := range worker.Events {
+		if event.Type == "issue.dispatch" {
+			if event.RequestID == "" {
+				t.Fatalf("worker %s has empty dispatch request id", worker.ID)
+			}
+			return event.RequestID
+		}
+	}
+	t.Fatalf("worker %s has no issue.dispatch event", worker.ID)
+	return ""
+}
+
 type fakeGHState struct {
 	Title    string          `json:"title,omitempty"`
 	Body     string          `json:"body"`

@@ -50,6 +50,7 @@ go run ./cmd/cs gate record --repo . --worker <worker-id> --gate test --exit-cod
 go run ./cmd/cs validate start --repo . --issue MTG-Thomas/codex-swarm#42 --prompt "implement issue #42" --gate test
 go run ./cmd/cs issue export --issue MTG-Thomas/codex-swarm#42
 go run ./cmd/cs issue ready --issue MTG-Thomas/codex-swarm#42 --repo .
+go run ./cmd/cs issue dispatch --issue MTG-Thomas/codex-swarm#42 --repo . --prompt "implement issue #42" --gate test
 go run ./cmd/cs issue sync --issue MTG-Thomas/codex-swarm#42
 go run ./cmd/cs issue pull --issue MTG-Thomas/codex-swarm#42
 go run ./cmd/cs issue report --issue MTG-Thomas/codex-swarm#42 --worker <worker-id>
@@ -88,6 +89,8 @@ issue-linked claims, and repo quality gates from `codex-swarm.hints.json`, then
 prints a scriptable `ready=<bool>` summary plus blockers. Add `--json` for a
 parseable readiness report. This command does not mutate GitHub or create
 workers.
+
+Use `issue dispatch --issue owner/repo#123 --repo <path> --prompt <task> --gate <id>` to run the same readiness preflight and, only when ready, create a local implementer/validator pair. Dispatch is explicit and local-only: it does not post to GitHub or schedule future work. The request key is derived from issue, repo, prompt, and gate IDs; rerunning the same request prints the original worker IDs with `replayed=true` instead of creating duplicates.
 
 Use `issue report --issue owner/repo#123 --worker <worker-id>` only when you intentionally want to post that worker's current report or last message as a GitHub issue comment.
 
