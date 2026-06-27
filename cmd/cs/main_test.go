@@ -1172,7 +1172,7 @@ func TestCLISpawnAppserverIssueIncludesLaunchBundle(t *testing.T) {
 		},
 	}
 
-	if err := c.run([]string{"spawn", "--state", state, "--engine", "appserver", "--repo", repo, "--issue", "MTG-Thomas/codex-swarm#9", "--prompt", "implement issue #9"}); err != nil {
+	if err := c.run([]string{"spawn", "--state", state, "--engine", "appserver", "--repo", repo, "--worktree", "--issue", "MTG-Thomas/codex-swarm#9", "--prompt", "implement issue #9"}); err != nil {
 		t.Fatalf("spawn appserver issue error = %v", err)
 	}
 	for _, want := range []string{
@@ -1202,6 +1202,99 @@ func TestCLISpawnAppserverIssueIncludesLaunchBundle(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("worker events missing launch bundle source reference: %#v", worker.Events)
+	}
+}
+
+func TestCLISpawnAppserverIssueWithoutWorktreeOmitsCheckoutFields(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 27, 18, 37, 0, 0, time.UTC)
+	repo := initCLITestRepo(t)
+	state := filepath.Join(t.TempDir(), "state.json")
+	installFakeGH(t, fakeGHState{
+		Title: "Build richer appserver bundles",
+		Body:  "Acceptance criteria\n- Include issue context",
+	})
+	var runPrompt string
+	c := cli{
+		out: &out,
+		err: &bytes.Buffer{},
+		now: func() time.Time { return now },
+		appserverRunner: fakeAppserverRunner{
+			runTurn: func(_ context.Context, _, prompt string) (appserver.RunResult, error) {
+				runPrompt = prompt
+				return appserver.RunResult{ThreadID: "thread-bundle", TurnID: "turn-bundle", Status: "completed"}, nil
+			},
+		},
+	}
+
+	if err := c.run([]string{"spawn", "--state", state, "--engine", "appserver", "--repo", repo, "--issue", "MTG-Thomas/codex-swarm#9", "--prompt", "implement issue #9"}); err != nil {
+		t.Fatalf("spawn appserver issue error = %v", err)
+	}
+	for _, want := range []string{
+		"ISSUE_LAUNCH_BUNDLE",
+		"issue=MTG-Thomas/codex-swarm#9",
+		"repo=" + repo,
+		"USER_TASK\nimplement issue #9",
+	} {
+		if !strings.Contains(runPrompt, want) {
+			t.Fatalf("launch bundle missing %q:\n%s", want, runPrompt)
+		}
+	}
+	for _, notWant := range []string{"worktree=", "branch="} {
+		if strings.Contains(runPrompt, notWant) {
+			t.Fatalf("launch bundle unexpectedly contained %q:\n%s", notWant, runPrompt)
+		}
+	}
+}
+
+func TestCLISpawnAppserverIssueBundleFailurePersistsWorkerState(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 6, 27, 18, 38, 0, 0, time.UTC)
+	repo := initCLITestRepo(t)
+	state := filepath.Join(t.TempDir(), "state.json")
+	installFakeGH(t, fakeGHState{IssueViewFail: "issue view unavailable"})
+	c := cli{
+		out: &out,
+		err: &bytes.Buffer{},
+		now: func() time.Time { return now },
+		appserverRunner: fakeAppserverRunner{
+			runTurn: func(context.Context, string, string) (appserver.RunResult, error) {
+				return appserver.RunResult{}, errors.New("RunTurn should not be called")
+			},
+		},
+	}
+
+	err := c.run([]string{"spawn", "--state", state, "--engine", "appserver", "--repo", repo, "--issue", "MTG-Thomas/codex-swarm#9", "--prompt", "implement issue #9"})
+	if err == nil {
+		t.Fatal("spawn error = nil, want launch bundle failure")
+	}
+	for _, want := range []string{
+		"build app-server launch bundle",
+		"worker=w-20260627-183800-",
+		"thread=mock-thread-w-20260627-183800-",
+		"repo=" + repo,
+		"issue=MTG-Thomas/codex-swarm#9",
+		"issue view unavailable",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("spawn error missing %q:\n%v", want, err)
+		}
+	}
+	worker := mustFindWorkerByPrompt(t, state, "implement issue #9")
+	if got := worker.Lifecycle.DeriveStatus(); got != lifecycle.DisplayFailed {
+		t.Fatalf("DeriveStatus() = %q, want failed", got)
+	}
+	if !strings.Contains(worker.LastMessage, "app-server launch bundle failed:") || !strings.Contains(worker.LastMessage, "issue view unavailable") {
+		t.Fatalf("LastMessage = %q, want launch bundle failure", worker.LastMessage)
+	}
+	found := false
+	for _, event := range worker.Events {
+		if event.Type == "appserver.launch.bundle.failed" && strings.Contains(event.Message, "issue view unavailable") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("worker events missing launch bundle failure: %#v", worker.Events)
 	}
 }
 

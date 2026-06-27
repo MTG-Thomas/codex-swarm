@@ -19,6 +19,7 @@ import (
 	"github.com/MTG-Thomas/codex-swarm/internal/appserver"
 	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
 	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
+	"github.com/MTG-Thomas/codex-swarm/internal/launchbundle"
 	"github.com/MTG-Thomas/codex-swarm/internal/repohints"
 	"github.com/MTG-Thomas/codex-swarm/internal/snapshot"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
@@ -397,6 +398,7 @@ func (c cli) spawn(args []string) error {
 		Events:      events,
 	}
 
+	worktreeReady := false
 	if *createWorktree {
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 		defer cancel()
@@ -412,6 +414,7 @@ func (c cli) spawn(args []string) error {
 			worker.Events = append(worker.Events, store.Event{At: now, Type: "worktree.warning", Message: warning})
 		}
 		worker.Events = append(worker.Events, store.Event{At: now, Type: "worktree.created", Message: worker.Worktree})
+		worktreeReady = true
 	}
 
 	if *engine == "appserver" {
@@ -419,9 +422,23 @@ func (c cli) spawn(args []string) error {
 		defer cancel()
 		appserverPrompt := *prompt
 		if worker.Issue != "" {
-			bundle, err := buildIssueLaunchBundle(ctx, store.NewJSONStore(*statePath), worker, *prompt)
+			bundle, err := launchbundle.BuildIssue(ctx, launchbundle.Input{
+				Worker:          worker,
+				UserPrompt:      *prompt,
+				Store:           store.NewJSONStore(*statePath),
+				IncludeWorktree: worktreeReady,
+			})
 			if err != nil {
-				return err
+				worker.ApplyStatusAt(store.WorkerFailed, now)
+				worker.LastMessage = "app-server launch bundle failed: " + err.Error()
+				worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.launch.bundle.failed", Message: worker.LastMessage})
+				if saveErr := store.NewJSONStore(*statePath).SaveWorker(worker); saveErr != nil {
+					return errors.Join(
+						fmt.Errorf("build app-server launch bundle for worker=%s thread=%s repo=%s worktree=%s issue=%s: %w", worker.ID, worker.ThreadID, worker.ProjectRoot, worker.Worktree, worker.Issue, err),
+						fmt.Errorf("save failed app-server worker: %w", saveErr),
+					)
+				}
+				return fmt.Errorf("build app-server launch bundle for worker=%s thread=%s repo=%s worktree=%s issue=%s: %w", worker.ID, worker.ThreadID, worker.ProjectRoot, worker.Worktree, worker.Issue, err)
 			}
 			appserverPrompt = bundle.Prompt
 			worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.launch.bundle", Message: bundle.Source})
@@ -796,84 +813,6 @@ func (c cli) send(args []string) error {
 
 func appserverPromptWithSnapshot(snap snapshot.Snapshot, message string) string {
 	return snap.Text() + "\n\nUSER_MESSAGE\n" + strings.TrimSpace(message)
-}
-
-type issueLaunchBundle struct {
-	Prompt string
-	Source string
-}
-
-func buildIssueLaunchBundle(ctx context.Context, st *store.JSONStore, worker store.Worker, userPrompt string) (issueLaunchBundle, error) {
-	metadata, err := (gh.CLIssueMetadataProvider{}).IssueMetadata(ctx, worker.Issue)
-	if err != nil {
-		return issueLaunchBundle{}, err
-	}
-	ref, err := gh.ParseIssueRef(worker.Issue)
-	if err != nil {
-		return issueLaunchBundle{}, err
-	}
-	issueURL := fmt.Sprintf("https://github.com/%s/%s/issues/%d", ref.Owner, ref.Repo, ref.Number)
-	claims, err := st.ListClaims()
-	if err != nil {
-		return issueLaunchBundle{}, err
-	}
-	hints, _, hintsOK, err := repohints.Load(worker.ProjectRoot)
-	if err != nil {
-		return issueLaunchBundle{}, err
-	}
-	var b strings.Builder
-	fmt.Fprintln(&b, "ISSUE_LAUNCH_BUNDLE")
-	fmt.Fprintf(&b, "issue=%s\n", worker.Issue)
-	fmt.Fprintf(&b, "url=%s\n", issueURL)
-	if title := strings.TrimSpace(metadata.Title); title != "" {
-		fmt.Fprintf(&b, "title=%s\n", title)
-	}
-	if body := strings.TrimSpace(metadata.Body); body != "" {
-		fmt.Fprintf(&b, "body=%s\n", compactMultiline(body, 1200))
-	}
-	fmt.Fprintf(&b, "repo=%s\n", worker.ProjectRoot)
-	if worker.Worktree != "" {
-		fmt.Fprintf(&b, "worktree=%s\n", worker.Worktree)
-	}
-	if worker.Branch != "" {
-		fmt.Fprintf(&b, "branch=%s\n", worker.Branch)
-	}
-	for _, claim := range claims {
-		if claim.Issue != worker.Issue || claim.Status != store.ClaimActive {
-			continue
-		}
-		fmt.Fprintf(&b, "claim=%s status=%s scope=%s\n", claim.ID, claim.Status, emptyDash(claim.Scope))
-	}
-	if hintsOK {
-		for _, line := range hints.Lines() {
-			fmt.Fprintln(&b, line)
-		}
-		for _, gate := range hints.QualityGates {
-			if command := strings.TrimSpace(gate.Command); command != "" {
-				fmt.Fprintf(&b, "required_verification=%s\n", command)
-			}
-		}
-	}
-	fmt.Fprintln(&b, "forbidden=no merge, deploy, close, or destructive cleanup unless explicitly requested")
-	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, "USER_TASK")
-	fmt.Fprintln(&b, strings.TrimSpace(userPrompt))
-	return issueLaunchBundle{
-		Prompt: strings.TrimRight(b.String(), "\n"),
-		Source: fmt.Sprintf("issue=%s url=%s title=%s", worker.Issue, issueURL, strings.TrimSpace(metadata.Title)),
-	}, nil
-}
-
-func compactMultiline(value string, limit int) string {
-	value = strings.TrimSpace(value)
-	if limit > 0 && len(value) > limit {
-		value = value[:limit] + "..."
-	}
-	lines := strings.Split(value, "\n")
-	for i := range lines {
-		lines[i] = strings.TrimSpace(lines[i])
-	}
-	return strings.Join(lines, "\n")
 }
 
 func (c cli) report(args []string) error {

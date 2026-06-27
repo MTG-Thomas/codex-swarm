@@ -1236,10 +1236,11 @@ func (p issueReadyProvider) IssueMetadata(ctx context.Context, issue string) (re
 }
 
 type fakeGHState struct {
-	Title    string          `json:"title,omitempty"`
-	Body     string          `json:"body"`
-	Comments []fakeGHComment `json:"comments"`
-	Calls    []string        `json:"calls,omitempty"`
+	Title         string          `json:"title,omitempty"`
+	Body          string          `json:"body"`
+	Comments      []fakeGHComment `json:"comments"`
+	Calls         []string        `json:"calls,omitempty"`
+	IssueViewFail string          `json:"issueViewFail,omitempty"`
 }
 
 type fakeGHComment struct {
@@ -1322,10 +1323,11 @@ import (
 )
 
 type state struct {
-	Title    string    ` + "`json:\"title,omitempty\"`" + `
-	Body     string    ` + "`json:\"body\"`" + `
-	Comments []comment ` + "`json:\"comments\"`" + `
-	Calls    []string  ` + "`json:\"calls,omitempty\"`" + `
+	Title         string    ` + "`json:\"title,omitempty\"`" + `
+	Body          string    ` + "`json:\"body\"`" + `
+	Comments      []comment ` + "`json:\"comments\"`" + `
+	Calls         []string  ` + "`json:\"calls,omitempty\"`" + `
+	IssueViewFail string    ` + "`json:\"issueViewFail,omitempty\"`" + `
 }
 
 type comment struct {
@@ -1343,6 +1345,9 @@ func main() {
 	args := os.Args[1:]
 	switch {
 	case len(args) >= 2 && args[0] == "issue" && args[1] == "view":
+		if st.IssueViewFail != "" {
+			fail(st.IssueViewFail)
+		}
 		response := map[string]any{}
 		for _, field := range strings.Split(flagValue(args, "--json"), ",") {
 			switch strings.TrimSpace(field) {
