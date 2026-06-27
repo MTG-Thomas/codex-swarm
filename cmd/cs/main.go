@@ -18,6 +18,7 @@ import (
 	"github.com/MTG-Thomas/codex-swarm/internal/appserver"
 	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
 	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
+	"github.com/MTG-Thomas/codex-swarm/internal/repohints"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 	"github.com/MTG-Thomas/codex-swarm/internal/worktree"
 )
@@ -76,6 +77,8 @@ func (c cli) run(args []string) error {
 		return c.legacy(args[1:])
 	case "schedule":
 		return c.schedule(args[1:])
+	case "repo":
+		return c.repo(args[1:])
 	case "report":
 		return c.report(args[1:])
 	case "resume":
@@ -337,6 +340,9 @@ func (c cli) spawn(args []string) error {
 	if worker.Issue != "" {
 		fmt.Fprintf(c.out, "issue: %s\n", worker.Issue)
 	}
+	if err := c.printRepoHints(repoRoot); err != nil {
+		return err
+	}
 	fmt.Fprintf(c.out, "%s\n", worker.LastMessage)
 	if worker.Engine == "appserver" {
 		fmt.Fprintf(c.out, "codex thread: %s\n", worker.ThreadID)
@@ -351,6 +357,58 @@ func (c cli) spawn(args []string) error {
 				fmt.Fprintf(c.out, "warning: %s\n", event.Message)
 			}
 		}
+	}
+	return nil
+}
+
+func (c cli) repo(args []string) error {
+	if len(args) == 0 {
+		return errors.New("repo requires <hints>")
+	}
+	switch args[0] {
+	case "hints":
+		return c.repoHints(args[1:])
+	default:
+		return fmt.Errorf("unknown repo command %q", args[0])
+	}
+}
+
+func (c cli) repoHints(args []string) error {
+	fs := c.flagSet("repo hints")
+	repo := fs.String("repo", ".", "repository root")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	repoRoot, err := filepath.Abs(*repo)
+	if err != nil {
+		return fmt.Errorf("resolve repo: %w", err)
+	}
+	hints, source, ok, err := repohints.Load(repoRoot)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(c.out, "repo=%s\n", repoRoot)
+	if !ok {
+		fmt.Fprintf(c.out, "hints=0\nchecked=%s,%s\n", repohints.CommittedFile, repohints.LocalFile)
+		return nil
+	}
+	fmt.Fprintf(c.out, "hints=1 source=%s local=%t\n", source.Path, source.Local)
+	for _, line := range hints.Lines() {
+		fmt.Fprintln(c.out, line)
+	}
+	return nil
+}
+
+func (c cli) printRepoHints(repoRoot string) error {
+	hints, _, ok, err := repohints.Load(repoRoot)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	for _, line := range hints.Lines() {
+		fmt.Fprintln(c.out, line)
 	}
 	return nil
 }
@@ -811,6 +869,7 @@ Usage:
   cs show <worker>
   cs schedule add --repo . --cron "0 8 * * 1" --prompt "weekly repo check"
   cs schedule list
+  cs repo hints --repo .
   cs report --note "summary" <worker> done`)
 }
 

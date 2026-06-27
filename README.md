@@ -53,6 +53,7 @@ go run ./cmd/cs agent register --name "codex-thread" --role implementer
 go run ./cmd/cs legacy import-coordinator
 go run ./cmd/cs schedule add --repo . --cron "0 8 * * 1" --prompt "weekly repo check"
 go run ./cmd/cs schedule list
+go run ./cmd/cs repo hints --repo .
 go run ./cmd/cs resume <worker-id>
 go run ./cmd/cs inspect-thread <worker-id>
 go run ./cmd/cs show <worker-id>
@@ -78,6 +79,23 @@ Use `claim create`, `claim list`, `claim conflicts`, `claim show`, `claim block`
 Use `issue export --issue owner/repo#123` to include a hidden `codex-swarm:claims:v1` JSON marker that other machines can parse. Use `issue sync --issue owner/repo#123` only when you intentionally want to create or update that marker comment through `gh`. Use `issue pull --issue owner/repo#123` to import the latest marker-backed claim set from GitHub into local state; by default it skips remote claims older than a local claim with the same ID. Use `issue pull --force --issue owner/repo#123` only when the issue marker should overwrite newer local claim state.
 
 Use `issue report --issue owner/repo#123 --worker <worker-id>` only when you intentionally want to post that worker's current report or last message as a GitHub issue comment.
+
+Use `repo hints --repo <path>` to print opt-in execution guidance advertised by a repository. `cs` checks `codex-swarm.hints.json` first for committed project guidance, then `.codex-swarm/repo-hints.json` for local-only guidance. When hints exist, `spawn` prints the same advisory lines so agents see preferred execution surfaces before starting work. Hints are advisory only; they do not block local execution or inject secrets.
+
+Example committed hint file:
+
+```json
+{
+  "remote_devcontainer": {
+    "command": "just talos-dev-run \"just --list\"",
+    "image": "ghcr.io/mtg-thomas/bifrost-devcontainer:devcontainer-main-172fb07bd73f",
+    "docs": "docs/devcontainer.md",
+    "note": "No secrets are injected by default."
+  }
+}
+```
+
+For proof-sensitive Talos/ARC remote execution, prefer immutable image tags over mutable tags such as `latest`, `main`, or `devcontainer-main`.
 
 Use `agent register --name <name> --role <role>` to record the current local agent identity. Use `legacy import-coordinator` once per machine, or with `--include-expired` for audit work, to import active warning-only claims from the old PowerShell coordinator.
 
