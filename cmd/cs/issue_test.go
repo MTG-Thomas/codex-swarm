@@ -912,14 +912,17 @@ func TestIssueDispatchBlockedReadinessDoesNotCreateWorkers(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SaveClaim() error = %v", err)
 	}
-	var out bytes.Buffer
-	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+	var out, stderr bytes.Buffer
+	c := cli{out: &out, err: &stderr, now: func() time.Time { return now }}
 
 	err := c.run([]string{"issue", "dispatch", "--state", state, "--repo", repo, "--issue", "MTG-Thomas/codex-swarm#24", "--prompt", "implement issue #24", "--gate", "test"})
 	if err == nil {
 		t.Fatal("issue dispatch error = nil, want blocked readiness error")
 	}
-	got := out.String()
+	if out.String() != "" {
+		t.Fatalf("blocked dispatch stdout = %q, want empty", out.String())
+	}
+	got := stderr.String()
 	for _, want := range []string{"ready=false", "blocker=issue has open claim c-dispatch"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("blocked dispatch output missing %q:\n%s", want, got)

@@ -92,11 +92,11 @@ func (c cli) validateStart(args []string) error {
 func newValidationPair(issue, repoRoot, engine, prompt string, gates []string, now time.Time) (store.Worker, store.Worker, error) {
 	implementerID, err := newWorkerID(now)
 	if err != nil {
-		return store.Worker{}, store.Worker{}, fmt.Errorf("generate implementer id: %w", err)
+		return store.Worker{}, store.Worker{}, fmt.Errorf("generate implementer id for issue %s repo %s: %w", issue, repoRoot, err)
 	}
 	validatorID, err := newWorkerID(now)
 	if err != nil {
-		return store.Worker{}, store.Worker{}, fmt.Errorf("generate validator id: %w", err)
+		return store.Worker{}, store.Worker{}, fmt.Errorf("generate validator id for issue %s repo %s: %w", issue, repoRoot, err)
 	}
 	implementer := newValidationWorker(implementerID, "", "implementer", issue, repoRoot, engine, prompt, now)
 	validatorPrompt := validatorPrompt(implementer, gates)

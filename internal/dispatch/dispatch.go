@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/MTG-Thomas/codex-swarm/internal/readiness"
@@ -38,7 +39,7 @@ func Plan(input Input) (PlanResult, error) {
 	if !input.Readiness.Ready {
 		return PlanResult{}, fmt.Errorf("issue is not ready: %s", strings.Join(input.Readiness.Blockers, "; "))
 	}
-	gates := cleanGates(input.Gates)
+	gates := canonicalGates(input.Gates)
 	result := PlanResult{
 		RequestID: requestID(input.Readiness.Issue.Ref, input.Readiness.Repo, prompt, gates),
 		Issue:     strings.TrimSpace(input.Readiness.Issue.Ref),
@@ -53,16 +54,21 @@ func Plan(input Input) (PlanResult, error) {
 	return result, nil
 }
 
-func cleanGates(values []string) []string {
-	var gates []string
+func canonicalGates(values []string) []string {
+	seen := map[string]bool{}
 	for _, value := range values {
 		for _, part := range strings.Split(value, ",") {
 			part = strings.TrimSpace(part)
 			if part != "" {
-				gates = append(gates, part)
+				seen[part] = true
 			}
 		}
 	}
+	gates := make([]string, 0, len(seen))
+	for gate := range seen {
+		gates = append(gates, gate)
+	}
+	sort.Strings(gates)
 	return gates
 }
 

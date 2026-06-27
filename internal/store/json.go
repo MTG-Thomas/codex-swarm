@@ -62,6 +62,31 @@ func (s *JSONStore) SaveWorker(worker Worker) error {
 	})
 }
 
+// SaveWorkers inserts or replaces worker records under one state lock.
+func (s *JSONStore) SaveWorkers(workers ...Worker) error {
+	return s.withStateLock(func() error {
+		state, err := s.read()
+		if err != nil {
+			return err
+		}
+		for _, worker := range workers {
+			normalizeWorkerLifecycleForSave(&worker)
+			found := false
+			for i := range state.Workers {
+				if state.Workers[i].ID == worker.ID {
+					state.Workers[i] = worker
+					found = true
+					break
+				}
+			}
+			if !found {
+				state.Workers = append(state.Workers, worker)
+			}
+		}
+		return s.write(state)
+	})
+}
+
 // UpdateWorker mutates one worker while holding the state lock.
 func (s *JSONStore) UpdateWorker(id string, mutate func(*Worker) error) (Worker, error) {
 	var updated Worker

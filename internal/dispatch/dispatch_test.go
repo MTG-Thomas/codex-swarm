@@ -74,6 +74,23 @@ func TestPlanRequestIDIsStable(t *testing.T) {
 	}
 }
 
+func TestPlanCanonicalizesGateIDs(t *testing.T) {
+	first, err := Plan(Input{Readiness: readyReport(), Prompt: "implement issue #24", Gates: []string{"vet", "test", "test"}})
+	if err != nil {
+		t.Fatalf("Plan(first) error = %v", err)
+	}
+	second, err := Plan(Input{Readiness: readyReport(), Prompt: "implement issue #24", Gates: []string{"test,vet"}})
+	if err != nil {
+		t.Fatalf("Plan(second) error = %v", err)
+	}
+	if first.RequestID != second.RequestID {
+		t.Fatalf("RequestID = %q then %q, want canonical match", first.RequestID, second.RequestID)
+	}
+	if len(first.Gates) != 2 || first.Gates[0] != "test" || first.Gates[1] != "vet" {
+		t.Fatalf("Gates = %#v, want sorted unique test/vet", first.Gates)
+	}
+}
+
 func readyReport() readiness.Report {
 	return readiness.Report{
 		Ready: true,

@@ -225,7 +225,9 @@ func (c cli) issueReady(args []string) error {
 		if err != nil {
 			return fmt.Errorf("encode readiness report: %w", err)
 		}
-		fmt.Fprintln(c.out, string(data))
+		if _, err := fmt.Fprintln(c.out, string(data)); err != nil {
+			return fmt.Errorf("write readiness report: %w", err)
+		}
 		return nil
 	}
 	printReadinessReport(c.out, report)
@@ -257,7 +259,7 @@ func (c cli) issueDispatch(args []string) error {
 	})
 	if err != nil {
 		if !report.Ready {
-			printReadinessReport(c.out, report)
+			printReadinessReport(c.err, report)
 		}
 		return err
 	}
@@ -285,10 +287,7 @@ func (c cli) issueDispatch(args []string) error {
 	}
 	implementer.Events = append(implementer.Events, event)
 	validator.Events = append(validator.Events, event)
-	if err := st.SaveWorker(implementer); err != nil {
-		return err
-	}
-	if err := st.SaveWorker(validator); err != nil {
+	if err := st.SaveWorkers(implementer, validator); err != nil {
 		return err
 	}
 	printDispatchResult(c.out, plan, implementer, validator, false)
