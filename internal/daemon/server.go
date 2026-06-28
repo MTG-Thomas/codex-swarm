@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -329,10 +330,15 @@ func (c Client) Workers(ctx context.Context) (WorkersResponse, error) {
 type statusError struct {
 	StatusCode int
 	Status     string
+	Body       string
 }
 
 func (e statusError) Error() string {
-	return "daemon returned " + e.Status
+	message := "daemon returned " + e.Status
+	if body := strings.TrimSpace(e.Body); body != "" {
+		message += ": " + body
+	}
+	return message
 }
 
 func isLegacyFallbackStatus(err error) bool {
@@ -388,7 +394,7 @@ func (c Client) get(ctx context.Context, path string, target any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return statusError{StatusCode: resp.StatusCode, Status: resp.Status}
+		return statusError{StatusCode: resp.StatusCode, Status: resp.Status, Body: responseBody(resp)}
 	}
 	return json.NewDecoder(resp.Body).Decode(target)
 }
@@ -417,9 +423,17 @@ func (c Client) post(ctx context.Context, path string, body, target any) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return statusError{StatusCode: resp.StatusCode, Status: resp.Status}
+		return statusError{StatusCode: resp.StatusCode, Status: resp.Status, Body: responseBody(resp)}
 	}
 	return json.NewDecoder(resp.Body).Decode(target)
+}
+
+func responseBody(resp *http.Response) string {
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 func writeJSON(w http.ResponseWriter, value any) {

@@ -382,6 +382,26 @@ func TestClientStatusDoesNotFallbackOnServerError(t *testing.T) {
 	if !strings.Contains(err.Error(), "500") {
 		t.Fatalf("Status() error = %v, want original /status failure", err)
 	}
+	if !strings.Contains(err.Error(), "broken") {
+		t.Fatalf("Status() error = %v, want response body", err)
+	}
+}
+
+func TestClientErrorIncludesResponseBody(t *testing.T) {
+	handler := http.NewServeMux()
+	handler.HandleFunc("/readiness", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "gh auth missing", http.StatusBadRequest)
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	_, err := (Client{BaseURL: server.URL}).Readiness(context.Background(), "MTG-Thomas/codex-swarm#46", "/repo")
+	if err == nil {
+		t.Fatal("Readiness() error = nil, want server error")
+	}
+	if !strings.Contains(err.Error(), "400 Bad Request") || !strings.Contains(err.Error(), "gh auth missing") {
+		t.Fatalf("Readiness() error = %v, want status and body", err)
+	}
 }
 
 func TestReadOnlyEndpointsRejectPost(t *testing.T) {

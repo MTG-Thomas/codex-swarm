@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"path/filepath"
 	"time"
 
 	"golang.org/x/sys/windows/svc"
@@ -110,7 +111,7 @@ func (windowsService) Execute(args []string, requests <-chan svc.ChangeRequest, 
 	if len(args) > 0 && args[0] == "serve" {
 		args = args[1:]
 	}
-	addr, statePath, err := serveOptions(args)
+	addr, statePath, err := serveOptionsWithDefaultState(args, defaultServiceStatePath())
 	if err != nil {
 		return false, 1
 	}
@@ -141,4 +142,9 @@ func (windowsService) Execute(args []string, requests <-chan svc.ChangeRequest, 
 			return false, 0
 		}
 	}
+}
+
+func defaultServiceStatePath() string {
+	programData := envDefault("ProgramData", `C:\ProgramData`)
+	return filepath.Join(programData, "codex-swarm", "state.json")
 }
