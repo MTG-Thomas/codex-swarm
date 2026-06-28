@@ -101,9 +101,12 @@ report. This command does not mutate GitHub or create workers. By default,
 GitHub issue metadata is read through `gh`. For daemon/service contexts where
 `gh` is not authenticated, configure GitHub App auth with
 `CODEX_SWARM_GITHUB_APP_ID` or `CODEX_SWARM_GITHUB_APP_CLIENT_ID` plus
-`CODEX_SWARM_GITHUB_APP_PRIVATE_KEY_FILE`. `CODEX_SWARM_GITHUB_APP_INSTALLATION_ID`
-is optional; if omitted, `codex-swarm` discovers the installation for the target
-repository. Set `CODEX_SWARM_DAEMON_URL=http://127.0.0.1:8787` or pass
+`CODEX_SWARM_GITHUB_APP_PRIVATE_KEY_FILE`, or use
+`CODEX_SWARM_GITHUB_APP_PRIVATE_KEY` when an inline PEM value is unavoidable.
+`CODEX_SWARM_GITHUB_APP_INSTALLATION_ID` is optional; if omitted,
+`codex-swarm` discovers the installation for the target repository.
+`CODEX_SWARM_GITHUB_API_URL` overrides `https://api.github.com` for GitHub
+Enterprise Server. Set `CODEX_SWARM_DAEMON_URL=http://127.0.0.1:8787` or pass
 `--daemon http://127.0.0.1:8787` to have the CLI ask a running daemon for the
 same readiness report; daemon errors are returned directly instead of falling
 back to local mode.

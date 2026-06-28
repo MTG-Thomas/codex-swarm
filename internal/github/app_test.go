@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -129,6 +130,35 @@ func TestNewAppIssueMetadataProviderAcceptsClientIDIssuer(t *testing.T) {
 	}
 	if got := provider.issuer(); got != "Iv23liOKhd5ZCLFPBgbP" {
 		t.Fatalf("issuer() = %q, want client id", got)
+	}
+}
+
+func TestAppIssueMetadataProviderErrorsIncludeIssueRef(t *testing.T) {
+	provider, err := NewAppIssueMetadataProvider(AppConfig{
+		AppID:         4163935,
+		PrivateKeyPEM: testPrivateKeyPEM(t),
+		APIURL:        "https://127.0.0.1:1",
+	})
+	if err != nil {
+		t.Fatalf("NewAppIssueMetadataProvider() error = %v", err)
+	}
+	_, err = provider.IssueMetadata(context.Background(), "MTG-Thomas/codex-swarm#46")
+	if err == nil {
+		t.Fatal("IssueMetadata() error = nil, want connection error")
+	}
+	if !strings.Contains(err.Error(), "MTG-Thomas/codex-swarm#46") {
+		t.Fatalf("IssueMetadata() error = %v, want issue ref context", err)
+	}
+}
+
+func TestErrorIssueMetadataProviderIncludesIssue(t *testing.T) {
+	cause := errors.New("bad env")
+	_, err := (ErrorIssueMetadataProvider{Err: cause}).IssueMetadata(context.Background(), "MTG-Thomas/codex-swarm#46")
+	if err == nil {
+		t.Fatal("IssueMetadata() error = nil, want configured error")
+	}
+	if !strings.Contains(err.Error(), "MTG-Thomas/codex-swarm#46") || !errors.Is(err, cause) {
+		t.Fatalf("IssueMetadata() error = %v, want issue context and wrapped cause", err)
 	}
 }
 

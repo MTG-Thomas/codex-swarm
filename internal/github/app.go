@@ -63,23 +63,23 @@ func NewAppIssueMetadataProvider(cfg AppConfig) (*AppIssueMetadataProvider, erro
 func (p *AppIssueMetadataProvider) IssueMetadata(ctx context.Context, issue string) (readiness.Issue, error) {
 	ref, err := ParseIssueRef(issue)
 	if err != nil {
-		return readiness.Issue{}, err
+		return readiness.Issue{}, fmt.Errorf("read GitHub issue metadata for %q: %w", issue, err)
 	}
 	installationID := p.cfg.InstallationID
 	if installationID == 0 {
 		installationID, err = p.repositoryInstallationID(ctx, ref)
 		if err != nil {
-			return readiness.Issue{}, err
+			return readiness.Issue{}, fmt.Errorf("read GitHub issue metadata for %s: %w", ref.String(), err)
 		}
 	}
 	token, err := p.installationToken(ctx, installationID)
 	if err != nil {
-		return readiness.Issue{}, err
+		return readiness.Issue{}, fmt.Errorf("read GitHub issue metadata for %s: %w", ref.String(), err)
 	}
 	var metadata issueMetadata
 	path := fmt.Sprintf("/repos/%s/%s/issues/%d", url.PathEscape(ref.Owner), url.PathEscape(ref.Repo), ref.Number)
 	if err := p.githubJSON(ctx, http.MethodGet, path, token, nil, &metadata); err != nil {
-		return readiness.Issue{}, fmt.Errorf("read GitHub issue metadata: %w", err)
+		return readiness.Issue{}, fmt.Errorf("read GitHub issue metadata for %s: %w", ref.String(), err)
 	}
 	return readiness.Issue{
 		Ref:   ref.String(),
