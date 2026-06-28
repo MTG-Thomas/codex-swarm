@@ -52,9 +52,13 @@ func serve(args []string) error {
 }
 
 func serveOptions(args []string) (string, string, error) {
+	return serveOptionsWithDefaultState(args, defaultStatePath())
+}
+
+func serveOptionsWithDefaultState(args []string, defaultState string) (string, string, error) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", envDefault("CODEX_SWARM_DAEMON_ADDR", "127.0.0.1:8787"), "daemon listen address")
-	statePath := fs.String("state", envDefault("CODEX_SWARM_STATE", defaultStatePath()), "state file path")
+	statePath := fs.String("state", envDefault("CODEX_SWARM_STATE", defaultState), "state file path")
 	if err := fs.Parse(args); err != nil {
 		return "", "", err
 	}
