@@ -33,7 +33,7 @@ func defaultServiceConfig() (serviceConfig, error) {
 		Description: "Local Codex Swarm daemon",
 		Executable:  exe,
 		Addr:        envDefault("CODEX_SWARM_DAEMON_ADDR", "127.0.0.1:8787"),
-		StatePath:   envDefault("CODEX_SWARM_STATE", defaultStatePath()),
+		StatePath:   envDefault("CODEX_SWARM_STATE", defaultServiceStatePath()),
 	}
 	cfg.Args = []string{"serve", "--addr", cfg.Addr, "--state", cfg.StatePath}
 	return cfg, nil
