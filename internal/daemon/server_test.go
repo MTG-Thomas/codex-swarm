@@ -404,6 +404,28 @@ func TestClientErrorIncludesResponseBody(t *testing.T) {
 	}
 }
 
+func TestClientPostErrorIncludesResponseBody(t *testing.T) {
+	handler := http.NewServeMux()
+	handler.HandleFunc("/dispatch", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "dispatch blocked", http.StatusConflict)
+	})
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	_, err := (Client{BaseURL: server.URL}).Dispatch(context.Background(), DispatchRequest{
+		RequestID: "r-test",
+		Issue:     "MTG-Thomas/codex-swarm#46",
+		Repo:      "/repo",
+		Prompt:    "test dispatch",
+	})
+	if err == nil {
+		t.Fatal("Dispatch() error = nil, want server error")
+	}
+	if !strings.Contains(err.Error(), "409 Conflict") || !strings.Contains(err.Error(), "dispatch blocked") {
+		t.Fatalf("Dispatch() error = %v, want status and body", err)
+	}
+}
+
 func TestReadOnlyEndpointsRejectPost(t *testing.T) {
 	server := NewServer("state.json", &memoryStore{})
 	for _, path := range []string{"/healthz", "/status", "/workers", "/claims", "/readiness", "/v1/status"} {
