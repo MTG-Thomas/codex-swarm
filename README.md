@@ -94,11 +94,19 @@ Use `claim create`, `claim list`, `claim conflicts`, `claim show`, `claim block`
 Use `issue export --issue owner/repo#123` to include a hidden `codex-swarm:claims:v1` JSON marker that other machines can parse. Use `issue sync --issue owner/repo#123` only when you intentionally want to create or update that marker comment through `gh`. Use `issue pull --issue owner/repo#123` to import the latest marker-backed claim set from GitHub into local state; by default it skips remote claims older than a local claim with the same ID. Use `issue pull --force --issue owner/repo#123` only when the issue marker should overwrite newer local claim state.
 
 Use `issue ready --issue owner/repo#123 --repo <path>` to run a read-only
-dispatch preflight. It reads the issue title/body through `gh`, local
-issue-linked claims, and repo quality gates from `codex-swarm.hints.json`, then
-prints a scriptable `ready=<bool>` summary plus blockers. Add `--json` for a
-parseable readiness report. This command does not mutate GitHub or create
-workers. Set `CODEX_SWARM_DAEMON_URL=http://127.0.0.1:8787` or pass
+dispatch preflight. It reads the issue title/body, local issue-linked claims,
+and repo quality gates from `codex-swarm.hints.json`, then prints a scriptable
+`ready=<bool>` summary plus blockers. Add `--json` for a parseable readiness
+report. This command does not mutate GitHub or create workers. By default,
+GitHub issue metadata is read through `gh`. For daemon/service contexts where
+`gh` is not authenticated, configure GitHub App auth with
+`CODEX_SWARM_GITHUB_APP_ID` or `CODEX_SWARM_GITHUB_APP_CLIENT_ID` plus
+`CODEX_SWARM_GITHUB_APP_PRIVATE_KEY_FILE`, or use
+`CODEX_SWARM_GITHUB_APP_PRIVATE_KEY` when an inline PEM value is unavoidable.
+`CODEX_SWARM_GITHUB_APP_INSTALLATION_ID` is optional; if omitted,
+`codex-swarm` discovers the installation for the target repository.
+`CODEX_SWARM_GITHUB_API_URL` overrides `https://api.github.com` for GitHub
+Enterprise Server. Set `CODEX_SWARM_DAEMON_URL=http://127.0.0.1:8787` or pass
 `--daemon http://127.0.0.1:8787` to have the CLI ask a running daemon for the
 same readiness report; daemon errors are returned directly instead of falling
 back to local mode.
