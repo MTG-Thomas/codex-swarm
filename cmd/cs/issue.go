@@ -389,8 +389,16 @@ func (c cli) issueReadinessReport(statePath, issueValue, repo, daemonURL string)
 		Issue:    issue,
 		Repo:     repo,
 		Store:    store.NewJSONStore(statePath),
-		Provider: gh.CLIssueMetadataProvider{},
+		Provider: c.issueMetadataProvider(),
 	})
+}
+
+func (c cli) issueMetadataProvider() readiness.IssueMetadataProvider {
+	provider, err := gh.NewIssueMetadataProviderFromEnv()
+	if err != nil {
+		return gh.ErrorIssueMetadataProvider{Err: err}
+	}
+	return provider
 }
 
 func configuredDaemonURL(value string) string {

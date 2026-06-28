@@ -38,7 +38,11 @@ func BuildIssue(ctx context.Context, input Input) (Bundle, error) {
 	}
 	provider := input.Provider
 	if provider == nil {
-		provider = gh.CLIssueMetadataProvider{}
+		var err error
+		provider, err = gh.NewIssueMetadataProviderFromEnv()
+		if err != nil {
+			provider = gh.ErrorIssueMetadataProvider{Err: err}
+		}
 	}
 	worker := input.Worker
 	metadata, err := provider.IssueMetadata(ctx, worker.Issue)
