@@ -231,10 +231,11 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	report, err := readiness.Build(r.Context(), readiness.BuildInput{
-		Issue:    req.Issue,
-		Repo:     req.Repo,
-		Store:    s.store,
-		Provider: s.issueProvider,
+		Issue:         req.Issue,
+		Repo:          req.Repo,
+		Store:         s.store,
+		Provider:      s.issueProvider,
+		ExplicitGates: req.Gates,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

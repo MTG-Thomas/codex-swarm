@@ -107,12 +107,60 @@ func TestClaimCreateAcceptsKnownWorker(t *testing.T) {
 	if !strings.Contains(out.String(), "worker=w-known") {
 		t.Fatalf("claim create output = %q", out.String())
 	}
-	claim, err := store.NewJSONStore(state).GetClaim("c-20260625-120000")
-	if err != nil {
-		t.Fatalf("GetClaim() error = %v", err)
+	claim := mustFindClaimByScope(t, state, "cmd/cs")
+	if !strings.HasPrefix(claim.ID, "c-20260625-120000-") {
+		t.Fatalf("claim.ID = %q, want timestamp prefix with random suffix", claim.ID)
 	}
 	if claim.WorkerID != "w-known" {
 		t.Fatalf("WorkerID = %q, want w-known", claim.WorkerID)
+	}
+}
+
+func TestClaimCreateIDsDoNotCollideWithinSameSecond(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	repo := t.TempDir()
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
+	c := cli{out: &bytes.Buffer{}, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+	st := store.NewJSONStore(state)
+	for _, worker := range []store.Worker{{
+		ID:          "w-one",
+		ProjectRoot: repo,
+		ThreadID:    "thread-one",
+		Engine:      "mock",
+		Status:      store.WorkerIdle,
+		Prompt:      "one",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}, {
+		ID:          "w-two",
+		ProjectRoot: repo,
+		ThreadID:    "thread-two",
+		Engine:      "mock",
+		Status:      store.WorkerIdle,
+		Prompt:      "two",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}} {
+		if err := st.SaveWorker(worker); err != nil {
+			t.Fatalf("SaveWorker(%s) error = %v", worker.ID, err)
+		}
+	}
+
+	if err := c.run([]string{"claim", "create", "--state", state, "--repo", repo, "--scope", "scope/one", "--worker", "w-one"}); err != nil {
+		t.Fatalf("first claim create error = %v", err)
+	}
+	if err := c.run([]string{"claim", "create", "--state", state, "--repo", repo, "--scope", "scope/two", "--worker", "w-two"}); err != nil {
+		t.Fatalf("second claim create error = %v", err)
+	}
+	claims, err := st.ListClaims()
+	if err != nil {
+		t.Fatalf("ListClaims() error = %v", err)
+	}
+	if len(claims) != 2 {
+		t.Fatalf("claims = %#v, want two unique claims", claims)
+	}
+	if claims[0].ID == claims[1].ID {
+		t.Fatalf("claim IDs collided: %s", claims[0].ID)
 	}
 }
 
