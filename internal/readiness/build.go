@@ -19,10 +19,11 @@ type ClaimStore interface {
 }
 
 type BuildInput struct {
-	Issue    string
-	Repo     string
-	Store    ClaimStore
-	Provider IssueMetadataProvider
+	Issue         string
+	Repo          string
+	Store         ClaimStore
+	Provider      IssueMetadataProvider
+	ExplicitGates []string
 }
 
 func Build(ctx context.Context, input BuildInput) (Report, error) {
@@ -50,14 +51,25 @@ func Build(ctx context.Context, input BuildInput) (Report, error) {
 		return Report{}, err
 	}
 	gates := []Gate(nil)
+	seenGates := map[string]bool{}
 	if ok {
 		for _, gate := range hints.QualityGates {
+			id := strings.TrimSpace(gate.ID)
+			seenGates[id] = true
 			gates = append(gates, Gate{
-				ID:      strings.TrimSpace(gate.ID),
+				ID:      id,
 				Command: strings.TrimSpace(gate.Command),
 				Scope:   strings.TrimSpace(gate.Scope),
 			})
 		}
+	}
+	for _, id := range input.ExplicitGates {
+		id = strings.TrimSpace(id)
+		if id == "" || seenGates[id] {
+			continue
+		}
+		seenGates[id] = true
+		gates = append(gates, Gate{ID: id})
 	}
 	claims, err := input.Store.ListClaims()
 	if err != nil {

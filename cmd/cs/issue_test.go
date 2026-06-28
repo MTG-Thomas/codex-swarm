@@ -1068,6 +1068,32 @@ func TestIssueDispatchCreatesImplementerValidatorWithFakeGH(t *testing.T) {
 	}
 }
 
+func TestIssueDispatchUsesExplicitGateWithoutRepoHints(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.json")
+	repo := t.TempDir()
+	installFakeGH(t, fakeGHState{
+		Title: "Dispatch issue",
+		Body:  "Acceptance criteria",
+	})
+	var out bytes.Buffer
+	c := cli{out: &out, err: &bytes.Buffer{}, now: time.Now}
+
+	if err := c.run([]string{"issue", "dispatch", "--state", state, "--repo", repo, "--issue", "MTG-Thomas/codex-swarm#24", "--prompt", "implement issue #24", "--gate", "manual-test"}); err != nil {
+		t.Fatalf("issue dispatch error = %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "dispatch issue=MTG-Thomas/codex-swarm#24") || !strings.Contains(got, "--gate manual-test") {
+		t.Fatalf("issue dispatch output = %q, want explicit gate dispatch", got)
+	}
+	workers, err := store.NewJSONStore(state).ListWorkers()
+	if err != nil {
+		t.Fatalf("ListWorkers() error = %v", err)
+	}
+	if len(workers) != 2 {
+		t.Fatalf("workers = %d, want 2", len(workers))
+	}
+}
+
 func TestIssueDispatchReplaysExistingRequestWithFakeGH(t *testing.T) {
 	state := filepath.Join(t.TempDir(), "state.json")
 	repo := t.TempDir()

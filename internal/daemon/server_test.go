@@ -306,6 +306,31 @@ func TestServerDispatchCreatesAndReplaysWorkers(t *testing.T) {
 	}
 }
 
+func TestServerDispatchUsesExplicitGateWithoutRepoHints(t *testing.T) {
+	repo := t.TempDir()
+	st := &memoryStore{}
+	server := NewServerWithIssueProvider("state.json", st, fakeIssueProvider{issue: readiness.Issue{
+		Title: "Dispatch issue",
+		Body:  "Acceptance criteria",
+	}})
+	body := `{"request_id":"r-dispatch","issue":"MTG-Thomas/codex-swarm#31","repo":` + quoteJSON(repo) + `,"prompt":"implement issue #31","gates":["manual-test"]}`
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/dispatch", strings.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:45678"
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var response DispatchResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode dispatch: %v", err)
+	}
+	if response.Implementer == "" || response.Validator == "" || len(st.workers) != 2 {
+		t.Fatalf("response=%#v workers=%#v", response, st.workers)
+	}
+}
+
 func TestServerDispatchRejectsNonLoopbackRemote(t *testing.T) {
 	server := NewServerWithIssueProvider("state.json", &memoryStore{}, fakeIssueProvider{issue: readiness.Issue{Title: "Issue", Body: "Body"}})
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/dispatch", strings.NewReader(`{}`))

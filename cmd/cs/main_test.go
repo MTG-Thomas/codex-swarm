@@ -76,16 +76,17 @@ func TestCLIWorkflow(t *testing.T) {
 	if err := c.run([]string{"claim", "create", "--state", state, "--repo", ".", "--scope", "internal/store", "--worker", implementerID, "--issue", "MTG-Thomas/codex-swarm#42", "--note", "editing store claims"}); err != nil {
 		t.Fatalf("claim create error = %v", err)
 	}
-	if !strings.Contains(out.String(), "claim c-20260624-120002") || !strings.Contains(out.String(), "conflicts=0") {
+	if !strings.Contains(out.String(), "claim c-20260624-120002-") || !strings.Contains(out.String(), "conflicts=0") {
 		t.Fatalf("claim create output = %q", out.String())
 	}
+	claimID := mustFindClaimByScope(t, state, "internal/store").ID
 
 	now = now.Add(time.Second)
 	out.Reset()
 	if err := c.run([]string{"claim", "conflicts", "--state", state, "--repo", ".", "--scope", "internal/store/json.go"}); err != nil {
 		t.Fatalf("claim conflicts error = %v", err)
 	}
-	if !strings.Contains(out.String(), "conflicts=1") || !strings.Contains(out.String(), "c-20260624-120002") {
+	if !strings.Contains(out.String(), "conflicts=1") || !strings.Contains(out.String(), claimID) {
 		t.Fatalf("claim conflicts output = %q", out.String())
 	}
 
@@ -93,23 +94,23 @@ func TestCLIWorkflow(t *testing.T) {
 	if err := c.run([]string{"claim", "export", "--state", state, "--issue", "MTG-Thomas/codex-swarm#42"}); err != nil {
 		t.Fatalf("claim export error = %v", err)
 	}
-	if !strings.Contains(out.String(), "codex-swarm claims for `MTG-Thomas/codex-swarm#42`") || !strings.Contains(out.String(), "c-20260624-120002") {
+	if !strings.Contains(out.String(), "codex-swarm claims for `MTG-Thomas/codex-swarm#42`") || !strings.Contains(out.String(), claimID) {
 		t.Fatalf("claim export output = %q", out.String())
 	}
 
 	out.Reset()
-	if err := c.run([]string{"claim", "block", "--state", state, "--reason", "waiting on review", "--next", "reviewer checks json store", "c-20260624-120002"}); err != nil {
+	if err := c.run([]string{"claim", "block", "--state", state, "--reason", "waiting on review", "--next", "reviewer checks json store", claimID}); err != nil {
 		t.Fatalf("claim block error = %v", err)
 	}
-	if !strings.Contains(out.String(), "blocked c-20260624-120002") {
+	if !strings.Contains(out.String(), "blocked "+claimID) {
 		t.Fatalf("claim block output = %q", out.String())
 	}
 
 	out.Reset()
-	if err := c.run([]string{"claim", "release", "--state", state, "--note", "done", "c-20260624-120002"}); err != nil {
+	if err := c.run([]string{"claim", "release", "--state", state, "--note", "done", claimID}); err != nil {
 		t.Fatalf("claim release error = %v", err)
 	}
-	if !strings.Contains(out.String(), "released c-20260624-120002") {
+	if !strings.Contains(out.String(), "released "+claimID) {
 		t.Fatalf("claim release output = %q", out.String())
 	}
 
@@ -1551,6 +1552,21 @@ func mustFindWorkerByPrompt(t *testing.T, state, prompt string) store.Worker {
 	}
 	t.Fatalf("worker with prompt %q not found in %#v", prompt, workers)
 	return store.Worker{}
+}
+
+func mustFindClaimByScope(t *testing.T, state, scope string) store.Claim {
+	t.Helper()
+	claims, err := store.NewJSONStore(state).ListClaims()
+	if err != nil {
+		t.Fatalf("ListClaims() error = %v", err)
+	}
+	for _, claim := range claims {
+		if claim.Scope == scope {
+			return claim
+		}
+	}
+	t.Fatalf("claim with scope %q not found in %#v", scope, claims)
+	return store.Claim{}
 }
 
 func saveAppserverWorker(t *testing.T, state string, now time.Time) {

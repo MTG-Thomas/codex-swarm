@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,6 +22,10 @@ type issueMetadata struct {
 type CLIssueMetadataProvider struct{}
 
 func NewIssueMetadataProviderFromEnv() (readiness.IssueMetadataProvider, error) {
+	return newIssueMetadataProviderFromEnv(os.ReadFile)
+}
+
+func newIssueMetadataProviderFromEnv(readFile func(string) ([]byte, error)) (readiness.IssueMetadataProvider, error) {
 	appID := strings.TrimSpace(os.Getenv("CODEX_SWARM_GITHUB_APP_ID"))
 	clientID := strings.TrimSpace(os.Getenv("CODEX_SWARM_GITHUB_APP_CLIENT_ID"))
 	keyFile := strings.TrimSpace(os.Getenv("CODEX_SWARM_GITHUB_APP_PRIVATE_KEY_FILE"))
@@ -44,8 +49,11 @@ func NewIssueMetadataProviderFromEnv() (readiness.IssueMetadataProvider, error) 
 	case keyValue != "":
 		key = []byte(keyValue)
 	case keyFile != "":
-		key, err = os.ReadFile(keyFile)
+		key, err = readFile(keyFile)
 		if err != nil {
+			if errors.Is(err, os.ErrPermission) {
+				return CLIssueMetadataProvider{}, nil
+			}
 			return nil, fmt.Errorf("read CODEX_SWARM_GITHUB_APP_PRIVATE_KEY_FILE: %w", err)
 		}
 	default:

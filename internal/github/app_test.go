@@ -172,6 +172,21 @@ func TestNewIssueMetadataProviderFromEnvFallsBackToCLI(t *testing.T) {
 	}
 }
 
+func TestNewIssueMetadataProviderFromEnvFallsBackToCLIWhenAppKeyIsNotReadable(t *testing.T) {
+	t.Setenv("CODEX_SWARM_GITHUB_APP_ID", "4163935")
+	t.Setenv("CODEX_SWARM_GITHUB_APP_PRIVATE_KEY_FILE", "/system-only/app.pem")
+
+	provider, err := newIssueMetadataProviderFromEnv(func(string) ([]byte, error) {
+		return nil, os.ErrPermission
+	})
+	if err != nil {
+		t.Fatalf("newIssueMetadataProviderFromEnv() error = %v", err)
+	}
+	if _, ok := provider.(CLIssueMetadataProvider); !ok {
+		t.Fatalf("provider = %T, want CLIssueMetadataProvider", provider)
+	}
+}
+
 func writeTestPrivateKey(t *testing.T) string {
 	t.Helper()
 	path := t.TempDir() + "/app.pem"

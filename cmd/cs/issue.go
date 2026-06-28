@@ -297,7 +297,7 @@ func (c cli) issueReady(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	report, err := c.issueReadinessReport(*statePath, *issueValue, *repo, *daemonURL)
+	report, err := c.issueReadinessReport(*statePath, *issueValue, *repo, *daemonURL, nil)
 	if err != nil {
 		return err
 	}
@@ -330,14 +330,15 @@ func (c cli) issueDispatch(args []string) error {
 	if *engine != "mock" {
 		return errors.New("issue dispatch currently supports --engine mock")
 	}
-	report, err := c.issueReadinessReport(*statePath, *issueValue, *repo, *daemonURL)
+	gateIDs := splitGateIDs(*gates)
+	report, err := c.issueReadinessReport(*statePath, *issueValue, *repo, *daemonURL, gateIDs)
 	if err != nil {
 		return err
 	}
 	plan, err := dispatch.Plan(dispatch.Input{
 		Readiness: report,
 		Prompt:    *prompt,
-		Gates:     splitGateIDs(*gates),
+		Gates:     gateIDs,
 	})
 	if err != nil {
 		if !report.Ready {
@@ -371,7 +372,7 @@ func (c cli) issueDispatch(args []string) error {
 	return nil
 }
 
-func (c cli) issueReadinessReport(statePath, issueValue, repo, daemonURL string) (readiness.Report, error) {
+func (c cli) issueReadinessReport(statePath, issueValue, repo, daemonURL string, explicitGates []string) (readiness.Report, error) {
 	issue, err := normalizeRequiredIssue(issueValue)
 	if err != nil {
 		return readiness.Report{}, err
@@ -386,10 +387,11 @@ func (c cli) issueReadinessReport(statePath, issueValue, repo, daemonURL string)
 		return report, nil
 	}
 	return readiness.Build(context.Background(), readiness.BuildInput{
-		Issue:    issue,
-		Repo:     repo,
-		Store:    store.NewJSONStore(statePath),
-		Provider: c.issueMetadataProvider(),
+		Issue:         issue,
+		Repo:          repo,
+		Store:         store.NewJSONStore(statePath),
+		Provider:      c.issueMetadataProvider(),
+		ExplicitGates: explicitGates,
 	})
 }
 

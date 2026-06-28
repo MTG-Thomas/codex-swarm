@@ -67,8 +67,12 @@ func (c cli) claimCreate(args []string) error {
 		return err
 	}
 	now := c.now().UTC()
+	claimID, err := newClaimID(now)
+	if err != nil {
+		return err
+	}
 	claim := store.Claim{
-		ID:        fmt.Sprintf("c-%s", now.Format("20060102-150405")),
+		ID:        claimID,
 		WorkerID:  workerIDValue,
 		Repo:      repoRoot,
 		Scope:     *scope,
@@ -306,6 +310,14 @@ func (c cli) updateClaim(statePath, id string, mutate func(*store.Claim, time.Ti
 	}
 	print(claim)
 	return nil
+}
+
+func newClaimID(now time.Time) (string, error) {
+	suffix, err := randomSuffix(4)
+	if err != nil {
+		return "", fmt.Errorf("generate claim id: %w", err)
+	}
+	return fmt.Sprintf("c-%s-%s", now.UTC().Format("20060102-150405"), suffix), nil
 }
 
 func normalizeIssue(value string) (string, error) {
