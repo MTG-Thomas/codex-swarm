@@ -103,7 +103,11 @@ type Server struct {
 
 // NewServer builds a read-only daemon server over the provided store.
 func NewServer(statePath string, st readStore) *Server {
-	return NewServerWithIssueProvider(statePath, st, gh.CLIssueMetadataProvider{})
+	provider, err := gh.NewIssueMetadataProviderFromEnv()
+	if err != nil {
+		provider = gh.ErrorIssueMetadataProvider{Err: err}
+	}
+	return NewServerWithIssueProvider(statePath, st, provider)
 }
 
 func NewServerWithIssueProvider(statePath string, st readStore, provider readiness.IssueMetadataProvider) *Server {
