@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
+	"github.com/MTG-Thomas/codex-swarm/internal/version"
 )
 
 func main() {
@@ -30,6 +31,9 @@ func run() error {
 			return serve(args[1:])
 		case "status":
 			return status()
+		case "version":
+			fmt.Println(version.String())
+			return nil
 		case "install":
 			return installService()
 		case "uninstall":

@@ -27,7 +27,9 @@ go test ./...
 go run ./cmd/cs status
 go run ./cmd/cs status --issues
 go run ./cmd/cs status --daemon http://127.0.0.1:8787
+go run ./cmd/cs version
 go run ./cmd/csd
+go run ./cmd/csd version
 ```
 
 ## Friend-demo MVP
@@ -46,6 +48,10 @@ go run ./cmd/cs doctor --appserver
 go run ./cmd/cs send <worker-id> "continue with tests and docs"
 go run ./cmd/cs message <from-worker-id> <to-worker-id> "please review this"
 go run ./cmd/cs handoff <from-worker-id> <to-worker-id> "ready for review"
+go run ./cmd/cs trace start "Release swarm" --key release-swarm
+go run ./cmd/cs trace into "Watch CI" --key watch-ci
+go run ./cmd/cs trace done "CI passed"
+go run ./cmd/cs trace status
 go run ./cmd/cs claim create --repo . --scope internal/store --worker <worker-id> --issue MTG-Thomas/codex-swarm#42 --note "editing store claims"
 go run ./cmd/cs claim conflicts --repo . --scope internal/store/json.go
 go run ./cmd/cs claim export --issue MTG-Thomas/codex-swarm#42
@@ -62,6 +68,8 @@ go run ./cmd/cs pr attach --worker <worker-id> --url https://github.com/MTG-Thom
 go run ./cmd/cs pr status <worker-id>
 go run ./cmd/cs agent register --name "codex-thread" --role implementer
 go run ./cmd/cs legacy import-coordinator
+go run ./cmd/cs janitor stale
+go run ./cmd/cs janitor release --apply --note "stale cleanup"
 go run ./cmd/cs schedule add --repo . --cron "0 8 * * 1" --prompt "weekly repo check"
 go run ./cmd/cs schedule list
 go run ./cmd/cs repo hints --repo .
@@ -86,6 +94,8 @@ Pass `--worktree` to create a Git branch and worktree for the worker. Managed br
 Managed worktree creation uses repo-local branch locks under `.codex-swarm/locks/`. A live lock fails fast instead of handing two workers the same managed checkout; a stale lock whose PID is gone is pruned. If the intended managed worktree already exists on the requested branch, it is reused. Dirty managed worktrees are reused without refresh and print a warning so local changes are preserved. If the branch is checked out in the main repository or an external worktree, `spawn --worktree` fails with that location instead of reusing it.
 
 Pass `--role` and `--parent` to record simple local swarm relationships. Use `message` and `handoff` to write directed communication events into both workers' local timelines without routing routine interagent traffic through MCP.
+
+Use `trace start`, `trace into`, `trace log`, `trace done`, `trace back`, and `trace status` for a lightweight nested execution stack per local agent. `--key` makes `start` and `into` idempotent across retries. Agent lanes default to `CODEX_SWARM_TRACE_AGENT`, then `DETOUR_AGENT`, then `default`; pass `--agent` when multiple local threads need separate stacks. `trace merge` prints active lanes as a handoff snapshot without changing state.
 
 Pass `--issue owner/repo#123` to link a worker to a GitHub issue. Scheduling is currently a persisted control-plane record only; `schedule add` and `schedule list` do not execute scheduled workers yet.
 
@@ -185,6 +195,8 @@ Use `agent register --name <name> --role <role>` to record the current local age
 Set `CODEX_SWARM_DAEMON_URL=http://127.0.0.1:8787` or pass `cs status --daemon http://127.0.0.1:8787` to make `cs status` prefer a running daemon. Daemon-backed status prints the daemon version, state path, worker count, claim count, conflict count, and read-only worker lines with lifecycle status, issue, worktree, and thread ID.
 
 Use `cs status --issues` for a compact read-only operations dashboard over local state. It summarizes issue-linked non-terminal workers, active claims, workers stale for more than 24 hours, and suggested next actions. By default it suppresses lower-priority fresh idle rows; add `--detail` to print every active issue-linked worker.
+
+Use `cs janitor stale` for a read-only stale worker and releasable claim report. Use `cs janitor release --apply` to release only active claims that are expired, attached to a missing or terminal worker, or attached to a worker stale beyond the `--older` threshold. Without `--apply`, release is a dry run.
 
 `csd serve` starts the daemon, `csd status` checks it, and `csd install` / `csd uninstall` install or remove the daemon service on supported platforms. Windows uses a service named `codex-swarm-daemon`; macOS installs a per-user LaunchAgent at `~/Library/LaunchAgents/codex-swarm-daemon.plist`; Linux installs a systemd unit at `/etc/systemd/system/codex-swarm-daemon.service` and should be run with sufficient privilege, for example through `sudo`. The daemon exposes read-only HTTP status surfaces with `GET /status`, `GET /workers`, `GET /claims`, and `GET /readiness?issue=owner/repo%23123&repo=<path>`. It also exposes the explicit loopback-only mutation `POST /dispatch` for daemon-backed `cs issue dispatch`. Use the `cs` CLI for worker, claim, issue, and schedule mutations.
 

@@ -87,6 +87,34 @@ func TestJSONStoreRoundTrip(t *testing.T) {
 		t.Fatalf("GetClaim() = %#v, want %#v", gotClaim, claim)
 	}
 
+	lane, err := s.UpdateTraceLane("tester", func(lane *TraceLane) error {
+		lane.CreatedAt = now
+		lane.UpdatedAt = now
+		lane.Stack = []TraceItem{{Title: "Release swarm", Key: "release", StartedAt: now}}
+		lane.Events = []TraceEvent{{At: now, Type: "start", Title: "Release swarm", Key: "release"}}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("UpdateTraceLane() error = %v", err)
+	}
+	if lane.Agent != "tester" || len(lane.Stack) != 1 {
+		t.Fatalf("UpdateTraceLane() = %#v", lane)
+	}
+	gotLane, err := s.GetTraceLane("tester")
+	if err != nil {
+		t.Fatalf("GetTraceLane() error = %v", err)
+	}
+	if gotLane.Stack[0].Title != "Release swarm" || len(gotLane.Events) != 1 {
+		t.Fatalf("GetTraceLane() = %#v", gotLane)
+	}
+	lanes, err := s.ListTraceLanes()
+	if err != nil {
+		t.Fatalf("ListTraceLanes() error = %v", err)
+	}
+	if len(lanes) != 1 || lanes[0].Agent != "tester" {
+		t.Fatalf("ListTraceLanes() = %#v", lanes)
+	}
+
 	agent := Agent{
 		ID:        "a-test",
 		Name:      "test-agent",

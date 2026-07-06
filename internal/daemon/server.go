@@ -17,9 +17,10 @@ import (
 	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
 	"github.com/MTG-Thomas/codex-swarm/internal/readiness"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
+	"github.com/MTG-Thomas/codex-swarm/internal/version"
 )
 
-const Version = "0.1.0"
+var Version = version.Version
 
 // Status is the compact operator-facing state returned by the daemon.
 type Status struct {

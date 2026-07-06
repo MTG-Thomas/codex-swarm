@@ -28,6 +28,7 @@ type stateFile struct {
 	Claims             []Claim             `json:"claims,omitempty"`
 	Agents             []Agent             `json:"agents,omitempty"`
 	Events             []Event             `json:"events,omitempty"`
+	TraceLanes         []TraceLane         `json:"trace_lanes,omitempty"`
 	GateEvidence       []GateEvidence      `json:"gate_evidence,omitempty"`
 	CompletedMutations []CompletedMutation `json:"completed_mutations,omitempty"`
 }
@@ -282,6 +283,81 @@ func (s *JSONStore) ListEvents() ([]Event, error) {
 		return nil
 	})
 	return events, err
+}
+
+// UpdateTraceLane mutates a per-agent trace lane while holding the state lock.
+func (s *JSONStore) UpdateTraceLane(agent string, mutate func(*TraceLane) error) (TraceLane, error) {
+	agent = strings.TrimSpace(agent)
+	if agent == "" {
+		return TraceLane{}, errors.New("trace agent is required")
+	}
+	var updated TraceLane
+	err := s.withStateLock(func() error {
+		state, err := s.read()
+		if err != nil {
+			return err
+		}
+		for i := range state.TraceLanes {
+			if state.TraceLanes[i].Agent != agent {
+				continue
+			}
+			if err := mutate(&state.TraceLanes[i]); err != nil {
+				return err
+			}
+			updated = state.TraceLanes[i]
+			return s.write(state)
+		}
+		lane := TraceLane{Agent: agent}
+		if err := mutate(&lane); err != nil {
+			return err
+		}
+		state.TraceLanes = append(state.TraceLanes, lane)
+		updated = lane
+		return s.write(state)
+	})
+	if err != nil {
+		return TraceLane{}, err
+	}
+	return updated, nil
+}
+
+// GetTraceLane returns one trace lane by agent name.
+func (s *JSONStore) GetTraceLane(agent string) (TraceLane, error) {
+	var got TraceLane
+	err := s.withStateLock(func() error {
+		state, err := s.read()
+		if err != nil {
+			return err
+		}
+		for _, lane := range state.TraceLanes {
+			if lane.Agent == agent {
+				got = lane
+				return nil
+			}
+		}
+		return ErrTraceNotFound
+	})
+	if err != nil {
+		return TraceLane{}, err
+	}
+	return got, nil
+}
+
+// ListTraceLanes returns trace lanes sorted by most recent update.
+func (s *JSONStore) ListTraceLanes() ([]TraceLane, error) {
+	var lanes []TraceLane
+	err := s.withStateLock(func() error {
+		state, err := s.read()
+		if err != nil {
+			return err
+		}
+		lanes = append([]TraceLane(nil), state.TraceLanes...)
+		sort.Slice(lanes, func(i, j int) bool {
+			return lanes[i].UpdatedAt.After(lanes[j].UpdatedAt)
+		})
+		return nil
+	})
+	return lanes, err
 }
 
 // SaveGateEvidence inserts or replaces one quality gate evidence record.
