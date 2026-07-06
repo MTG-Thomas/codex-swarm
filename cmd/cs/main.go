@@ -72,6 +72,12 @@ func (c cli) run(args []string) error {
 		return c.handoff(args[1:])
 	case "claim":
 		return c.claim(args[1:])
+	case "trace":
+		return c.trace(args[1:])
+	case "janitor":
+		return c.janitor(args[1:])
+	case "version":
+		return c.version(args[1:])
 	case "gate":
 		return c.gate(args[1:])
 	case "validate":
@@ -1061,6 +1067,13 @@ Usage:
   cs send <worker> "continue with tests"
   cs message --request-id <id> <from-worker> <to-worker> "note"
   cs handoff --request-id <id> <from-worker> <to-worker> "summary"
+  cs trace start "Fix deploy" --key fix-deploy
+  cs trace into "Debug CI" --key debug-ci
+  cs trace done "CI fixed"
+  cs trace status
+  cs janitor stale
+  cs janitor release --apply
+  cs version
   cs claim create --repo . --scope internal/store --worker <worker>
   cs claim conflicts --repo . --scope internal/store
   cs claim push --issue owner/repo#123

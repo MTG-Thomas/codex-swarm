@@ -11,6 +11,7 @@ var (
 	ErrWorkerNotFound = errors.New("worker not found")
 	ErrClaimNotFound  = errors.New("claim not found")
 	ErrAgentNotFound  = errors.New("agent not found")
+	ErrTraceNotFound  = errors.New("trace lane not found")
 )
 
 const (
@@ -197,6 +198,32 @@ type Event struct {
 	Issue     string    `json:"issue,omitempty"`
 	WorkerID  string    `json:"worker,omitempty"`
 	RequestID string    `json:"request_id,omitempty"`
+}
+
+// TraceItem records one nested task frame in a per-agent trace stack.
+type TraceItem struct {
+	Title     string    `json:"title"`
+	Key       string    `json:"key,omitempty"`
+	StartedAt time.Time `json:"started_at"`
+}
+
+// TraceEvent records a durable trace transition for audit and note export.
+type TraceEvent struct {
+	At      time.Time `json:"at"`
+	Type    string    `json:"type"`
+	Title   string    `json:"title,omitempty"`
+	Message string    `json:"message,omitempty"`
+	Key     string    `json:"key,omitempty"`
+	Depth   int       `json:"depth"`
+}
+
+// TraceLane is a detour-style nested execution stack for one local agent.
+type TraceLane struct {
+	Agent     string       `json:"agent"`
+	Stack     []TraceItem  `json:"stack,omitempty"`
+	Events    []TraceEvent `json:"events,omitempty"`
+	CreatedAt time.Time    `json:"created_at"`
+	UpdatedAt time.Time    `json:"updated_at"`
 }
 
 // GateEvidence records proof that a named repo quality gate was evaluated.
