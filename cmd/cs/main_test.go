@@ -1530,6 +1530,79 @@ func TestCLIResumeAppserverFailureSetsTerminatedAt(t *testing.T) {
 	assertWorkerTerminatedAt(t, state, "w-app", now)
 }
 
+func TestCLITranscriptWorkpacketAndWorkerCheck(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 7, 9, 18, 45, 0, 0, time.UTC)
+	state := filepath.Join(t.TempDir(), "state.json")
+	repo := t.TempDir()
+	worker := store.Worker{
+		ID:          "w-context",
+		Issue:       "MTG-Thomas/codex-swarm#54",
+		ProjectRoot: repo,
+		Worktree:    filepath.Join(repo, ".codex-swarm", "worktrees", "w-context"),
+		Branch:      "cs/w-context",
+		ThreadID:    "thread-context",
+		Engine:      "mock",
+		Role:        "implementer",
+		Status:      store.WorkerIdle,
+		Prompt:      "build transcript",
+		Report:      "ready for review",
+		CreatedAt:   now.Add(-time.Hour),
+		UpdatedAt:   now.Add(-time.Hour),
+		Events: []store.Event{{
+			At:      now.Add(-time.Minute),
+			Type:    "message.received",
+			Message: "start here",
+			From:    "w-parent",
+			To:      "w-context",
+		}},
+	}
+	if err := store.NewJSONStore(state).SaveWorker(worker); err != nil {
+		t.Fatalf("SaveWorker() error = %v", err)
+	}
+	if err := store.NewJSONStore(state).SaveClaim(store.Claim{
+		ID:        "c-other",
+		WorkerID:  "w-other",
+		Repo:      repo,
+		Scope:     "cmd/cs",
+		Issue:     "MTG-Thomas/codex-swarm#54",
+		Status:    store.ClaimActive,
+		ExpiresAt: now.Add(time.Hour),
+		CreatedAt: now.Add(-time.Hour),
+		UpdatedAt: now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("SaveClaim() error = %v", err)
+	}
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+
+	if err := c.run([]string{"transcript", "--state", state, "w-context"}); err != nil {
+		t.Fatalf("transcript error = %v", err)
+	}
+	for _, want := range []string{"worker=w-context", "issue=MTG-Thomas/codex-swarm#54", "message.received", "ready for review"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("transcript output missing %q:\n%s", want, out.String())
+		}
+	}
+
+	out.Reset()
+	if err := c.run([]string{"workpacket", "--state", state, "--worker", "w-context", "--json"}); err != nil {
+		t.Fatalf("workpacket error = %v", err)
+	}
+	if !strings.Contains(out.String(), `"schema": "codex-swarm:workpacket:v1"`) || !strings.Contains(out.String(), `"id": "c-other"`) {
+		t.Fatalf("workpacket json = %s", out.String())
+	}
+
+	out.Reset()
+	if err := c.run([]string{"worker", "check", "--state", state, "--repo", repo, "--issue", "MTG-Thomas/codex-swarm#54", "w-context"}); err != nil {
+		t.Fatalf("worker check error = %v", err)
+	}
+	for _, want := range []string{"worker=w-context ok=false", "ok\trepo_match", "ok\tissue_match", "warning\tactive_claim_warning\tclaim=c-other"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("worker check output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
 func mustGetWorker(t *testing.T, state, id string) store.Worker {
 	t.Helper()
 	worker, err := store.NewJSONStore(state).GetWorker(id)

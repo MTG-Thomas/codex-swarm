@@ -15,6 +15,7 @@ import (
 	"github.com/MTG-Thomas/codex-swarm/internal/claims"
 	"github.com/MTG-Thomas/codex-swarm/internal/dispatch"
 	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
+	"github.com/MTG-Thomas/codex-swarm/internal/protocol"
 	"github.com/MTG-Thomas/codex-swarm/internal/readiness"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 	"github.com/MTG-Thomas/codex-swarm/internal/version"
@@ -22,78 +23,24 @@ import (
 
 var Version = version.Version
 
-// Status is the compact operator-facing state returned by the daemon.
-type Status struct {
-	Daemon        string `json:"daemon"`
-	Version       string `json:"version"`
-	StatePath     string `json:"state_path"`
-	WorkerCount   int    `json:"worker_count"`
-	ClaimCount    int    `json:"claim_count"`
-	ConflictCount int    `json:"conflict_count"`
-}
-
-// String renders a compact human-readable daemon status line.
-func (s Status) String() string {
-	return fmt.Sprintf("daemon=%s version=%s workers=%d claims=%d conflicts=%d state=%s", s.Daemon, s.Version, s.WorkerCount, s.ClaimCount, s.ConflictCount, s.StatePath)
-}
-
-// WorkerStatus is the compact daemon representation of one worker.
-type WorkerStatus struct {
-	ID               string `json:"id"`
-	Status           string `json:"status"`
-	Role             string `json:"role,omitempty"`
-	Issue            string `json:"issue,omitempty"`
-	ValidationOf     string `json:"validation_of,omitempty"`
-	ValidationStatus string `json:"validation_status,omitempty"`
-	Worktree         string `json:"worktree,omitempty"`
-	ThreadID         string `json:"thread_id,omitempty"`
-}
-
-// WorkersResponse is returned by the daemon workers endpoint.
-type WorkersResponse struct {
-	Workers []WorkerStatus `json:"workers"`
-}
-
-// ClaimsResponse is returned by the daemon claims endpoint.
-type ClaimsResponse struct {
-	Claims    []store.Claim   `json:"claims"`
-	Conflicts []ClaimConflict `json:"conflicts"`
-}
-
-type DispatchRequest struct {
-	RequestID string   `json:"request_id"`
-	Issue     string   `json:"issue"`
-	Repo      string   `json:"repo"`
-	Prompt    string   `json:"prompt"`
-	Gates     []string `json:"gates,omitempty"`
-}
-
-type DispatchResponse struct {
-	RequestID   string `json:"request_id"`
-	Implementer string `json:"implementer"`
-	Validator   string `json:"validator"`
-	Replayed    bool   `json:"replayed"`
-}
-
-// LegacyStatus is the compatibility response for older daemon clients.
-type LegacyStatus struct {
-	Daemon    string         `json:"daemon"`
-	StatePath string         `json:"state_path"`
-	Workers   []store.Worker `json:"workers"`
-}
-
-// ClaimConflict describes one pair of overlapping open claims.
-type ClaimConflict struct {
-	ClaimID    string `json:"claim_id"`
-	ConflictID string `json:"conflict_id"`
-	Repo       string `json:"repo"`
-	Scope      string `json:"scope"`
-}
+type Status = protocol.Status
+type WorkerStatus = protocol.WorkerStatus
+type WorkersResponse = protocol.WorkersResponse
+type ClaimsResponse = protocol.ClaimsResponse
+type DispatchRequest = protocol.DispatchRequest
+type DispatchResponse = protocol.DispatchResponse
+type LegacyStatus = protocol.LegacyStatus
+type LegacyWorker = protocol.LegacyWorker
+type ClaimConflict = protocol.ClaimConflict
 
 type readStore interface {
 	ListWorkers() ([]store.Worker, error)
 	ListClaims() ([]store.Claim, error)
 	SaveWorkers(...store.Worker) error
+}
+
+type eventStore interface {
+	ListEvents() ([]store.Event, error)
 }
 
 // Server exposes read-only daemon HTTP endpoints over swarm state.
@@ -129,13 +76,15 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/claims", s.handleClaims)
 	mux.HandleFunc("/readiness", s.handleReadiness)
 	mux.HandleFunc("/dispatch", s.handleDispatch)
+	mux.HandleFunc("/v1/events", s.handleEvents)
+	mux.HandleFunc("/v1/dispatch", s.handleDispatch)
 	mux.HandleFunc("/v1/status", s.handleLegacyStatus)
 	return mux
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	writeJSON(w, map[string]string{"status": "ok"})
@@ -143,17 +92,17 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	workers, err := s.store.ListWorkers()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeRouteError(w, r, http.StatusInternalServerError, "store_read_failed", err.Error())
 		return
 	}
 	claimList, err := s.store.ListClaims()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeRouteError(w, r, http.StatusInternalServerError, "store_read_failed", err.Error())
 		return
 	}
 	writeJSON(w, Status{
@@ -168,12 +117,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	workers, err := s.store.ListWorkers()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeRouteError(w, r, http.StatusInternalServerError, "store_read_failed", err.Error())
 		return
 	}
 	writeJSON(w, WorkersResponse{Workers: summarizeWorkers(workers)})
@@ -181,23 +130,23 @@ func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	claimList, err := s.store.ListClaims()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeRouteError(w, r, http.StatusInternalServerError, "store_read_failed", err.Error())
 		return
 	}
 	writeJSON(w, ClaimsResponse{
-		Claims:    claimList,
+		Claims:    protocolClaims(claimList),
 		Conflicts: findClaimConflicts(claimList, time.Now().UTC()),
 	})
 }
 
 func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	report, err := readiness.Build(r.Context(), readiness.BuildInput{
@@ -207,7 +156,7 @@ func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 		Provider: s.issueProvider,
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeRouteError(w, r, http.StatusBadRequest, "readiness_failed", err.Error())
 		return
 	}
 	writeJSON(w, report)
@@ -215,20 +164,20 @@ func (s *Server) handleReadiness(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	if !isLoopbackRemote(r.RemoteAddr) {
-		http.Error(w, "dispatch requires loopback daemon access", http.StatusForbidden)
+		writeRouteError(w, r, http.StatusForbidden, "loopback_required", "dispatch requires loopback daemon access")
 		return
 	}
 	var req DispatchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "parse dispatch request: "+err.Error(), http.StatusBadRequest)
+		writeRouteError(w, r, http.StatusBadRequest, "invalid_json", "parse dispatch request: "+err.Error())
 		return
 	}
 	if strings.TrimSpace(req.RequestID) == "" {
-		http.Error(w, "request_id is required", http.StatusBadRequest)
+		writeRouteError(w, r, http.StatusBadRequest, "request_id_required", "request_id is required")
 		return
 	}
 	report, err := readiness.Build(r.Context(), readiness.BuildInput{
@@ -239,17 +188,17 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		ExplicitGates: req.Gates,
 	})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeRouteError(w, r, http.StatusBadRequest, "readiness_failed", err.Error())
 		return
 	}
 	plan, err := dispatch.Plan(dispatch.Input{Readiness: report, Prompt: req.Prompt, Gates: req.Gates})
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusConflict)
+		writeRouteError(w, r, http.StatusConflict, "dispatch_plan_failed", err.Error())
 		return
 	}
 	result, err := dispatch.Execute(s.store, plan, req.RequestID, "mock", time.Now().UTC())
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeRouteError(w, r, statusForDispatchError(err), codeForDispatchError(err), err.Error())
 		return
 	}
 	writeJSON(w, DispatchResponse{
@@ -258,6 +207,90 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		Validator:   result.Validator,
 		Replayed:    result.Replayed,
 	})
+}
+
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, r)
+		return
+	}
+	workerID := strings.TrimSpace(r.URL.Query().Get("worker"))
+	format := strings.TrimSpace(r.URL.Query().Get("format"))
+	events, err := s.eventEnvelopes(workerID)
+	if err != nil {
+		writeRouteError(w, r, http.StatusInternalServerError, "store_read_failed", err.Error())
+		return
+	}
+	if format == "ndjson" {
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		enc := json.NewEncoder(w)
+		for _, event := range events {
+			_ = enc.Encode(event)
+		}
+		return
+	}
+	writeJSON(w, protocol.EventsResponse{Events: events})
+}
+
+func (s *Server) eventEnvelopes(workerID string) ([]protocol.EventEnvelope, error) {
+	workers, err := s.store.ListWorkers()
+	if err != nil {
+		return nil, err
+	}
+	workerIssues := map[string]string{}
+	for _, worker := range workers {
+		workerIssues[worker.ID] = worker.Issue
+	}
+	var events []store.Event
+	if st, ok := s.store.(eventStore); ok {
+		events, err = st.ListEvents()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if len(events) == 0 {
+		for _, worker := range workers {
+			if workerID != "" && worker.ID != workerID {
+				continue
+			}
+			for _, event := range worker.Events {
+				if event.WorkerID == "" {
+					event.WorkerID = worker.ID
+				}
+				if event.Issue == "" {
+					event.Issue = worker.Issue
+				}
+				events = append(events, event)
+			}
+		}
+	}
+	envelopes := make([]protocol.EventEnvelope, 0, len(events))
+	for _, event := range events {
+		id := event.WorkerID
+		if id == "" {
+			id = event.From
+		}
+		if workerID != "" && id != workerID && event.From != workerID && event.To != workerID {
+			continue
+		}
+		issue := event.Issue
+		if issue == "" {
+			issue = workerIssues[id]
+		}
+		envelopes = append(envelopes, protocol.EventEnvelope{
+			Schema:    "codex-swarm:event:v1",
+			Kind:      "worker.event",
+			At:        event.At,
+			WorkerID:  id,
+			Type:      event.Type,
+			Message:   event.Message,
+			From:      event.From,
+			To:        event.To,
+			Issue:     issue,
+			RequestID: event.RequestID,
+		})
+	}
+	return envelopes, nil
 }
 
 func isLoopbackRemote(remoteAddr string) bool {
@@ -271,19 +304,49 @@ func isLoopbackRemote(remoteAddr string) bool {
 
 func (s *Server) handleLegacyStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		writeMethodNotAllowed(w, r)
 		return
 	}
 	workers, err := s.store.ListWorkers()
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		writeRouteError(w, r, http.StatusInternalServerError, "store_read_failed", err.Error())
 		return
 	}
 	writeJSON(w, LegacyStatus{
 		Daemon:    "running",
 		StatePath: s.statePath,
-		Workers:   workers,
+		Workers:   protocolLegacyWorkers(workers),
 	})
+}
+
+func writeMethodNotAllowed(w http.ResponseWriter, r *http.Request) {
+	writeRouteError(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed")
+}
+
+func writeRouteError(w http.ResponseWriter, r *http.Request, status int, code, message string) {
+	if strings.HasPrefix(r.URL.Path, "/v1/") {
+		protocol.WriteError(w, status, code, message)
+		return
+	}
+	http.Error(w, message, status)
+}
+
+func statusForDispatchError(err error) int {
+	if isReplayMismatch(err) {
+		return http.StatusConflict
+	}
+	return http.StatusInternalServerError
+}
+
+func codeForDispatchError(err error) string {
+	if isReplayMismatch(err) {
+		return "request_replay_mismatch"
+	}
+	return "dispatch_execute_failed"
+}
+
+func isReplayMismatch(err error) bool {
+	return strings.Contains(err.Error(), "does not match original mutation fingerprint")
 }
 
 // Client reads status from a running codex-swarm daemon.
@@ -324,7 +387,7 @@ func (c Client) Workers(ctx context.Context) (WorkersResponse, error) {
 		if legacyErr := c.get(ctx, "/v1/status", &legacy); legacyErr != nil {
 			return WorkersResponse{}, err
 		}
-		return WorkersResponse{Workers: summarizeWorkers(legacy.Workers)}, nil
+		return WorkersResponse{Workers: summarizeLegacyWorkers(legacy.Workers)}, nil
 	}
 	return workers, nil
 }
@@ -458,6 +521,78 @@ func summarizeWorkers(workers []store.Worker) []WorkerStatus {
 		})
 	}
 	return summaries
+}
+
+func summarizeLegacyWorkers(workers []protocol.LegacyWorker) []WorkerStatus {
+	summaries := make([]WorkerStatus, 0, len(workers))
+	for _, worker := range workers {
+		summaries = append(summaries, WorkerStatus{
+			ID:               worker.ID,
+			Status:           worker.Status,
+			Role:             worker.Role,
+			Issue:            worker.Issue,
+			ValidationOf:     worker.ValidationOf,
+			ValidationStatus: worker.ValidationStatus,
+			Worktree:         worker.Worktree,
+			ThreadID:         worker.ThreadID,
+		})
+	}
+	return summaries
+}
+
+func protocolClaims(claims []store.Claim) []protocol.Claim {
+	result := make([]protocol.Claim, 0, len(claims))
+	for _, claim := range claims {
+		result = append(result, protocol.Claim{
+			ID: claim.ID, WorkerID: claim.WorkerID, Repo: claim.Repo, Scope: claim.Scope,
+			Issue: claim.Issue, Status: string(claim.Status), Note: claim.Note,
+			ExternalWorker: claim.ExternalWorker, WorkerSource: claim.WorkerSource,
+			Blocker: claim.Blocker, Next: claim.Next, ExpiresAt: claim.ExpiresAt,
+			CreatedAt: claim.CreatedAt, UpdatedAt: claim.UpdatedAt,
+		})
+	}
+	return result
+}
+
+func protocolLegacyWorkers(workers []store.Worker) []protocol.LegacyWorker {
+	result := make([]protocol.LegacyWorker, 0, len(workers))
+	for _, worker := range workers {
+		legacy := protocol.LegacyWorker{
+			ID: worker.ID, ParentID: worker.ParentID, Role: worker.Role, Issue: worker.Issue,
+			ValidationOf: worker.ValidationOf, ValidationStatus: worker.ValidationStatus,
+			ProjectRoot: worker.ProjectRoot, Worktree: worker.Worktree, Branch: worker.Branch,
+			ThreadID: worker.ThreadID, TurnID: worker.TurnID, Engine: worker.Engine,
+			Status: string(worker.Status), Prompt: worker.Prompt, LastMessage: worker.LastMessage,
+			Report: worker.Report, CreatedAt: worker.CreatedAt, UpdatedAt: worker.UpdatedAt,
+		}
+		if worker.Lifecycle != nil {
+			legacy.Lifecycle = &protocol.LegacyLifecycle{
+				Version: worker.Lifecycle.Version,
+				Session: protocol.LegacySessionLifecycle{
+					State: string(worker.Lifecycle.Session.State), Reason: string(worker.Lifecycle.Session.Reason),
+					CompletedAt: worker.Lifecycle.Session.CompletedAt, TerminatedAt: worker.Lifecycle.Session.TerminatedAt,
+				},
+				Runtime: protocol.LegacyRuntimeLifecycle{
+					State: string(worker.Lifecycle.Runtime.State), Reason: string(worker.Lifecycle.Runtime.Reason),
+				},
+			}
+		}
+		for _, pr := range worker.PullRequests {
+			legacy.PullRequests = append(legacy.PullRequests, protocol.LegacyPullRequest{
+				URL: pr.URL, State: pr.State, BaseBranch: pr.BaseBranch, HeadBranch: pr.HeadBranch,
+				ReviewDecision: pr.ReviewDecision, CheckSummary: pr.CheckSummary,
+				CodeRabbitStatus: pr.CodeRabbitStatus, NextAction: pr.NextAction, UpdatedAt: pr.UpdatedAt,
+			})
+		}
+		for _, event := range worker.Events {
+			legacy.Events = append(legacy.Events, protocol.LegacyEvent{
+				At: event.At, Type: event.Type, Message: event.Message, From: event.From,
+				To: event.To, Issue: event.Issue, WorkerID: event.WorkerID, RequestID: event.RequestID,
+			})
+		}
+		result = append(result, legacy)
+	}
+	return result
 }
 
 func displayWorkerStatus(worker store.Worker) string {

@@ -20,9 +20,12 @@ import (
 	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
 	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
 	"github.com/MTG-Thomas/codex-swarm/internal/launchbundle"
+	"github.com/MTG-Thomas/codex-swarm/internal/ownership"
 	"github.com/MTG-Thomas/codex-swarm/internal/repohints"
 	"github.com/MTG-Thomas/codex-swarm/internal/snapshot"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
+	"github.com/MTG-Thomas/codex-swarm/internal/transcript"
+	"github.com/MTG-Thomas/codex-swarm/internal/workpacket"
 	"github.com/MTG-Thomas/codex-swarm/internal/worktree"
 )
 
@@ -70,6 +73,10 @@ func (c cli) run(args []string) error {
 		return c.message(args[1:])
 	case "handoff":
 		return c.handoff(args[1:])
+	case "workpacket":
+		return c.workpacket(args[1:])
+	case "worker":
+		return c.worker(args[1:])
 	case "claim":
 		return c.claim(args[1:])
 	case "trace":
@@ -100,6 +107,8 @@ func (c cli) run(args []string) error {
 		return c.resume(args[1:])
 	case "inspect-thread":
 		return c.inspectThread(args[1:])
+	case "transcript":
+		return c.transcript(args[1:])
 	case "show":
 		return c.show(args[1:])
 	default:
@@ -1008,6 +1017,160 @@ func (c cli) show(args []string) error {
 	return nil
 }
 
+func (c cli) transcript(args []string) error {
+	fs := c.flagSet("transcript")
+	statePath := fs.String("state", defaultStatePath(), "state file path")
+	jsonOutput := fs.Bool("json", false, "print transcript as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		return errors.New("transcript requires <worker>")
+	}
+	worker, err := store.NewJSONStore(*statePath).GetWorker(rest[0])
+	if err != nil {
+		if errors.Is(err, store.ErrWorkerNotFound) {
+			return fmt.Errorf("worker %q not found", rest[0])
+		}
+		return err
+	}
+	doc := transcript.Build(worker, c.now().UTC())
+	if *jsonOutput {
+		data, err := json.MarshalIndent(doc, "", "  ")
+		if err != nil {
+			return fmt.Errorf("encode transcript: %w", err)
+		}
+		fmt.Fprintln(c.out, string(data))
+		return nil
+	}
+	fmt.Fprint(c.out, doc.Text())
+	return nil
+}
+
+func (c cli) workpacket(args []string) error {
+	fs := c.flagSet("workpacket")
+	statePath := fs.String("state", defaultStatePath(), "state file path")
+	workerID := fs.String("worker", "", "worker id")
+	jsonOutput := fs.Bool("json", false, "print work packet as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*workerID) == "" {
+		rest := fs.Args()
+		if len(rest) == 1 {
+			*workerID = rest[0]
+		}
+	}
+	if strings.TrimSpace(*workerID) == "" {
+		return errors.New("workpacket requires --worker")
+	}
+	st := store.NewJSONStore(*statePath)
+	worker, err := st.GetWorker(*workerID)
+	if err != nil {
+		if errors.Is(err, store.ErrWorkerNotFound) {
+			return fmt.Errorf("worker %q not found", *workerID)
+		}
+		return err
+	}
+	claimList, err := st.ListClaims()
+	if err != nil {
+		return err
+	}
+	packet := workpacket.Build(workpacket.Input{
+		Worker: worker,
+		Claims: claimList,
+		Now:    c.now().UTC(),
+	})
+	if *jsonOutput {
+		data, err := json.MarshalIndent(packet, "", "  ")
+		if err != nil {
+			return fmt.Errorf("encode work packet: %w", err)
+		}
+		fmt.Fprintln(c.out, string(data))
+		return nil
+	}
+	fmt.Fprint(c.out, packet.Text())
+	return nil
+}
+
+func (c cli) worker(args []string) error {
+	if len(args) == 0 {
+		return errors.New("worker requires <check>")
+	}
+	switch args[0] {
+	case "check":
+		return c.workerCheck(args[1:])
+	default:
+		return fmt.Errorf("unknown worker command %q", args[0])
+	}
+}
+
+func (c cli) workerCheck(args []string) error {
+	fs := c.flagSet("worker check")
+	statePath := fs.String("state", defaultStatePath(), "state file path")
+	repo := fs.String("repo", ".", "repository root")
+	issueValue := fs.String("issue", "", "GitHub issue reference")
+	worktree := fs.String("worktree", "", "expected worktree path")
+	jsonOutput := fs.Bool("json", false, "print check report as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) != 1 {
+		return errors.New("worker check requires <worker>")
+	}
+	repoRoot, err := filepath.Abs(*repo)
+	if err != nil {
+		return fmt.Errorf("resolve repo: %w", err)
+	}
+	issue := strings.TrimSpace(*issueValue)
+	if issue != "" {
+		normalized, err := normalizeRequiredIssue(issue)
+		if err != nil {
+			return err
+		}
+		issue = normalized
+	}
+	st := store.NewJSONStore(*statePath)
+	worker, err := st.GetWorker(rest[0])
+	if err != nil {
+		if errors.Is(err, store.ErrWorkerNotFound) {
+			return fmt.Errorf("worker %q not found", rest[0])
+		}
+		return err
+	}
+	claimList, err := st.ListClaims()
+	if err != nil {
+		return err
+	}
+	report := ownership.CheckWorker(ownership.Input{
+		Worker:   worker,
+		Claims:   claimList,
+		Repo:     repoRoot,
+		Issue:    issue,
+		Worktree: *worktree,
+		Now:      c.now().UTC(),
+	})
+	if *jsonOutput {
+		data, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return fmt.Errorf("encode ownership report: %w", err)
+		}
+		fmt.Fprintln(c.out, string(data))
+		return nil
+	}
+	fmt.Fprintf(c.out, "worker=%s ok=%t repo=%s issue=%s worktree=%s\n", report.WorkerID, report.OK, report.Repo, emptyDash(report.Issue), emptyDash(report.Worktree))
+	for _, check := range report.Checks {
+		if check.ClaimID != "" {
+			fmt.Fprintf(c.out, "%s\t%s\tclaim=%s\t%s\n", check.Severity, check.Code, check.ClaimID, check.Message)
+			continue
+		}
+		fmt.Fprintf(c.out, "%s\t%s\t%s\n", check.Severity, check.Code, check.Message)
+	}
+	return nil
+}
+
 func workerSnapshot(st *store.JSONStore, worker store.Worker) (snapshot.Snapshot, error) {
 	claims, err := st.ListClaims()
 	if err != nil {
@@ -1067,6 +1230,7 @@ Usage:
   cs send <worker> "continue with tests"
   cs message --request-id <id> <from-worker> <to-worker> "note"
   cs handoff --request-id <id> <from-worker> <to-worker> "summary"
+  cs workpacket --worker <worker>
   cs trace start "Fix deploy" --key fix-deploy
   cs trace into "Debug CI" --key debug-ci
   cs trace done "CI fixed"
@@ -1075,6 +1239,7 @@ Usage:
   cs janitor release --apply
   cs version
   cs claim create --repo . --scope internal/store --worker <worker>
+  cs worker check <worker> --repo .
   cs claim conflicts --repo . --scope internal/store
   cs claim push --issue owner/repo#123
   cs gate list --repo .
@@ -1094,6 +1259,7 @@ Usage:
   cs legacy import-coordinator
   cs resume <worker>
   cs inspect-thread <worker>
+  cs transcript <worker>
   cs show <worker>
   cs show --snapshot <worker>
   cs show --snapshot --json <worker>

@@ -43,6 +43,10 @@ Exit criteria: parallel workers can operate on one repository without trampling 
 - Track parent/child workers.
 - Add local message and handoff records.
 - Add role labels such as implementer, reviewer, tester, and docs.
+- Add transcript and work-packet artifacts so workers can resume from durable
+  state instead of chat history.
+- Add warning-only worker ownership checks for repo, worktree, thread, issue,
+  and active claim risk.
 - Add bounded fan-out controls for max workers, turns, and wall-clock time.
 - Keep interagent communication in the daemon/store instead of MCP by default.
 

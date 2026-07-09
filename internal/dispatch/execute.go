@@ -31,6 +31,9 @@ func Execute(st WorkerStore, plan PlanResult, requestID, engine string, now time
 		return Result{}, err
 	}
 	if implementer, validator, ok := Replay(workers, requestID); ok {
+		if implementer.Prompt != plan.Prompt || validator.Issue != plan.Issue || validator.ProjectRoot != plan.Repo {
+			return Result{}, fmt.Errorf("request %q for dispatch does not match original mutation fingerprint", requestID)
+		}
 		return Result{RequestID: requestID, Implementer: implementer.ID, Validator: validator.ID, Replayed: true}, nil
 	}
 	implementer, validator, err := NewWorkerPair(plan.Issue, plan.Repo, engine, plan.Prompt, plan.Gates, now)
