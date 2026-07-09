@@ -342,6 +342,73 @@ func TestServerDispatchRejectsNonLoopbackRemote(t *testing.T) {
 	}
 }
 
+func TestServerV1DispatchReplayMismatchReturnsTypedError(t *testing.T) {
+	repo := t.TempDir()
+	writeDaemonRepoHints(t, repo)
+	st := &memoryStore{}
+	server := NewServerWithIssueProvider("state.json", st, fakeIssueProvider{issue: readiness.Issue{
+		Title: "Dispatch issue",
+		Body:  "Acceptance criteria",
+	}})
+	firstBody := `{"request_id":"r-dispatch","issue":"MTG-Thomas/codex-swarm#31","repo":` + quoteJSON(repo) + `,"prompt":"implement issue #31","gates":["test"]}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/dispatch", strings.NewReader(firstBody))
+	req.RemoteAddr = "127.0.0.1:45678"
+	first := httptest.NewRecorder()
+	server.Handler().ServeHTTP(first, req)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status code = %d, want %d body=%s", first.Code, http.StatusOK, first.Body.String())
+	}
+
+	secondBody := `{"request_id":"r-dispatch","issue":"MTG-Thomas/codex-swarm#31","repo":` + quoteJSON(repo) + `,"prompt":"different","gates":["test"]}`
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/dispatch", strings.NewReader(secondBody))
+	req.RemoteAddr = "127.0.0.1:45678"
+	second := httptest.NewRecorder()
+	server.Handler().ServeHTTP(second, req)
+	if second.Code != http.StatusConflict {
+		t.Fatalf("second status code = %d, want %d body=%s", second.Code, http.StatusConflict, second.Body.String())
+	}
+	if !strings.Contains(second.Body.String(), `"code":"request_replay_mismatch"`) {
+		t.Fatalf("typed error body = %s", second.Body.String())
+	}
+}
+
+func TestServerEventsSnapshotFiltersWorker(t *testing.T) {
+	now := time.Date(2026, 7, 9, 18, 30, 0, 0, time.UTC)
+	server := NewServer("state.json", &memoryStore{workers: []store.Worker{{
+		ID:          "w-1",
+		Issue:       "MTG-Thomas/codex-swarm#53",
+		ProjectRoot: "/repo",
+		Status:      store.WorkerIdle,
+		Events: []store.Event{{
+			At:      now,
+			Type:    "message.received",
+			Message: "hello",
+		}},
+	}, {
+		ID:          "w-2",
+		ProjectRoot: "/repo",
+		Status:      store.WorkerIdle,
+		Events: []store.Event{{
+			At:      now,
+			Type:    "message.received",
+			Message: "other",
+		}},
+	}}})
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/events?worker=w-1", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"worker_id":"w-1"`) || strings.Contains(rec.Body.String(), `"worker_id":"w-2"`) {
+		t.Fatalf("events response = %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"schema":"codex-swarm:event:v1"`) {
+		t.Fatalf("events response missing schema: %s", rec.Body.String())
+	}
+}
+
 func TestClientStatus(t *testing.T) {
 	server := httptest.NewServer(NewServer("state.json", &memoryStore{workers: []store.Worker{{ID: "w-1"}}}).Handler())
 	defer server.Close()

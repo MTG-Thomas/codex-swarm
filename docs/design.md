@@ -51,6 +51,27 @@ entry point. Any future daemon mutation API must first define how callers are
 authenticated, how request IDs are replayed idempotently, and how dangerous
 operations are bounded on a shared developer machine.
 
+Daemon API contracts that are intended to be consumed outside the handler live
+in `internal/protocol`. Versioned `/v1/*` mutation paths return typed JSON
+errors, and new daemon write APIs should use explicit request IDs with stable
+replay behavior before they are exposed. The read-only `/v1/events` endpoint
+returns worker event envelopes for dashboards and autonomous workers without
+changing local state.
+
+Worker handoff context has two surfaces. `cs transcript <worker>` renders the
+durable event timeline for human or JSON consumers. `cs workpacket --worker
+<worker>` emits a structured startup packet with repo, worktree, branch, issue,
+thread, claims, recent events, report, and next action. `cs worker check` is a
+warning-only ownership readback for repo, issue, worktree, thread, and active
+claim risks; it does not turn claims into locks.
+
+Event stream snapshot example:
+
+```powershell
+Invoke-WebRequest http://127.0.0.1:8787/v1/events?worker=w-123
+Invoke-WebRequest http://127.0.0.1:8787/v1/events?format=ndjson
+```
+
 ## Initial commands
 
 ```text
