@@ -49,11 +49,15 @@ func CheckWorker(input Input) Report {
 		Worktree: input.Worktree,
 		OK:       true,
 	}
-	add := func(code string, severity Severity, message string) {
+	add := func(code string, severity Severity, message string, claimID ...string) {
 		if severity == SeverityWarning {
 			report.OK = false
 		}
-		report.Checks = append(report.Checks, Check{Code: code, Severity: severity, Message: message})
+		check := Check{Code: code, Severity: severity, Message: message}
+		if len(claimID) != 0 {
+			check.ClaimID = claimID[0]
+		}
+		report.Checks = append(report.Checks, check)
 	}
 	if samePath(input.Worker.ProjectRoot, input.Repo) {
 		add("repo_match", SeverityOK, "worker repo matches requested repo")
@@ -90,13 +94,7 @@ func CheckWorker(input Input) Report {
 			continue
 		}
 		if samePath(claim.Repo, input.Repo) || (input.Issue != "" && claim.Issue == input.Issue) {
-			report.OK = false
-			report.Checks = append(report.Checks, Check{
-				Code:     "active_claim_warning",
-				Severity: SeverityWarning,
-				Message:  "another active claim exists in the requested repo or issue scope",
-				ClaimID:  claim.ID,
-			})
+			add("active_claim_warning", SeverityWarning, "another active claim exists in the requested repo or issue scope", claim.ID)
 		}
 	}
 	return report

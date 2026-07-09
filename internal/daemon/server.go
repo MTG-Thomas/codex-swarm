@@ -30,6 +30,7 @@ type ClaimsResponse = protocol.ClaimsResponse
 type DispatchRequest = protocol.DispatchRequest
 type DispatchResponse = protocol.DispatchResponse
 type LegacyStatus = protocol.LegacyStatus
+type LegacyWorker = protocol.LegacyWorker
 type ClaimConflict = protocol.ClaimConflict
 
 type readStore interface {
@@ -138,7 +139,7 @@ func (s *Server) handleClaims(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, ClaimsResponse{
-		Claims:    claimList,
+		Claims:    protocolClaims(claimList),
 		Conflicts: findClaimConflicts(claimList, time.Now().UTC()),
 	})
 }
@@ -314,7 +315,7 @@ func (s *Server) handleLegacyStatus(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, LegacyStatus{
 		Daemon:    "running",
 		StatePath: s.statePath,
-		Workers:   workers,
+		Workers:   protocolLegacyWorkers(workers),
 	})
 }
 
@@ -386,7 +387,7 @@ func (c Client) Workers(ctx context.Context) (WorkersResponse, error) {
 		if legacyErr := c.get(ctx, "/v1/status", &legacy); legacyErr != nil {
 			return WorkersResponse{}, err
 		}
-		return WorkersResponse{Workers: summarizeWorkers(legacy.Workers)}, nil
+		return WorkersResponse{Workers: summarizeLegacyWorkers(legacy.Workers)}, nil
 	}
 	return workers, nil
 }
@@ -520,6 +521,78 @@ func summarizeWorkers(workers []store.Worker) []WorkerStatus {
 		})
 	}
 	return summaries
+}
+
+func summarizeLegacyWorkers(workers []protocol.LegacyWorker) []WorkerStatus {
+	summaries := make([]WorkerStatus, 0, len(workers))
+	for _, worker := range workers {
+		summaries = append(summaries, WorkerStatus{
+			ID:               worker.ID,
+			Status:           worker.Status,
+			Role:             worker.Role,
+			Issue:            worker.Issue,
+			ValidationOf:     worker.ValidationOf,
+			ValidationStatus: worker.ValidationStatus,
+			Worktree:         worker.Worktree,
+			ThreadID:         worker.ThreadID,
+		})
+	}
+	return summaries
+}
+
+func protocolClaims(claims []store.Claim) []protocol.Claim {
+	result := make([]protocol.Claim, 0, len(claims))
+	for _, claim := range claims {
+		result = append(result, protocol.Claim{
+			ID: claim.ID, WorkerID: claim.WorkerID, Repo: claim.Repo, Scope: claim.Scope,
+			Issue: claim.Issue, Status: string(claim.Status), Note: claim.Note,
+			ExternalWorker: claim.ExternalWorker, WorkerSource: claim.WorkerSource,
+			Blocker: claim.Blocker, Next: claim.Next, ExpiresAt: claim.ExpiresAt,
+			CreatedAt: claim.CreatedAt, UpdatedAt: claim.UpdatedAt,
+		})
+	}
+	return result
+}
+
+func protocolLegacyWorkers(workers []store.Worker) []protocol.LegacyWorker {
+	result := make([]protocol.LegacyWorker, 0, len(workers))
+	for _, worker := range workers {
+		legacy := protocol.LegacyWorker{
+			ID: worker.ID, ParentID: worker.ParentID, Role: worker.Role, Issue: worker.Issue,
+			ValidationOf: worker.ValidationOf, ValidationStatus: worker.ValidationStatus,
+			ProjectRoot: worker.ProjectRoot, Worktree: worker.Worktree, Branch: worker.Branch,
+			ThreadID: worker.ThreadID, TurnID: worker.TurnID, Engine: worker.Engine,
+			Status: string(worker.Status), Prompt: worker.Prompt, LastMessage: worker.LastMessage,
+			Report: worker.Report, CreatedAt: worker.CreatedAt, UpdatedAt: worker.UpdatedAt,
+		}
+		if worker.Lifecycle != nil {
+			legacy.Lifecycle = &protocol.LegacyLifecycle{
+				Version: worker.Lifecycle.Version,
+				Session: protocol.LegacySessionLifecycle{
+					State: string(worker.Lifecycle.Session.State), Reason: string(worker.Lifecycle.Session.Reason),
+					CompletedAt: worker.Lifecycle.Session.CompletedAt, TerminatedAt: worker.Lifecycle.Session.TerminatedAt,
+				},
+				Runtime: protocol.LegacyRuntimeLifecycle{
+					State: string(worker.Lifecycle.Runtime.State), Reason: string(worker.Lifecycle.Runtime.Reason),
+				},
+			}
+		}
+		for _, pr := range worker.PullRequests {
+			legacy.PullRequests = append(legacy.PullRequests, protocol.LegacyPullRequest{
+				URL: pr.URL, State: pr.State, BaseBranch: pr.BaseBranch, HeadBranch: pr.HeadBranch,
+				ReviewDecision: pr.ReviewDecision, CheckSummary: pr.CheckSummary,
+				CodeRabbitStatus: pr.CodeRabbitStatus, NextAction: pr.NextAction, UpdatedAt: pr.UpdatedAt,
+			})
+		}
+		for _, event := range worker.Events {
+			legacy.Events = append(legacy.Events, protocol.LegacyEvent{
+				At: event.At, Type: event.Type, Message: event.Message, From: event.From,
+				To: event.To, Issue: event.Issue, WorkerID: event.WorkerID, RequestID: event.RequestID,
+			})
+		}
+		result = append(result, legacy)
+	}
+	return result
 }
 
 func displayWorkerStatus(worker store.Worker) string {

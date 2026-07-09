@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ import (
 type memoryStore struct {
 	workers []store.Worker
 	claims  []store.Claim
+	events  []store.Event
 }
 
 func (m *memoryStore) SaveWorkers(workers ...store.Worker) error {
@@ -36,6 +38,10 @@ func (m *memoryStore) ListWorkers() ([]store.Worker, error) {
 
 func (m *memoryStore) ListClaims() ([]store.Claim, error) {
 	return m.claims, nil
+}
+
+func (m *memoryStore) ListEvents() ([]store.Event, error) {
+	return m.events, nil
 }
 
 type fakeIssueProvider struct {
@@ -127,6 +133,39 @@ func TestServerLegacyStatusShape(t *testing.T) {
 	}
 	if status.Daemon != "running" || status.StatePath != "state.json" || len(status.Workers) != 1 || status.Workers[0].ID != "w-legacy" {
 		t.Fatalf("legacy status = %#v", status)
+	}
+}
+
+func TestProtocolLegacyWorkersPreserveJSONShape(t *testing.T) {
+	now := time.Date(2026, 7, 9, 19, 0, 0, 0, time.UTC)
+	lc := lifecycle.NewWorkerLifecycle()
+	worker := store.Worker{
+		ID: "w-legacy", ParentID: "w-parent", Role: "tester", Issue: "owner/repo#58",
+		ValidationOf: "w-implementer", ValidationStatus: "passed", ProjectRoot: "/repo",
+		Worktree: "/repo/worktree", Branch: "codex/test", ThreadID: "thread-1", TurnID: "turn-1",
+		Engine: "appserver", Status: store.WorkerRunning, Lifecycle: &lc, Prompt: "verify",
+		LastMessage: "working", Report: "done", CreatedAt: now, UpdatedAt: now,
+		PullRequests: []store.PullRequestState{{URL: "https://example.test/pr/58", State: "OPEN", UpdatedAt: now}},
+		Events:       []store.Event{{At: now, Type: "message.sent", Message: "hello", WorkerID: "w-legacy"}},
+	}
+
+	wantJSON, err := json.Marshal(worker)
+	if err != nil {
+		t.Fatalf("marshal store worker: %v", err)
+	}
+	gotJSON, err := json.Marshal(protocolLegacyWorkers([]store.Worker{worker})[0])
+	if err != nil {
+		t.Fatalf("marshal protocol worker: %v", err)
+	}
+	var want, got any
+	if err := json.Unmarshal(wantJSON, &want); err != nil {
+		t.Fatalf("decode store worker: %v", err)
+	}
+	if err := json.Unmarshal(gotJSON, &got); err != nil {
+		t.Fatalf("decode protocol worker: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("protocol worker JSON = %s, want %s", gotJSON, wantJSON)
 	}
 }
 
@@ -409,6 +448,27 @@ func TestServerEventsSnapshotFiltersWorker(t *testing.T) {
 	}
 }
 
+func TestServerEventsSnapshotUsesStoredEvents(t *testing.T) {
+	now := time.Date(2026, 7, 9, 18, 30, 0, 0, time.UTC)
+	server := NewServer("state.json", &memoryStore{
+		workers: []store.Worker{{ID: "w-1", Issue: "MTG-Thomas/codex-swarm#53"}, {ID: "w-2"}},
+		events: []store.Event{
+			{At: now, WorkerID: "w-1", Type: "message.received", Message: "stored"},
+			{At: now, WorkerID: "w-2", Type: "message.received", Message: "other"},
+		},
+	})
+
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/events?worker=w-1", nil)
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want %d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"message":"stored"`) || strings.Contains(rec.Body.String(), `"message":"other"`) {
+		t.Fatalf("stored events response = %s", rec.Body.String())
+	}
+}
+
 func TestClientStatus(t *testing.T) {
 	server := httptest.NewServer(NewServer("state.json", &memoryStore{workers: []store.Worker{{ID: "w-1"}}}).Handler())
 	defer server.Close()
@@ -433,7 +493,7 @@ func TestClientFallsBackToLegacyStatus(t *testing.T) {
 		writeJSON(w, LegacyStatus{
 			Daemon:    "running",
 			StatePath: "legacy-state.json",
-			Workers:   []store.Worker{{ID: "w-legacy", Status: store.WorkerIdle, ThreadID: "thread-legacy"}},
+			Workers:   []LegacyWorker{{ID: "w-legacy", Status: "idle", ThreadID: "thread-legacy"}},
 		})
 	})
 	server := httptest.NewServer(handler)

@@ -47,7 +47,7 @@ func (t Transcript) Text() string {
 	if strings.TrimSpace(worker.Report) != "" {
 		fmt.Fprintf(&b, "report=%s\n", worker.Report)
 	}
-	for _, pr := range worker.PullRequests {
+	for _, pr := range t.PullRequests {
 		fmt.Fprintf(&b, "pr=%s state=%s review=%s checks=%s next=%s\n", pr.URL, dash(pr.State), dash(pr.ReviewDecision), dash(pr.CheckSummary), dash(pr.NextAction))
 	}
 	for _, event := range t.Events {
