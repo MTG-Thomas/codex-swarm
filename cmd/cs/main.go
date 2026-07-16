@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/MTG-Thomas/codex-swarm/internal/appserver"
+	bf "github.com/MTG-Thomas/codex-swarm/internal/bifrost"
 	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
 	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
 	"github.com/MTG-Thomas/codex-swarm/internal/launchbundle"
@@ -34,6 +35,8 @@ type cli struct {
 	err             io.Writer
 	now             func() time.Time
 	appserverRunner appserverRunner
+	bifrostRecords  bf.RecordStore
+	bifrostRunner   bf.CommandRunner
 }
 
 type appserverRunner interface {
@@ -79,6 +82,8 @@ func (c cli) run(args []string) error {
 		return c.worker(args[1:])
 	case "claim":
 		return c.claim(args[1:])
+	case "bifrost":
+		return c.bifrost(args[1:])
 	case "trace":
 		return c.trace(args[1:])
 	case "janitor":
