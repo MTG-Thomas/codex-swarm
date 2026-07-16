@@ -1,6 +1,8 @@
 package store
 
 import (
+	"bytes"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/MTG-Thomas/codex-swarm/internal/lifecycle"
+	_ "modernc.org/sqlite"
 )
 
 const stateLockTimeout = 5 * time.Second
@@ -20,6 +23,7 @@ const stateLockTimeout = 5 * time.Second
 type JSONStore struct {
 	path string
 	mu   sync.Mutex
+	tx   *sql.Tx
 }
 
 type stateFile struct {
@@ -31,9 +35,11 @@ type stateFile struct {
 	TraceLanes         []TraceLane         `json:"trace_lanes,omitempty"`
 	GateEvidence       []GateEvidence      `json:"gate_evidence,omitempty"`
 	CompletedMutations []CompletedMutation `json:"completed_mutations,omitempty"`
+	BifrostChangesets  []BifrostChangeset  `json:"bifrost_changesets,omitempty"`
 }
 
-// NewJSONStore returns a file-backed store rooted at path.
+// NewJSONStore returns a SQLite-backed store rooted at path. The historical
+// name is retained as a source-compatibility contract for existing callers.
 func NewJSONStore(path string) *JSONStore {
 	return &JSONStore{path: path}
 }
@@ -668,6 +674,60 @@ func (s *JSONStore) ListAgents() ([]Agent, error) {
 	return agents, err
 }
 
+// SaveBifrostChangeset inserts or replaces one Bifrost changeset record.
+func (s *JSONStore) SaveBifrostChangeset(changeset BifrostChangeset) error {
+	return s.withStateLock(func() error {
+		state, err := s.read()
+		if err != nil {
+			return err
+		}
+		for i := range state.BifrostChangesets {
+			if state.BifrostChangesets[i].ID == changeset.ID {
+				state.BifrostChangesets[i] = changeset
+				return s.write(state)
+			}
+		}
+		state.BifrostChangesets = append(state.BifrostChangesets, changeset)
+		return s.write(state)
+	})
+}
+
+// GetBifrostChangeset returns one Bifrost changeset by ID.
+func (s *JSONStore) GetBifrostChangeset(id string) (BifrostChangeset, error) {
+	var got BifrostChangeset
+	err := s.withStateLock(func() error {
+		state, err := s.read()
+		if err != nil {
+			return err
+		}
+		for _, changeset := range state.BifrostChangesets {
+			if changeset.ID == id {
+				got = changeset
+				return nil
+			}
+		}
+		return fmt.Errorf("%w: %s", ErrBifrostChangesetNotFound, id)
+	})
+	return got, err
+}
+
+// ListBifrostChangesets returns changesets sorted by most recent update.
+func (s *JSONStore) ListBifrostChangesets() ([]BifrostChangeset, error) {
+	var changesets []BifrostChangeset
+	err := s.withStateLock(func() error {
+		state, err := s.read()
+		if err != nil {
+			return err
+		}
+		changesets = append([]BifrostChangeset(nil), state.BifrostChangesets...)
+		sort.Slice(changesets, func(i, j int) bool {
+			return changesets[i].UpdatedAt.After(changesets[j].UpdatedAt)
+		})
+		return nil
+	})
+	return changesets, err
+}
+
 func (s *JSONStore) withStateLock(fn func() error) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -676,29 +736,41 @@ func (s *JSONStore) withStateLock(fn func() error) (err error) {
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if releaseErr := lock.release(); err == nil && releaseErr != nil {
-			err = releaseErr
-		}
-	}()
-
-	return fn()
+	if err := s.ensureSQLite(); err != nil {
+		_ = lock.release()
+		return err
+	}
+	if err := lock.release(); err != nil {
+		return err
+	}
+	db, err := openSQLite(s.path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin SQLite state transaction %s: %w", s.path, err)
+	}
+	s.tx = tx
+	defer func() { s.tx = nil }()
+	if err := fn(); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit SQLite state transaction %s: %w", s.path, err)
+	}
+	return nil
 }
 
 func (s *JSONStore) read() (stateFile, error) {
-	data, err := os.ReadFile(s.path)
+	if s.tx == nil {
+		return stateFile{}, errors.New("read state outside SQLite transaction")
+	}
+	state, err := readState(s.tx)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return stateFile{}, nil
-		}
-		return stateFile{}, fmt.Errorf("read state %s: %w", s.path, err)
-	}
-	if len(data) == 0 {
-		return stateFile{}, nil
-	}
-	var state stateFile
-	if err := json.Unmarshal(data, &state); err != nil {
-		return stateFile{}, fmt.Errorf("parse state %s: %w", s.path, err)
+		return stateFile{}, fmt.Errorf("read SQLite state %s: %w", s.path, err)
 	}
 	for i := range state.Workers {
 		normalizeWorkerLifecycleForRead(&state.Workers[i])
@@ -707,23 +779,228 @@ func (s *JSONStore) read() (stateFile, error) {
 }
 
 func (s *JSONStore) write(state stateFile) error {
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode state: %w", err)
+	if s.tx == nil {
+		return errors.New("write state outside SQLite transaction")
 	}
-	data = append(data, '\n')
+	if err := writeState(s.tx, state); err != nil {
+		return fmt.Errorf("write SQLite state %s: %w", s.path, err)
+	}
+	return nil
+}
 
-	tmp := fmt.Sprintf("%s.tmp.%d", s.path, os.Getpid())
-	if err := writeFileDurably(tmp, data); err != nil {
+const sqliteHeader = "SQLite format 3\x00"
+
+func (s *JSONStore) ensureSQLite() error {
+	data, err := os.ReadFile(s.path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect state %s: %w", s.path, err)
+	}
+	if err == nil && bytes.HasPrefix(data, []byte(sqliteHeader)) {
+		return nil
+	}
+	if errors.Is(err, os.ErrNotExist) || len(data) == 0 {
+		db, openErr := openSQLite(s.path)
+		if openErr != nil {
+			return openErr
+		}
+		return db.Close()
+	}
+
+	var legacy stateFile
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return fmt.Errorf("parse legacy JSON state %s before migration: %w", s.path, err)
+	}
+	backup := s.path + ".legacy.json"
+	if existing, readErr := os.ReadFile(backup); readErr == nil {
+		if !bytes.Equal(existing, data) {
+			return fmt.Errorf("legacy backup %s already exists with different contents", backup)
+		}
+	} else if errors.Is(readErr, os.ErrNotExist) {
+		if err := writeFileDurably(backup, data); err != nil {
+			return fmt.Errorf("back up legacy state to %s: %w", backup, err)
+		}
+		if err := syncParentDir(backup); err != nil {
+			return fmt.Errorf("sync legacy backup directory: %w", err)
+		}
+	} else {
+		return fmt.Errorf("inspect legacy backup %s: %w", backup, readErr)
+	}
+
+	tmp := fmt.Sprintf("%s.migrate.%d", s.path, os.Getpid())
+	_ = os.Remove(tmp)
+	db, err := openSQLite(tmp)
+	if err != nil {
+		return fmt.Errorf("create migration database: %w", err)
+	}
+	tx, err := db.Begin()
+	if err == nil {
+		err = writeState(tx, legacy)
+	}
+	if err == nil {
+		err = tx.Commit()
+	} else if tx != nil {
+		_ = tx.Rollback()
+	}
+	closeErr := db.Close()
+	if err != nil || closeErr != nil {
 		_ = os.Remove(tmp)
-		return fmt.Errorf("write temp state: %w", err)
+		return fmt.Errorf("import legacy state into SQLite: %w", errors.Join(err, closeErr))
 	}
 	if err := replaceStateFile(tmp, s.path); err != nil {
 		_ = os.Remove(tmp)
-		return fmt.Errorf("replace state: %w", err)
+		return fmt.Errorf("activate migrated SQLite state: %w", err)
 	}
 	if err := syncParentDir(s.path); err != nil {
-		return fmt.Errorf("sync state dir: %w", err)
+		return fmt.Errorf("sync migrated state directory: %w", err)
+	}
+	return nil
+}
+
+func openSQLite(path string) (*sql.DB, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create state directory: %w", err)
+	}
+	// Immediate transactions acquire the write reservation before callers read
+	// their mutation snapshot, preventing stale read/modify/write races.
+	db, err := sql.Open("sqlite", path+"?_txlock=immediate")
+	if err != nil {
+		return nil, fmt.Errorf("open SQLite state %s: %w", path, err)
+	}
+	db.SetMaxOpenConns(1)
+	for _, statement := range []string{
+		`PRAGMA busy_timeout = 5000`,
+		`PRAGMA journal_mode = WAL`,
+		`PRAGMA synchronous = FULL`,
+		`CREATE TABLE IF NOT EXISTS records (
+			kind TEXT NOT NULL,
+			id TEXT NOT NULL,
+			payload BLOB NOT NULL,
+			updated_at TEXT NOT NULL,
+			PRIMARY KEY(kind, id)
+		)`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("initialize SQLite state %s: %w", path, err)
+		}
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("secure SQLite state %s: %w", path, err)
+	}
+	return db, nil
+}
+
+type sqlExecutor interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+func readState(q sqlExecutor) (stateFile, error) {
+	rows, err := q.Query(`SELECT kind, payload FROM records`)
+	if err != nil {
+		return stateFile{}, err
+	}
+	defer rows.Close()
+	var state stateFile
+	for rows.Next() {
+		var kind string
+		var payload []byte
+		if err := rows.Scan(&kind, &payload); err != nil {
+			return stateFile{}, err
+		}
+		if err := appendRecord(&state, kind, payload); err != nil {
+			return stateFile{}, err
+		}
+	}
+	return state, rows.Err()
+}
+
+func appendRecord(state *stateFile, kind string, payload []byte) error {
+	switch kind {
+	case "worker":
+		return unmarshalAppend(payload, &state.Workers)
+	case "schedule":
+		return unmarshalAppend(payload, &state.Schedules)
+	case "claim":
+		return unmarshalAppend(payload, &state.Claims)
+	case "agent":
+		return unmarshalAppend(payload, &state.Agents)
+	case "trace_lane":
+		return unmarshalAppend(payload, &state.TraceLanes)
+	case "gate_evidence":
+		return unmarshalAppend(payload, &state.GateEvidence)
+	case "bifrost_changeset":
+		return unmarshalAppend(payload, &state.BifrostChangesets)
+	case "events":
+		return json.Unmarshal(payload, &state.Events)
+	case "completed_mutations":
+		return json.Unmarshal(payload, &state.CompletedMutations)
+	default:
+		return nil
+	}
+}
+
+func unmarshalAppend[T any](payload []byte, target *[]T) error {
+	var value T
+	if err := json.Unmarshal(payload, &value); err != nil {
+		return err
+	}
+	*target = append(*target, value)
+	return nil
+}
+
+func writeState(q sqlExecutor, state stateFile) error {
+	records := make(map[string]map[string]any)
+	add := func(kind, id string, value any) {
+		if records[kind] == nil {
+			records[kind] = make(map[string]any)
+		}
+		records[kind][id] = value
+	}
+	for _, value := range state.Workers {
+		add("worker", value.ID, value)
+	}
+	for _, value := range state.Schedules {
+		add("schedule", value.ID, value)
+	}
+	for _, value := range state.Claims {
+		add("claim", value.ID, value)
+	}
+	for _, value := range state.Agents {
+		add("agent", value.ID, value)
+	}
+	for _, value := range state.TraceLanes {
+		add("trace_lane", value.Agent, value)
+	}
+	for _, value := range state.GateEvidence {
+		add("gate_evidence", value.ID, value)
+	}
+	for _, value := range state.BifrostChangesets {
+		add("bifrost_changeset", value.ID, value)
+	}
+	add("events", "singleton", state.Events)
+	add("completed_mutations", "singleton", state.CompletedMutations)
+
+	for kind, values := range records {
+		args := []any{kind}
+		placeholders := make([]string, 0, len(values))
+		for id, value := range values {
+			payload, err := json.Marshal(value)
+			if err != nil {
+				return err
+			}
+			if _, err := q.Exec(`INSERT INTO records(kind,id,payload,updated_at) VALUES(?,?,?,?)
+				ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at
+				WHERE records.payload <> excluded.payload`, kind, id, payload, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+				return err
+			}
+			placeholders = append(placeholders, "?")
+			args = append(args, id)
+		}
+		if _, err := q.Exec(`DELETE FROM records WHERE kind = ? AND id NOT IN (`+strings.Join(placeholders, ",")+`)`, args...); err != nil {
+			return err
+		}
 	}
 	return nil
 }
