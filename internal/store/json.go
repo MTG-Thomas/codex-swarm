@@ -631,6 +631,48 @@ func (s *JSONStore) SaveBifrostChangeset(changeset BifrostChangeset) error {
 	})
 }
 
+// UpdateBifrostChangeset mutates one Bifrost changeset atomically.
+func (s *JSONStore) UpdateBifrostChangeset(id string, mutate func(*BifrostChangeset) error) (BifrostChangeset, error) {
+	var updated BifrostChangeset
+	err := s.withStateLock(func() error {
+		state, err := s.read()
+		if err != nil {
+			return err
+		}
+		for i := range state.BifrostChangesets {
+			if state.BifrostChangesets[i].ID != id {
+				continue
+			}
+			if err := mutate(&state.BifrostChangesets[i]); err != nil {
+				return err
+			}
+			state.BifrostChangesets[i].ID = id
+			updated = state.BifrostChangesets[i]
+			return s.upsert("bifrost_changeset", id, updated)
+		}
+		return fmt.Errorf("%w: %s", ErrBifrostChangesetNotFound, id)
+	})
+	return updated, err
+}
+
+// DeleteBifrostChangeset removes one Bifrost changeset by ID.
+func (s *JSONStore) DeleteBifrostChangeset(id string) error {
+	return s.withStateLock(func() error {
+		result, err := s.tx.Exec(`DELETE FROM records WHERE kind = ? AND id = ?`, "bifrost_changeset", id)
+		if err != nil {
+			return fmt.Errorf("delete SQLite bifrost_changeset %s: %w", id, err)
+		}
+		deleted, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("confirm deleted SQLite bifrost_changeset %s: %w", id, err)
+		}
+		if deleted == 0 {
+			return fmt.Errorf("%w: %s", ErrBifrostChangesetNotFound, id)
+		}
+		return nil
+	})
+}
+
 // GetBifrostChangeset returns one Bifrost changeset by ID.
 func (s *JSONStore) GetBifrostChangeset(id string) (BifrostChangeset, error) {
 	var got BifrostChangeset
@@ -859,19 +901,20 @@ type sqlExecutor interface {
 }
 
 func readState(q sqlExecutor) (state stateFile, err error) {
-	rows, err := q.Query(`SELECT kind, payload FROM records`)
+	rows, err := q.Query(`SELECT kind, id, payload FROM records`)
 	if err != nil {
 		return stateFile{}, err
 	}
 	defer func() { err = errors.Join(err, rows.Close()) }()
 	for rows.Next() {
 		var kind string
+		var id string
 		var payload []byte
-		if err := rows.Scan(&kind, &payload); err != nil {
-			return stateFile{}, err
+		if err := rows.Scan(&kind, &id, &payload); err != nil {
+			return stateFile{}, fmt.Errorf("scan SQLite record kind=%q id=%q: %w", kind, id, err)
 		}
 		if err := appendRecord(&state, kind, payload); err != nil {
-			return stateFile{}, err
+			return stateFile{}, fmt.Errorf("decode SQLite record kind=%q id=%q: %w", kind, id, err)
 		}
 	}
 	return state, rows.Err()
@@ -969,12 +1012,12 @@ func writeState(q sqlExecutor, state stateFile) error {
 		for id, value := range values {
 			payload, err := json.Marshal(value)
 			if err != nil {
-				return err
+				return fmt.Errorf("marshal replacement record kind=%q id=%q: %w", kind, id, err)
 			}
 			if _, err := q.Exec(`INSERT INTO records(kind,id,payload,updated_at) VALUES(?,?,?,?)
 				ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at
 				WHERE records.payload <> excluded.payload`, kind, id, payload, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-				return err
+				return fmt.Errorf("replace SQLite record kind=%q id=%q: %w", kind, id, err)
 			}
 		}
 	}

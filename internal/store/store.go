@@ -339,4 +339,9 @@ type Store interface {
 	SaveWorker(worker Worker) error
 	GetWorker(id string) (Worker, error)
 	ListWorkers() ([]Worker, error)
+	SaveBifrostChangeset(changeset BifrostChangeset) error
+	UpdateBifrostChangeset(id string, mutate func(*BifrostChangeset) error) (BifrostChangeset, error)
+	DeleteBifrostChangeset(id string) error
+	GetBifrostChangeset(id string) (BifrostChangeset, error)
+	ListBifrostChangesets() ([]BifrostChangeset, error)
 }

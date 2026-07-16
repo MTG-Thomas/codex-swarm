@@ -2,6 +2,7 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,7 +18,7 @@ func TestJSONStoreMigratesLegacyJSONToSQLite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	now := time.Now().UTC().Round(0)
 	legacy := stateFile{
-		Workers:            []Worker{{ID: "w-legacy", Status: WorkerRunning, UpdatedAt: now}},
+		Workers:            []Worker{{ID: "w-legacy", Issue: "MTG-Thomas/codex-swarm#59", ProjectRoot: `C:\src\codex-swarm`, Worktree: `C:\src\codex-swarm-wt-sqlite`, ThreadID: "thread-legacy", Status: WorkerRunning, UpdatedAt: now}},
 		Schedules:          []Schedule{{ID: "sched-legacy", Repo: "/repo", Prompt: "steward", Cron: "0 * * * *", Enabled: true, CreatedAt: now, UpdatedAt: now}},
 		Claims:             []Claim{{ID: "claim-legacy", WorkerID: "w-legacy", Repo: "/repo", Scope: "internal/store", Issue: "MTG-Thomas/codex-swarm#59", Status: ClaimActive, Note: "migration", ExpiresAt: now.Add(time.Hour), CreatedAt: now, UpdatedAt: now}},
 		Agents:             []Agent{{ID: "agent-legacy", Name: "SQLite steward", Role: "implementer", Current: true, CreatedAt: now, UpdatedAt: now}},
@@ -43,7 +44,7 @@ func TestJSONStoreMigratesLegacyJSONToSQLite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetWorker() error = %v", err)
 	}
-	if worker.ID != "w-legacy" || worker.Lifecycle == nil {
+	if worker.ID != "w-legacy" || worker.Issue != "MTG-Thomas/codex-swarm#59" || worker.ProjectRoot != `C:\src\codex-swarm` || worker.Worktree != `C:\src\codex-swarm-wt-sqlite` || worker.ThreadID != "thread-legacy" || worker.Lifecycle == nil {
 		t.Fatalf("GetWorker() = %#v", worker)
 	}
 	changeset, err := st.GetBifrostChangeset("chg-legacy")
@@ -160,7 +161,7 @@ func TestSaveWorkerMutatesOnlyTargetRecord(t *testing.T) {
 		}
 	}()
 	var payload []byte
-	if err := db.QueryRow(`SELECT payload FROM records WHERE kind = ? AND id = ?`, "worker", worker.ID).Scan(&payload); err != nil {
+	if err := db.QueryRowContext(context.Background(), `SELECT payload FROM records WHERE kind = ? AND id = ?`, "worker", worker.ID).Scan(&payload); err != nil {
 		t.Fatal(err)
 	}
 	var got Worker
@@ -169,6 +170,13 @@ func TestSaveWorkerMutatesOnlyTargetRecord(t *testing.T) {
 	}
 	if got.Status != WorkerDone {
 		t.Fatalf("worker status = %q, want %q", got.Status, WorkerDone)
+	}
+	var malformed []byte
+	if err := db.QueryRowContext(context.Background(), `SELECT payload FROM records WHERE kind = ? AND id = ?`, "schedule", "malformed").Scan(&malformed); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(malformed, []byte(`{`)) {
+		t.Fatalf("malformed schedule payload = %q, want byte-exact %q", malformed, []byte(`{`))
 	}
 }
 
@@ -183,10 +191,14 @@ func TestBifrostChangesetCRUD(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	older.State = "committed"
-	older.CommitSHA = "abc123"
-	if err := st.SaveBifrostChangeset(older); err != nil {
-		t.Fatal(err)
+	older, err := st.UpdateBifrostChangeset(older.ID, func(changeset *BifrostChangeset) error {
+		changeset.State = "committed"
+		changeset.CommitSHA = "abc123"
+		changeset.ID = "must-not-change"
+		return nil
+	})
+	if err != nil || older.ID != "chg-1" {
+		t.Fatalf("UpdateBifrostChangeset() = %#v, %v", older, err)
 	}
 	got, err := st.GetBifrostChangeset("chg-1")
 	if err != nil || got.CommitSHA != "abc123" {
@@ -199,6 +211,15 @@ func TestBifrostChangesetCRUD(t *testing.T) {
 	_, err = st.GetBifrostChangeset("missing")
 	if !errors.Is(err, ErrBifrostChangesetNotFound) {
 		t.Fatalf("missing error = %v", err)
+	}
+	if err := st.DeleteBifrostChangeset("chg-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.GetBifrostChangeset("chg-1"); !errors.Is(err, ErrBifrostChangesetNotFound) {
+		t.Fatalf("deleted changeset error = %v", err)
+	}
+	if err := st.DeleteBifrostChangeset("chg-1"); !errors.Is(err, ErrBifrostChangesetNotFound) {
+		t.Fatalf("delete missing changeset error = %v", err)
 	}
 }
 
