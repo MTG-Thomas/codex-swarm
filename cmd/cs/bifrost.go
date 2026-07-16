@@ -14,7 +14,13 @@ import (
 
 func (c cli) bifrost(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: cs bifrost <inspect|begin|show|write|delete|diff|validate|commit|abort>")
+		return errors.New("usage: cs bifrost <deployment|workspace|inspect|begin|show|write|delete|diff|validate|commit|abort>")
+	}
+	if args[0] == "deployment" {
+		return c.bifrostDeployment(args[1:])
+	}
+	if args[0] == "workspace" {
+		return c.bifrost(args[1:])
 	}
 	fs := c.flagSet("bifrost " + args[0])
 	target := fs.String("target", "", "Bifrost instance URL recorded with the changeset")
