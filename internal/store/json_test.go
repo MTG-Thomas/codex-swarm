@@ -1,7 +1,6 @@
 package store
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -294,21 +293,17 @@ func TestJSONStoreSavesWorkerLifecycle(t *testing.T) {
 		t.Fatalf("SaveWorker() error = %v", err)
 	}
 
-	data, err := os.ReadFile(path)
+	workers, err := NewJSONStore(path).ListWorkers()
 	if err != nil {
-		t.Fatalf("ReadFile(%q) error = %v", path, err)
+		t.Fatalf("ListWorkers() error = %v", err)
 	}
-	var state stateFile
-	if err := json.Unmarshal(data, &state); err != nil {
-		t.Fatalf("Unmarshal(state) error = %v\n%s", err, string(data))
+	if len(workers) != 1 {
+		t.Fatalf("workers count = %d, want 1", len(workers))
 	}
-	if len(state.Workers) != 1 {
-		t.Fatalf("workers count = %d, want 1", len(state.Workers))
-	}
-	if state.Workers[0].Lifecycle == nil {
+	if workers[0].Lifecycle == nil {
 		t.Fatal("stored Lifecycle = nil, want lifecycle persisted")
 	}
-	if got := state.Workers[0].Lifecycle.DeriveStatus(); got != lifecycle.DisplayWorking {
+	if got := workers[0].Lifecycle.DeriveStatus(); got != lifecycle.DisplayWorking {
 		t.Fatalf("stored Lifecycle.DeriveStatus() = %q, want %q", got, lifecycle.DisplayWorking)
 	}
 }
@@ -693,27 +688,28 @@ func TestJSONStoreConcurrentMutationsPreserveNonConflictingUpdates(t *testing.T)
 		t.FailNow()
 	}
 
-	data, err := os.ReadFile(path)
+	s := NewJSONStore(path)
+	storedWorkers, err := s.ListWorkers()
 	if err != nil {
-		t.Fatalf("ReadFile(%q) error = %v", path, err)
+		t.Fatalf("ListWorkers() error = %v", err)
 	}
-	var state stateFile
-	if err := json.Unmarshal(data, &state); err != nil {
-		t.Fatalf("final state is not parseable JSON: %v\n%s", err, string(data))
+	storedClaims, err := s.ListClaims()
+	if err != nil {
+		t.Fatalf("ListClaims() error = %v", err)
 	}
-	if len(state.Workers) != pairs {
-		t.Fatalf("final workers count = %d, want %d; state = %s", len(state.Workers), pairs, string(data))
+	if len(storedWorkers) != pairs {
+		t.Fatalf("final workers count = %d, want %d", len(storedWorkers), pairs)
 	}
-	if len(state.Claims) != pairs {
-		t.Fatalf("final claims count = %d, want %d; state = %s", len(state.Claims), pairs, string(data))
+	if len(storedClaims) != pairs {
+		t.Fatalf("final claims count = %d, want %d", len(storedClaims), pairs)
 	}
 
 	workers := map[string]bool{}
-	for _, worker := range state.Workers {
+	for _, worker := range storedWorkers {
 		workers[worker.ID] = true
 	}
 	claims := map[string]bool{}
-	for _, claim := range state.Claims {
+	for _, claim := range storedClaims {
 		claims[claim.ID] = true
 	}
 	for i := 0; i < pairs; i++ {
@@ -893,19 +889,15 @@ func TestJSONStoreMultiContenderMalformedStaleLockRecovery(t *testing.T) {
 		t.FailNow()
 	}
 
-	data, err := os.ReadFile(path)
+	storedWorkers, err := NewJSONStore(path).ListWorkers()
 	if err != nil {
-		t.Fatalf("ReadFile(%q) error = %v", path, err)
+		t.Fatalf("ListWorkers() error = %v", err)
 	}
-	var state stateFile
-	if err := json.Unmarshal(data, &state); err != nil {
-		t.Fatalf("final state is not parseable JSON: %v\n%s", err, string(data))
-	}
-	if len(state.Workers) != workers {
-		t.Fatalf("final workers count = %d, want %d; state = %s", len(state.Workers), workers, string(data))
+	if len(storedWorkers) != workers {
+		t.Fatalf("final workers count = %d, want %d", len(storedWorkers), workers)
 	}
 	seen := map[string]bool{}
-	for _, worker := range state.Workers {
+	for _, worker := range storedWorkers {
 		seen[worker.ID] = true
 	}
 	for i := 0; i < workers; i++ {
@@ -945,19 +937,19 @@ func TestJSONStoreReplacesExistingTargetWithParseableState(t *testing.T) {
 		t.Fatalf("SaveClaim(second) error = %v", err)
 	}
 
-	data, err := os.ReadFile(path)
+	workers, err := s.ListWorkers()
 	if err != nil {
-		t.Fatalf("ReadFile(%q) error = %v", path, err)
+		t.Fatalf("ListWorkers() error = %v", err)
 	}
-	var state stateFile
-	if err := json.Unmarshal(data, &state); err != nil {
-		t.Fatalf("final state is not parseable JSON: %v\n%s", err, string(data))
+	claims, err := s.ListClaims()
+	if err != nil {
+		t.Fatalf("ListClaims() error = %v", err)
 	}
-	if len(state.Workers) != 1 || state.Workers[0].ID != "w-first" {
-		t.Fatalf("workers = %#v, want first worker preserved", state.Workers)
+	if len(workers) != 1 || workers[0].ID != "w-first" {
+		t.Fatalf("workers = %#v, want first worker preserved", workers)
 	}
-	if len(state.Claims) != 1 || state.Claims[0].ID != "c-second" {
-		t.Fatalf("claims = %#v, want second claim installed", state.Claims)
+	if len(claims) != 1 || claims[0].ID != "c-second" {
+		t.Fatalf("claims = %#v, want second claim installed", claims)
 	}
 }
 

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -8,10 +9,11 @@ import (
 )
 
 var (
-	ErrWorkerNotFound = errors.New("worker not found")
-	ErrClaimNotFound  = errors.New("claim not found")
-	ErrAgentNotFound  = errors.New("agent not found")
-	ErrTraceNotFound  = errors.New("trace lane not found")
+	ErrWorkerNotFound           = errors.New("worker not found")
+	ErrClaimNotFound            = errors.New("claim not found")
+	ErrAgentNotFound            = errors.New("agent not found")
+	ErrTraceNotFound            = errors.New("trace lane not found")
+	ErrBifrostChangesetNotFound = errors.New("bifrost changeset not found")
 )
 
 const (
@@ -317,9 +319,29 @@ type Agent struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// BifrostChangeset records one remotely coordinated Bifrost workspace change.
+type BifrostChangeset struct {
+	ID                string          `json:"id"`
+	WorkerID          string          `json:"worker_id"`
+	Target            string          `json:"target"`
+	Scope             string          `json:"scope"`
+	BaseRevision      string          `json:"base_revision,omitempty"`
+	RemoteChangesetID string          `json:"remote_changeset_id,omitempty"`
+	State             string          `json:"state"`
+	Validation        json.RawMessage `json:"validation,omitempty"`
+	CommitSHA         string          `json:"commit_sha,omitempty"`
+	CreatedAt         time.Time       `json:"created_at"`
+	UpdatedAt         time.Time       `json:"updated_at"`
+}
+
 // Store is the minimal worker store interface used by simple consumers.
 type Store interface {
 	SaveWorker(worker Worker) error
 	GetWorker(id string) (Worker, error)
 	ListWorkers() ([]Worker, error)
+	SaveBifrostChangeset(changeset BifrostChangeset) error
+	UpdateBifrostChangeset(id string, mutate func(*BifrostChangeset) error) (BifrostChangeset, error)
+	DeleteBifrostChangeset(id string) error
+	GetBifrostChangeset(id string) (BifrostChangeset, error)
+	ListBifrostChangesets() ([]BifrostChangeset, error)
 }
