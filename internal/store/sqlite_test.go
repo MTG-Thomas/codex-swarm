@@ -127,3 +127,29 @@ func TestBifrostChangesetCRUD(t *testing.T) {
 		t.Fatalf("missing error = %v", err)
 	}
 }
+
+func TestWriteStateDeletesLastRecordOfKind(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	s := NewJSONStore(path)
+	now := time.Date(2026, 7, 16, 18, 0, 0, 0, time.UTC)
+	if err := s.SaveClaim(Claim{ID: "claim-1", WorkerID: "worker-1", Repo: "/repo", Scope: "features", Status: ClaimActive, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("SaveClaim() error = %v", err)
+	}
+	if err := s.withStateLock(func() error {
+		state, err := s.read()
+		if err != nil {
+			return err
+		}
+		state.Claims = nil
+		return s.write(state)
+	}); err != nil {
+		t.Fatalf("clear final claim error = %v", err)
+	}
+	claims, err := s.ListClaims()
+	if err != nil {
+		t.Fatalf("ListClaims() error = %v", err)
+	}
+	if len(claims) != 0 {
+		t.Fatalf("ListClaims() = %#v, want empty", claims)
+	}
+}

@@ -732,16 +732,22 @@ func (s *JSONStore) withStateLock(fn func() error) (err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	lock, err := acquireStateLock(s.path)
+	isSQLite, err := hasSQLiteHeader(s.path)
 	if err != nil {
 		return err
 	}
-	if err := s.ensureSQLite(); err != nil {
-		_ = lock.release()
-		return err
-	}
-	if err := lock.release(); err != nil {
-		return err
+	if !isSQLite {
+		lock, err := acquireStateLock(s.path)
+		if err != nil {
+			return err
+		}
+		if err := s.ensureSQLite(); err != nil {
+			_ = lock.release()
+			return err
+		}
+		if err := lock.release(); err != nil {
+			return err
+		}
 	}
 	db, err := openSQLite(s.path)
 	if err != nil {
@@ -789,6 +795,23 @@ func (s *JSONStore) write(state stateFile) error {
 }
 
 const sqliteHeader = "SQLite format 3\x00"
+
+func hasSQLiteHeader(path string) (bool, error) {
+	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect state %s: %w", path, err)
+	}
+	defer file.Close()
+	header := make([]byte, len(sqliteHeader))
+	n, err := io.ReadFull(file, header)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return false, fmt.Errorf("inspect state header %s: %w", path, err)
+	}
+	return n == len(header) && bytes.Equal(header, []byte(sqliteHeader)), nil
+}
 
 func (s *JSONStore) ensureSQLite() error {
 	data, err := os.ReadFile(s.path)
@@ -952,6 +975,9 @@ func unmarshalAppend[T any](payload []byte, target *[]T) error {
 
 func writeState(q sqlExecutor, state stateFile) error {
 	records := make(map[string]map[string]any)
+	for _, kind := range []string{"worker", "schedule", "claim", "agent", "trace_lane", "gate_evidence", "bifrost_changeset", "events", "completed_mutations"} {
+		records[kind] = make(map[string]any)
+	}
 	add := func(kind, id string, value any) {
 		if records[kind] == nil {
 			records[kind] = make(map[string]any)
@@ -983,6 +1009,12 @@ func writeState(q sqlExecutor, state stateFile) error {
 	add("completed_mutations", "singleton", state.CompletedMutations)
 
 	for kind, values := range records {
+		if len(values) == 0 {
+			if _, err := q.Exec(`DELETE FROM records WHERE kind = ?`, kind); err != nil {
+				return err
+			}
+			continue
+		}
 		args := []any{kind}
 		placeholders := make([]string, 0, len(values))
 		for id, value := range values {
