@@ -13,7 +13,7 @@ var (
 	ErrClaimNotFound            = errors.New("claim not found")
 	ErrAgentNotFound            = errors.New("agent not found")
 	ErrTraceNotFound            = errors.New("trace lane not found")
-	ErrBifrostChangesetNotFound = errors.New("Bifrost changeset not found")
+	ErrBifrostChangesetNotFound = errors.New("bifrost changeset not found")
 )
 
 const (

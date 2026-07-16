@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -16,9 +17,16 @@ func TestJSONStoreMigratesLegacyJSONToSQLite(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	now := time.Now().UTC().Round(0)
 	legacy := stateFile{
-		Workers: []Worker{{ID: "w-legacy", Status: WorkerRunning, UpdatedAt: now}},
+		Workers:            []Worker{{ID: "w-legacy", Status: WorkerRunning, UpdatedAt: now}},
+		Schedules:          []Schedule{{ID: "sched-legacy", Repo: "/repo", Prompt: "steward", Cron: "0 * * * *", Enabled: true, CreatedAt: now, UpdatedAt: now}},
+		Claims:             []Claim{{ID: "claim-legacy", WorkerID: "w-legacy", Repo: "/repo", Scope: "internal/store", Issue: "MTG-Thomas/codex-swarm#59", Status: ClaimActive, Note: "migration", ExpiresAt: now.Add(time.Hour), CreatedAt: now, UpdatedAt: now}},
+		Agents:             []Agent{{ID: "agent-legacy", Name: "SQLite steward", Role: "implementer", Current: true, CreatedAt: now, UpdatedAt: now}},
+		Events:             []Event{{At: now, Type: "migration", Message: "legacy event", WorkerID: "w-legacy", RequestID: "request-legacy"}},
+		TraceLanes:         []TraceLane{{Agent: "agent-legacy", Stack: []TraceItem{{Title: "migration", Key: "legacy", StartedAt: now}}, Events: []TraceEvent{{At: now, Type: "push", Title: "migration", Depth: 1}}, CreatedAt: now, UpdatedAt: now}},
+		GateEvidence:       []GateEvidence{{ID: "gate-legacy", GateID: "go-test", WorkerID: "w-legacy", Repo: "/repo", Scope: "internal/store", Command: "go test ./internal/store", ExitCode: 0, Output: "ok", Commit: "abc123", CreatedAt: now}},
+		CompletedMutations: []CompletedMutation{{RequestID: "request-legacy", Command: "worker update", Fingerprint: "fingerprint-legacy", Output: "updated", CreatedAt: now}},
 		BifrostChangesets: []BifrostChangeset{{
-			ID: "chg-legacy", WorkerID: "w-legacy", Target: "dev", Scope: "features/demo", State: "opened", UpdatedAt: now,
+			ID: "chg-legacy", WorkerID: "w-legacy", Target: "dev", Scope: "features/demo", State: "opened", Validation: json.RawMessage(`{"ok":true}`), CreatedAt: now, UpdatedAt: now,
 		}},
 	}
 	data, err := json.MarshalIndent(legacy, "", "  ")
@@ -41,6 +49,28 @@ func TestJSONStoreMigratesLegacyJSONToSQLite(t *testing.T) {
 	changeset, err := st.GetBifrostChangeset("chg-legacy")
 	if err != nil || changeset.Scope != "features/demo" {
 		t.Fatalf("GetBifrostChangeset() = %#v, %v", changeset, err)
+	}
+	var migratedState stateFile
+	if err := st.withStateLock(func() error {
+		var err error
+		migratedState, err = st.read()
+		return err
+	}); err != nil {
+		t.Fatalf("read migrated state: %v", err)
+	}
+	for name, values := range map[string][2]any{
+		"schedules":           {legacy.Schedules, migratedState.Schedules},
+		"claims":              {legacy.Claims, migratedState.Claims},
+		"agents":              {legacy.Agents, migratedState.Agents},
+		"events":              {legacy.Events, migratedState.Events},
+		"trace lanes":         {legacy.TraceLanes, migratedState.TraceLanes},
+		"gate evidence":       {legacy.GateEvidence, migratedState.GateEvidence},
+		"completed mutations": {legacy.CompletedMutations, migratedState.CompletedMutations},
+		"changesets":          {legacy.BifrostChangesets, migratedState.BifrostChangesets},
+	} {
+		if !reflect.DeepEqual(values[0], values[1]) {
+			t.Errorf("migrated %s = %#v, want %#v", name, values[1], values[0])
+		}
 	}
 
 	migrated, err := os.ReadFile(path)
@@ -95,6 +125,50 @@ func TestJSONStoreConcurrentWritersUseSQLiteWithoutLostUpdates(t *testing.T) {
 	}
 	if len(workers) != writers {
 		t.Fatalf("worker count = %d, want %d", len(workers), writers)
+	}
+}
+
+func TestSaveWorkerMutatesOnlyTargetRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	st := NewJSONStore(path)
+	if err := st.SaveWorker(Worker{ID: "w-target", Status: WorkerRunning}); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO records(kind,id,payload,updated_at) VALUES(?,?,?,?)`, "schedule", "malformed", []byte(`{`), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	worker := Worker{ID: "w-target", Status: WorkerDone, UpdatedAt: time.Now().UTC()}
+	if err := st.SaveWorker(worker); err != nil {
+		t.Fatalf("SaveWorker() read or rewrote unrelated record: %v", err)
+	}
+	db, err = openSQLite(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Errorf("close SQLite: %v", err)
+		}
+	}()
+	var payload []byte
+	if err := db.QueryRow(`SELECT payload FROM records WHERE kind = ? AND id = ?`, "worker", worker.ID).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	var got Worker
+	if err := json.Unmarshal(payload, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != WorkerDone {
+		t.Fatalf("worker status = %q, want %q", got.Status, WorkerDone)
 	}
 }
 
