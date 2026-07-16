@@ -2,19 +2,23 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 
 	bf "github.com/MTG-Thomas/codex-swarm/internal/bifrost"
+	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
 
 func (c cli) bifrost(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: cs bifrost <inspect|begin|show|validate|commit|abort>")
+		return errors.New("usage: cs bifrost <inspect|begin|show|write|delete|diff|validate|commit|abort>")
 	}
 	fs := c.flagSet("bifrost " + args[0])
-	target := fs.String("target", "", "Bifrost target/profile recorded with the changeset")
+	target := fs.String("target", "", "Bifrost instance URL recorded with the changeset")
+	statePath := fs.String("state", defaultStatePath(), "codex-swarm state database path")
 	binary := fs.String("cli", "bifrost", "Bifrost CLI executable")
 	basePath := fs.String("api-base", bf.DefaultBasePath, "workspace changeset API base path")
 	scope := fs.String("scope", "", "remote workspace scope")
@@ -23,6 +27,10 @@ func (c cli) bifrost(args []string) error {
 	title := fs.String("title", "", "changeset title")
 	message := fs.String("message", "", "Git commit message")
 	push := fs.Bool("push", false, "ask Bifrost to push the activated commit")
+	path := fs.String("path", "", "workspace-relative path to stage")
+	contentFile := fs.String("file", "", "local file whose bytes should be staged")
+	expectedHash := fs.String("expected-hash", "", "expected current SHA-256 for path-level compare-and-swap")
+	forceDeactivation := fs.Bool("force-deactivation", false, "allow deletion that deactivates a registered entity")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -44,10 +52,11 @@ func (c cli) bifrost(args []string) error {
 		}
 		return writeBifrostJSON(c.out, result)
 	}
-	if c.bifrostRecords == nil {
-		return errors.New("Bifrost changeset record store is unavailable")
+	records := c.bifrostRecords
+	if records == nil {
+		records = bifrostStore{store: store.NewJSONStore(*statePath)}
 	}
-	svc := bf.Service{Client: client, Store: c.bifrostRecords, Now: c.now}
+	svc := bf.Service{Client: client, Store: records, Now: c.now}
 	var result bf.Record
 	var err error
 	switch args[0] {
@@ -56,12 +65,36 @@ func (c cli) bifrost(args []string) error {
 			return errors.New("--scope and --worker are required")
 		}
 		result, err = svc.Begin(ctx, *scope, *base, *title, *worker)
-	case "show", "validate", "abort":
+	case "show", "write", "delete", "diff", "validate", "abort":
 		if fs.NArg() != 1 {
 			return fmt.Errorf("usage: cs bifrost %s [flags] <changeset-id>", args[0])
 		}
 		if args[0] == "show" {
 			result, err = svc.Show(ctx, fs.Arg(0))
+		}
+		if args[0] == "write" || args[0] == "delete" {
+			if *path == "" {
+				return fmt.Errorf("--path is required for %s", args[0])
+			}
+			mutation := bf.FileMutation{Path: *path, Operation: args[0], ExpectedHash: *expectedHash, ForceDeactivation: *forceDeactivation}
+			if args[0] == "write" {
+				if *contentFile == "" {
+					return errors.New("--file is required for write")
+				}
+				content, readErr := os.ReadFile(*contentFile)
+				if readErr != nil {
+					return fmt.Errorf("read staged file %s: %w", *contentFile, readErr)
+				}
+				mutation.ContentBase64 = base64.StdEncoding.EncodeToString(content)
+			}
+			result, err = svc.Stage(ctx, fs.Arg(0), mutation)
+		}
+		if args[0] == "diff" {
+			diff, diffErr := svc.Diff(ctx, fs.Arg(0))
+			if diffErr != nil {
+				return diffErr
+			}
+			return writeBifrostJSON(c.out, diff)
 		}
 		if args[0] == "validate" {
 			result, err = svc.Validate(ctx, fs.Arg(0))

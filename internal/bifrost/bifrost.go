@@ -27,7 +27,7 @@ func (ExecRunner) Run(ctx context.Context, name string, args []string, stdin []b
 	cmd.Env = append(os.Environ(), env...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("run %s: %w: %s", name, err, strings.TrimSpace(string(out)))
+		return out, fmt.Errorf("run %s: %w: %s", name, err, strings.TrimSpace(string(out)))
 	}
 	return out, nil
 }
@@ -54,13 +54,28 @@ func (e *APIError) Error() string {
 
 type Changeset struct {
 	ID           string          `json:"id"`
-	State        string          `json:"state"`
+	State        string          `json:"status"`
 	Scope        string          `json:"scope,omitempty"`
 	WorkerID     string          `json:"worker_id,omitempty"`
 	BaseRevision string          `json:"base_revision,omitempty"`
 	CommitSHA    string          `json:"commit_sha,omitempty"`
 	Validation   json.RawMessage `json:"validation,omitempty"`
 	Diff         json.RawMessage `json:"diff,omitempty"`
+}
+
+type ValidationResult struct {
+	Valid                bool            `json:"valid"`
+	Diagnostics          json.RawMessage `json:"diagnostics,omitempty"`
+	PendingDeactivations json.RawMessage `json:"pending_deactivations,omitempty"`
+	ValidatedRevision    string          `json:"validated_revision,omitempty"`
+}
+
+type FileMutation struct {
+	Path              string `json:"path"`
+	Operation         string `json:"operation"`
+	ContentBase64     string `json:"content_base64,omitempty"`
+	ExpectedHash      string `json:"expected_hash,omitempty"`
+	ForceDeactivation bool   `json:"force_deactivation,omitempty"`
 }
 
 type InspectResult struct {
@@ -106,10 +121,24 @@ func (c *Client) call(ctx context.Context, method, path string, body any, out an
 	}
 	env := []string{}
 	if c.Target != "" {
-		env = append(env, "BIFROST_TARGET="+c.Target)
+		env = append(env, "BIFROST_API_URL="+c.Target)
 	}
 	raw, err := c.Runner.Run(ctx, bin, args, nil, env)
 	if err != nil {
+		var envelope struct {
+			Detail json.RawMessage `json:"detail"`
+		}
+		if json.Unmarshal(raw, &envelope) == nil && len(envelope.Detail) > 0 {
+			apiErr := &APIError{}
+			if json.Unmarshal(envelope.Detail, &apiErr.Conflict) == nil && apiErr.Conflict.Reason != "" {
+				apiErr.Detail = apiErr.Conflict.Reason
+				return apiErr
+			}
+			_ = json.Unmarshal(envelope.Detail, &apiErr.Detail)
+			if apiErr.Detail != "" {
+				return apiErr
+			}
+		}
 		return err
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
@@ -120,7 +149,7 @@ func (c *Client) call(ctx context.Context, method, path string, body any, out an
 
 func (c *Client) Inspect(ctx context.Context, scope string) (InspectResult, error) {
 	var v InspectResult
-	err := c.call(ctx, "GET", "/inspect?scope="+url.QueryEscape(scope), nil, &v)
+	err := c.call(ctx, "GET", "/state?scope="+url.QueryEscape(scope), nil, &v)
 	return v, err
 }
 func (c *Client) Begin(ctx context.Context, scope, baseRevision, title, worker string) (Changeset, error) {
@@ -143,13 +172,18 @@ func (c *Client) Get(ctx context.Context, id string) (Changeset, error) {
 	err := c.call(ctx, "GET", "/"+url.PathEscape(id), nil, &v)
 	return v, err
 }
+func (c *Client) Stage(ctx context.Context, id string, mutation FileMutation) (Changeset, error) {
+	var v Changeset
+	err := c.call(ctx, "POST", "/"+url.PathEscape(id)+"/files", mutation, &v)
+	return v, err
+}
 func (c *Client) Diff(ctx context.Context, id string) (json.RawMessage, error) {
 	var v json.RawMessage
 	err := c.call(ctx, "GET", "/"+url.PathEscape(id)+"/diff", nil, &v)
 	return v, err
 }
-func (c *Client) Validate(ctx context.Context, id string) (Changeset, error) {
-	var v Changeset
+func (c *Client) Validate(ctx context.Context, id string) (ValidationResult, error) {
+	var v ValidationResult
 	err := c.call(ctx, "POST", "/"+url.PathEscape(id)+"/validate", map[string]any{}, &v)
 	return v, err
 }
@@ -205,10 +239,25 @@ func (s Service) Begin(ctx context.Context, scope, base, title, worker string) (
 	}
 	if s.Store != nil {
 		if err := s.Store.SaveBifrostChangeset(r); err != nil {
-			return Record{}, fmt.Errorf("record Bifrost changeset %s: %w", r.ID, err)
+			_, abortErr := s.Client.Abort(ctx, remote.ID)
+			if abortErr != nil {
+				return Record{}, fmt.Errorf("record Bifrost changeset %s: %w; compensating abort also failed: %v", r.ID, err, abortErr)
+			}
+			return Record{}, fmt.Errorf("record Bifrost changeset %s: %w; remote changeset was aborted", r.ID, err)
 		}
 	}
 	return r, nil
+}
+
+func (s Service) selectRecordedTarget(r Record) error {
+	if r.Target == "" {
+		return nil
+	}
+	if s.Client.Target != "" && s.Client.Target != r.Target {
+		return fmt.Errorf("Bifrost target mismatch: changeset %s belongs to %s, not %s", r.ID, r.Target, s.Client.Target)
+	}
+	s.Client.Target = r.Target
+	return nil
 }
 
 func (s Service) sync(ctx context.Context, id, action, message string, push bool) (Record, error) {
@@ -216,12 +265,24 @@ func (s Service) sync(ctx context.Context, id, action, message string, push bool
 	if err != nil {
 		return Record{}, err
 	}
+	if err := s.selectRecordedTarget(r); err != nil {
+		return Record{}, err
+	}
 	var remote Changeset
 	switch action {
 	case "show":
 		remote, err = s.Client.Get(ctx, r.RemoteChangesetID)
 	case "validate":
-		remote, err = s.Client.Validate(ctx, r.RemoteChangesetID)
+		var validation ValidationResult
+		validation, err = s.Client.Validate(ctx, r.RemoteChangesetID)
+		if err == nil {
+			r.Validation, err = json.Marshal(validation)
+			if validation.Valid {
+				r.State = "validated"
+			} else {
+				r.State = "staged"
+			}
+		}
 	case "commit":
 		remote, err = s.Client.Commit(ctx, r.RemoteChangesetID, message, push)
 	case "abort":
@@ -232,9 +293,44 @@ func (s Service) sync(ctx context.Context, id, action, message string, push bool
 	if err != nil {
 		return Record{}, err
 	}
+	if action != "validate" {
+		r.State = remote.State
+		r.Validation = remote.Validation
+		r.CommitSHA = remote.CommitSHA
+	}
+	r.UpdatedAt = time.Now()
+	if s.Now != nil {
+		r.UpdatedAt = s.Now()
+	}
+	if err := s.Store.SaveBifrostChangeset(r); err != nil {
+		return Record{}, err
+	}
+	return r, nil
+}
+
+func (s Service) Diff(ctx context.Context, id string) (json.RawMessage, error) {
+	r, err := s.Store.GetBifrostChangeset(id)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.selectRecordedTarget(r); err != nil {
+		return nil, err
+	}
+	return s.Client.Diff(ctx, r.RemoteChangesetID)
+}
+func (s Service) Stage(ctx context.Context, id string, mutation FileMutation) (Record, error) {
+	r, err := s.Store.GetBifrostChangeset(id)
+	if err != nil {
+		return Record{}, err
+	}
+	if err := s.selectRecordedTarget(r); err != nil {
+		return Record{}, err
+	}
+	remote, err := s.Client.Stage(ctx, r.RemoteChangesetID, mutation)
+	if err != nil {
+		return Record{}, err
+	}
 	r.State = remote.State
-	r.Validation = remote.Validation
-	r.CommitSHA = remote.CommitSHA
 	r.UpdatedAt = time.Now()
 	if s.Now != nil {
 		r.UpdatedAt = s.Now()
