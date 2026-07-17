@@ -524,14 +524,44 @@ func TestCLISwarmEventHistoryIsBoundedAndOrdered(t *testing.T) {
 	base := time.Date(2026, 6, 26, 20, 0, 0, 0, time.UTC)
 	now := base
 	state := filepath.Join(t.TempDir(), "state.json")
-	savePairWorkers(t, state, base, "")
+
+	events := make([]store.Event, store.SwarmEventCap)
+	for i := range events {
+		events[i] = store.Event{
+			At:        base.Add(time.Duration(i) * time.Second),
+			Type:      "message",
+			Message:   "message",
+			From:      "w-from",
+			To:        "w-to",
+			WorkerID:  "w-from",
+			RequestID: fmt.Sprintf("req-%03d", i),
+		}
+	}
+	seed := struct {
+		Workers []store.Worker `json:"workers"`
+		Events  []store.Event  `json:"events"`
+	}{
+		Workers: []store.Worker{
+			{ID: "w-from", ProjectRoot: "/repo", ThreadID: "thread-from", Engine: "mock", Status: store.WorkerIdle, Prompt: "from worker", CreatedAt: base.Add(-time.Hour), UpdatedAt: base.Add(-time.Hour)},
+			{ID: "w-to", ProjectRoot: "/repo", ThreadID: "thread-to", Engine: "mock", Status: store.WorkerIdle, Prompt: "to worker", CreatedAt: base.Add(-time.Hour), UpdatedAt: base.Add(-time.Hour)},
+		},
+		Events: events,
+	}
+	data, err := json.Marshal(seed)
+	if err != nil {
+		t.Fatalf("marshal event history seed: %v", err)
+	}
+	if err := os.WriteFile(state, data, 0o600); err != nil {
+		t.Fatalf("write event history seed: %v", err)
+	}
+
 	c := cli{
 		out: &out,
 		err: &bytes.Buffer{},
 		now: func() time.Time { return now },
 	}
 
-	for i := 0; i < store.SwarmEventCap+5; i++ {
+	for i := store.SwarmEventCap; i < store.SwarmEventCap+5; i++ {
 		now = base.Add(time.Duration(i) * time.Second)
 		out.Reset()
 		requestID := fmt.Sprintf("req-%03d", i)
@@ -540,7 +570,7 @@ func TestCLISwarmEventHistoryIsBoundedAndOrdered(t *testing.T) {
 		}
 	}
 
-	events, err := store.NewJSONStore(state).ListEvents()
+	events, err = store.NewJSONStore(state).ListEvents()
 	if err != nil {
 		t.Fatalf("ListEvents() error = %v", err)
 	}
