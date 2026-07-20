@@ -19,6 +19,12 @@ type fakeRunner struct {
 	calls     []runnerCall
 }
 
+func TestDefaultBasePathUsesRepoCompatibilityEndpoint(t *testing.T) {
+	if DefaultBasePath != "/api/workspace-repo-changesets" {
+		t.Fatalf("DefaultBasePath = %q, want explicit _repo compatibility endpoint", DefaultBasePath)
+	}
+}
+
 func (f *fakeRunner) Run(_ context.Context, name string, args []string, _ []byte, env []string) ([]byte, error) {
 	f.calls = append(f.calls, runnerCall{name, args, env})
 	out := f.responses[0]
