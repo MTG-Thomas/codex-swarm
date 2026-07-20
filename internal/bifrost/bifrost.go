@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-const DefaultBasePath = "/api/workspace-changesets"
+const DefaultBasePath = "/api/workspace-repo-changesets"
 
 type CommandRunner interface {
 	Run(context.Context, string, []string, []byte, []string) ([]byte, error)
