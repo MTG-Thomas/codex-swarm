@@ -1,29 +1,26 @@
 package main
 
 import (
-	"bytes"
 	"context"
+	"io"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
 
 func TestRunServerShutdownOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	var out bytes.Buffer
+	started := make(chan struct{}, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- runServer(ctx, "127.0.0.1:0", filepath.Join(t.TempDir(), "state.json"), &out)
+		done <- runServer(ctx, "127.0.0.1:0", filepath.Join(t.TempDir(), "state.json"), signalWriter{started: started})
 	}()
 
-	deadline := time.Now().Add(5 * time.Second)
-	for !strings.Contains(out.String(), "csd listening addr=") {
-		if time.Now().After(deadline) {
-			cancel()
-			t.Fatalf("server did not start, output=%q", out.String())
-		}
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		cancel()
+		t.Fatal("server did not write its startup line")
 	}
 	cancel()
 	select {
@@ -34,4 +31,16 @@ func TestRunServerShutdownOnContextCancel(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("runServer did not exit after context cancellation")
 	}
+}
+
+type signalWriter struct {
+	started chan<- struct{}
+}
+
+func (w signalWriter) Write(p []byte) (int, error) {
+	select {
+	case w.started <- struct{}{}:
+	default:
+	}
+	return io.Discard.Write(p)
 }

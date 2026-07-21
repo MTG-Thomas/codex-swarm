@@ -83,6 +83,93 @@ func TestWaitTurnCompleted(t *testing.T) {
 	}
 }
 
+func TestTurnSteerUsesExpectedTurnID(t *testing.T) {
+	var written bytes.Buffer
+	server := strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{"turnId":"turn-1"}}
+`)
+	client := NewClient(&written, server)
+	result, err := client.TurnSteer(context.Background(), TurnSteerParams{
+		ThreadID: "thread-1", ExpectedTurnID: "turn-1", Input: []UserInput{{Type: "text", Text: "peer changed main.go"}},
+	})
+	if err != nil {
+		t.Fatalf("TurnSteer() error = %v", err)
+	}
+	if result.TurnID != "turn-1" {
+		t.Fatalf("TurnSteer() = %#v", result)
+	}
+	var request Request
+	if err := json.Unmarshal(firstLine(t, written.String()), &request); err != nil {
+		t.Fatal(err)
+	}
+	if request.Method != "turn/steer" {
+		t.Fatalf("request method = %q", request.Method)
+	}
+	params, err := json.Marshal(request.Params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(params, []byte(`"expectedTurnId":"turn-1"`)) {
+		t.Fatalf("request params = %s", params)
+	}
+}
+
+func TestWaitTurnCompletedCapturesAgentMessageAndFileChanges(t *testing.T) {
+	var written bytes.Buffer
+	server := strings.NewReader(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thread-1","delta":"done"}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thread-1","item":{"type":"fileChange","changes":[{"path":"internal/store/store.go","kind":"update"}]}}}
+{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}}
+`)
+	client := NewClient(&written, server)
+	result, err := client.WaitTurnCompletedWithPolicy(context.Background(), "thread-1", "turn-1", CompletionPolicy{})
+	if err != nil {
+		t.Fatalf("WaitTurnCompletedWithPolicy() error = %v", err)
+	}
+	if result.FinalMessage != "done" || len(result.FileChanges) != 1 || result.FileChanges[0].Path != "internal/store/store.go" {
+		t.Fatalf("completion = %#v", result)
+	}
+}
+
+func TestWaitTurnCompletedSteersQueuedDeliveryOnExistingConnection(t *testing.T) {
+	requestReader, requestWriter := io.Pipe()
+	responseReader, responseWriter := io.Pipe()
+	defer func() { _ = requestReader.Close() }()
+	defer func() { _ = requestWriter.Close() }()
+	defer func() { _ = responseReader.Close() }()
+	defer func() { _ = responseWriter.Close() }()
+	written := make(chan string, 1)
+	go func() {
+		scanner := bufio.NewScanner(requestReader)
+		if scanner.Scan() {
+			written <- scanner.Text()
+		}
+		_, _ = responseWriter.Write([]byte(`{"jsonrpc":"2.0","id":1,"result":{"turnId":"turn-1"}}` + "\n"))
+		_, _ = responseWriter.Write([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}}` + "\n"))
+	}()
+	client := NewClient(requestWriter, responseReader)
+	acknowledged := ""
+	result, err := client.WaitTurnCompletedWithSteering(context.Background(), "thread-1", "turn-1", CompletionPolicy{}, SteeringPolicy{
+		PollInterval: time.Millisecond,
+		Source: func(context.Context) ([]SteerDelivery, error) {
+			return []SteerDelivery{{ID: "delivery-1", Text: "peer conflict warning"}}, nil
+		},
+		Acknowledge: func(id string, err error) {
+			if err == nil {
+				acknowledged = id
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("WaitTurnCompletedWithSteering() error = %v", err)
+	}
+	if result.Turn.Status != "completed" || acknowledged != "delivery-1" {
+		t.Fatalf("completion=%#v acknowledged=%q", result, acknowledged)
+	}
+	request := <-written
+	if !strings.Contains(request, `"method":"turn/steer"`) || !strings.Contains(request, "peer conflict warning") {
+		t.Fatalf("written request = %s", request)
+	}
+}
+
 func TestWaitTurnCompletedWithPolicyReturnsWarningAfterCompletionSignalGrace(t *testing.T) {
 	var written bytes.Buffer
 	reader, writer := io.Pipe()

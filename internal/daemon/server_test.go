@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/MTG-Thomas/codex-swarm/internal/lifecycle"
+	"github.com/MTG-Thomas/codex-swarm/internal/protocol"
 	"github.com/MTG-Thomas/codex-swarm/internal/readiness"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
@@ -21,6 +23,15 @@ type memoryStore struct {
 	workers []store.Worker
 	claims  []store.Claim
 	events  []store.Event
+}
+
+type fakeTurnSteerer struct {
+	calls int
+}
+
+func (s *fakeTurnSteerer) SteerTurn(context.Context, string, string, string, string) error {
+	s.calls++
+	return nil
 }
 
 func (m *memoryStore) SaveWorkers(workers ...store.Worker) error {
@@ -587,6 +598,75 @@ func TestReadOnlyEndpointsRejectPost(t *testing.T) {
 
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Fatalf("%s status code = %d, want %d", path, rec.Code, http.StatusMethodNotAllowed)
+		}
+	}
+}
+
+func TestMessagesEndpointSteersActiveWorkerAndListsInbox(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	st := store.NewJSONStore(statePath)
+	at := time.Date(2026, 7, 21, 14, 0, 0, 0, time.UTC)
+	if err := st.SaveWorkers(
+		store.Worker{ID: "w-from", Engine: "mock", Status: store.WorkerIdle, CreatedAt: at, UpdatedAt: at},
+		store.Worker{ID: "w-to", Engine: "appserver", Status: store.WorkerRunning, ThreadID: "thread-1", TurnID: "turn-1", ProjectRoot: t.TempDir(), CreatedAt: at, UpdatedAt: at},
+	); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(statePath, st)
+	steerer := &fakeTurnSteerer{}
+	server.SetTurnSteerer(steerer)
+	body := `{"request_id":"r-1","kind":"dm","from":"w-from","to":"w-to","body":"check main.go"}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("message status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response protocol.MessageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if steerer.calls != 1 || len(response.Deliveries) != 1 || response.Deliveries[0].State != store.DeliverySteered {
+		t.Fatalf("response=%#v steer calls=%d", response, steerer.calls)
+	}
+
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/messages?worker=w-to", nil)
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "check main.go") {
+		t.Fatalf("inbox status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestTouchesEndpointReturnsBilateralWarningOnlyConflict(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	st := store.NewJSONStore(statePath)
+	at := time.Now().UTC()
+	if err := st.SaveWorkers(
+		store.Worker{ID: "w-1", Engine: "mock", Status: store.WorkerIdle, CreatedAt: at, UpdatedAt: at},
+		store.Worker{ID: "w-2", Engine: "mock", Status: store.WorkerIdle, CreatedAt: at, UpdatedAt: at},
+	); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServer(statePath, st)
+	for i, worker := range []string{"w-1", "w-2"} {
+		body := fmt.Sprintf(`{"request_id":"touch-%d","worker_id":%q,"repo":"C:\\repo","path":"C:\\repo\\main.go","operation":"write","intent":"edit"}`, i+1, worker)
+		req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/touches", strings.NewReader(body))
+		req.RemoteAddr = "127.0.0.1:1234"
+		rec := httptest.NewRecorder()
+		server.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("touch %d status=%d body=%s", i+1, rec.Code, rec.Body.String())
+		}
+		if i == 1 {
+			var response protocol.TouchResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+				t.Fatal(err)
+			}
+			if len(response.Conflicts) != 1 || len(response.Warnings) != 1 || len(response.Warnings[0].Deliveries) != 2 {
+				t.Fatalf("second touch response=%#v", response)
+			}
 		}
 	}
 }

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/MTG-Thomas/codex-swarm/internal/appserver"
+	"github.com/MTG-Thomas/codex-swarm/internal/coordination"
 	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
 	"github.com/MTG-Thomas/codex-swarm/internal/lifecycle"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
@@ -234,6 +235,87 @@ func TestCLIReportFailedSetsTerminatedAt(t *testing.T) {
 	}
 	if worker.Lifecycle.Session.CompletedAt != nil {
 		t.Fatalf("CompletedAt = %v, want nil", worker.Lifecycle.Session.CompletedAt)
+	}
+}
+
+func TestCLIReportAutomaticallyForwardsChildCompletion(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 7, 21, 14, 0, 0, 0, time.UTC)
+	state := filepath.Join(t.TempDir(), "state.db")
+	st := store.NewJSONStore(state)
+	if err := st.SaveWorkers(
+		store.Worker{ID: "parent", Engine: "mock", Status: store.WorkerIdle, CreatedAt: now, UpdatedAt: now},
+		store.Worker{ID: "child", ParentID: "parent", Engine: "mock", Status: store.WorkerIdle, CreatedAt: now, UpdatedAt: now},
+	); err != nil {
+		t.Fatal(err)
+	}
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+	if err := c.run([]string{"report", "--state", state, "--request-id", "completion-1", "--note", "tests green", "child", "done"}); err != nil {
+		t.Fatalf("report error = %v", err)
+	}
+	inbox, err := st.ListQueuedMessages("parent")
+	if err != nil || len(inbox) != 1 || inbox[0].Message.Kind != store.MessageCompletion {
+		t.Fatalf("parent inbox = %#v err=%v", inbox, err)
+	}
+	if !strings.Contains(out.String(), "completion forwarded worker=child") {
+		t.Fatalf("report output = %q", out.String())
+	}
+}
+
+func TestCLITouchWarnsBothWorkersAndInboxReadsMessages(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 7, 21, 14, 0, 0, 0, time.UTC)
+	state := filepath.Join(t.TempDir(), "state.db")
+	repo := t.TempDir()
+	st := store.NewJSONStore(state)
+	if err := st.SaveWorkers(
+		store.Worker{ID: "w-1", Engine: "mock", Status: store.WorkerIdle, ProjectRoot: repo, CreatedAt: now, UpdatedAt: now},
+		store.Worker{ID: "w-2", Engine: "mock", Status: store.WorkerIdle, ProjectRoot: repo, CreatedAt: now, UpdatedAt: now},
+	); err != nil {
+		t.Fatal(err)
+	}
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+	for i, worker := range []string{"w-1", "w-2"} {
+		out.Reset()
+		if err := c.run([]string{"touch", "--state", state, "--request-id", fmt.Sprintf("touch-%d", i+1), "--worker", worker, "--repo", repo, "--path", "main.go", "--intent", "edit parser"}); err != nil {
+			t.Fatalf("touch %s error = %v", worker, err)
+		}
+	}
+	if !strings.Contains(out.String(), "conflicts=1 warning_only=true") {
+		t.Fatalf("second touch output = %q", out.String())
+	}
+	out.Reset()
+	if err := c.run([]string{"inbox", "--state", state, "--queued", "w-1"}); err != nil {
+		t.Fatalf("inbox error = %v", err)
+	}
+	if !strings.Contains(out.String(), "conflict") || !strings.Contains(out.String(), "warning-only overlapping write") {
+		t.Fatalf("inbox output = %q", out.String())
+	}
+}
+
+func TestWorkerSteeringPolicyExcludesMessagesAlreadyInjectedIntoNextTurn(t *testing.T) {
+	now := time.Date(2026, 7, 21, 14, 0, 0, 0, time.UTC)
+	state := filepath.Join(t.TempDir(), "state.db")
+	st := store.NewJSONStore(state)
+	if err := st.SaveWorkers(
+		store.Worker{ID: "sender", Engine: "mock", Status: store.WorkerIdle, CreatedAt: now, UpdatedAt: now},
+		store.Worker{ID: "worker", Engine: "appserver", Status: store.WorkerIdle, CreatedAt: now, UpdatedAt: now},
+	); err != nil {
+		t.Fatal(err)
+	}
+	result, err := (coordination.Service{Store: st, Now: func() time.Time { return now }}).Send(context.Background(), coordination.SendRequest{
+		RequestID: "message-1", Kind: store.MessageDirect, From: "sender", To: "worker", Body: "queued",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := (cli{now: func() time.Time { return now }}).workerSteeringPolicy(state, "worker", result.Deliveries[0].ID)
+	deliveries, err := policy.Source(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deliveries) != 0 {
+		t.Fatalf("steering deliveries = %#v, want injected delivery excluded", deliveries)
 	}
 }
 

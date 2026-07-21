@@ -47,6 +47,9 @@ go run ./cmd/cs doctor
 go run ./cmd/cs doctor --appserver
 go run ./cmd/cs send <worker-id> "continue with tests and docs"
 go run ./cmd/cs message <from-worker-id> <to-worker-id> "please review this"
+go run ./cmd/cs message --subtree <from-worker-id> <root-worker-id> "coordinate this subtree"
+go run ./cmd/cs inbox --queued <worker-id>
+go run ./cmd/cs touch --worker <worker-id> --repo . --path internal/store/store.go --intent "edit store"
 go run ./cmd/cs handoff <from-worker-id> <to-worker-id> "ready for review"
 go run ./cmd/cs trace start "Release swarm" --key release-swarm
 go run ./cmd/cs trace into "Watch CI" --key watch-ci
@@ -93,7 +96,11 @@ Pass `--worktree` to create a Git branch and worktree for the worker. Managed br
 
 Managed worktree creation uses repo-local branch locks under `.codex-swarm/locks/`. A live lock fails fast instead of handing two workers the same managed checkout; a stale lock whose PID is gone is pruned. If the intended managed worktree already exists on the requested branch, it is reused. Dirty managed worktrees are reused without refresh and print a warning so local changes are preserved. If the branch is checked out in the main repository or an external worktree, `spawn --worktree` fails with that location instead of reusing it.
 
-Pass `--role` and `--parent` to record simple local swarm relationships. Use `message` and `handoff` to write directed communication events into both workers' local timelines without routing routine interagent traffic through MCP.
+Pass `--role` and `--parent` to record simple local swarm relationships. The communication vocabulary is deliberately small: `message` sends a DM, `message --subtree` reaches a worker and its descendants, and the system creates conflict warnings and child completion reports. `inbox` reads durable per-recipient delivery state. When a recipient has an active app-server turn, its existing connection polls the SQLite queue and uses `turn/steer`; otherwise the message stays queued and is injected into the next `send` turn. `handoff` remains the explicit ownership-transfer record.
+
+Use `touch --worker <id> --repo <root> --path <file>` to record a read or write intent. Overlapping writes by different workers in the same file and line range create bilateral `conflict` messages. These are warnings only: the touch is always recorded and no edit, command, or Git operation is rejected. App-server `fileChange` item events are recorded automatically after a turn.
+
+When a child worker with `--parent` is reported `done` or `failed`, `report` automatically enqueues a `completion` message for the parent. The report mutation succeeds only with durable forwarding readback; reusing `--request-id` is idempotent.
 
 Use `trace start`, `trace into`, `trace log`, `trace done`, `trace back`, and `trace status` for a lightweight nested execution stack per local agent. `--key` makes `start` and `into` idempotent across retries. Agent lanes default to `CODEX_SWARM_TRACE_AGENT`, then `DETOUR_AGENT`, then `default`; pass `--agent` when multiple local threads need separate stacks. `trace merge` prints active lanes as a handoff snapshot without changing state.
 
@@ -198,7 +205,7 @@ Use `cs status --issues` for a compact read-only operations dashboard over local
 
 Use `cs janitor stale` for a read-only stale worker and releasable claim report. Use `cs janitor release --apply` to release only active claims that are expired, attached to a missing or terminal worker, or attached to a worker stale beyond the `--older` threshold. Without `--apply`, release is a dry run.
 
-`csd serve` starts the daemon, `csd status` checks it, and `csd install` / `csd uninstall` install or remove the daemon service on supported platforms. Windows uses a service named `codex-swarm-daemon`; macOS installs a per-user LaunchAgent at `~/Library/LaunchAgents/codex-swarm-daemon.plist`; Linux installs a systemd unit at `/etc/systemd/system/codex-swarm-daemon.service` and should be run with sufficient privilege, for example through `sudo`. The daemon exposes read-only HTTP status surfaces with `GET /status`, `GET /workers`, `GET /claims`, and `GET /readiness?issue=owner/repo%23123&repo=<path>`. It also exposes the explicit loopback-only mutation `POST /dispatch` for daemon-backed `cs issue dispatch`. Use the `cs` CLI for worker, claim, issue, and schedule mutations.
+`csd serve` starts the daemon, `csd status` checks it, and `csd install` / `csd uninstall` install or remove the daemon service on supported platforms. Windows uses a service named `codex-swarm-daemon`; macOS installs a per-user LaunchAgent at `~/Library/LaunchAgents/codex-swarm-daemon.plist`; Linux installs a systemd unit at `/etc/systemd/system/codex-swarm-daemon.service` and should be run with sufficient privilege, for example through `sudo`. The daemon exposes read-only HTTP status surfaces with `GET /status`, `GET /workers`, `GET /claims`, `GET /v1/messages?worker=<id>`, and `GET /readiness?issue=owner/repo%23123&repo=<path>`. Loopback-only, idempotent mutation routes are `POST /dispatch`, `POST /v1/messages`, `POST /v1/touches`, and `POST /v1/completions`.
 
 Use `--engine mock` when the demo needs to avoid live Codex calls:
 
@@ -233,7 +240,7 @@ go build -trimpath ./cmd/csd
 
 Dependencies should be added when they remove cross-platform risk or stabilize a durable boundary:
 
-- SQLite: when worker/thread state must survive real daemon restarts
+- SQLite schema changes: when normalized queries or transactional coordination justify a migration beyond the current messages, deliveries, file touches, and compatibility records
 - config parser: when JSON is too clumsy for hand-edited operator config
 - GitHub client: when `gh` shelling becomes hard to test or too slow
 - service helper: when installing as Windows service, launchd agent, or systemd unit
