@@ -4,9 +4,12 @@ All notable changes to codex-swarm are documented here.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-21
+
 ### Added
 
 - Provider-neutral Windows `VERSIONINFO` generation for `cs.exe` and `csd.exe`, including product and file versions for AMD64 and ARM64 release builds.
+- Isolated Codex app-server workers over SSH with per-worker remote Git branches and checkouts while coordination state remains local.
 - `cs attach` for registering existing tracker or app-server tasks without fabricating worktrees or branches.
 - `cs close` for idempotent, transactional worker closeout with claim release, PR refresh recording, and parent completion forwarding.
 - Typed `path`, `task`, and `live` claim scopes, including atomic multi-scope creation through repeated `--scope` flags.
