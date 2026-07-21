@@ -468,7 +468,17 @@ func (c *Client) respond(id int64, result any) error {
 // Runner starts short-lived Codex app-server processes for CLI operations.
 type Runner struct {
 	Binary           string
+	Process          Process
+	Sandbox          string
 	CompletionPolicy CompletionPolicy
+}
+
+func (r Runner) command(ctx context.Context, cwd string) (*exec.Cmd, error) {
+	process := r.Process
+	if process == nil {
+		process = LocalProcess{Binary: r.Binary}
+	}
+	return process.Command(ctx, cwd)
 }
 
 // TurnObserver is called immediately after turn/start returns, before waiting
@@ -481,12 +491,10 @@ func (r Runner) SteerTurn(ctx context.Context, cwd, threadID, turnID, message st
 	if strings.TrimSpace(threadID) == "" || strings.TrimSpace(turnID) == "" {
 		return fmt.Errorf("steer requires thread and turn ids")
 	}
-	binary := r.Binary
-	if binary == "" {
-		binary = "codex"
+	cmd, err := r.command(ctx, cwd)
+	if err != nil {
+		return fmt.Errorf("prepare app-server process for thread=%s turn=%s: %w", threadID, turnID, err)
 	}
-	cmd := exec.CommandContext(ctx, binary, "app-server")
-	cmd.Dir = cwd
 	cmd.Stderr = io.Discard
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -562,13 +570,10 @@ func (r Runner) Resume(ctx context.Context, cwd, threadID string) (RunResult, er
 	if threadID == "" {
 		return RunResult{}, fmt.Errorf("thread id is required")
 	}
-	binary := r.Binary
-	if binary == "" {
-		binary = "codex"
+	cmd, err := r.command(ctx, cwd)
+	if err != nil {
+		return RunResult{}, fmt.Errorf("prepare app-server process: %w", err)
 	}
-
-	cmd := exec.CommandContext(ctx, binary, "app-server")
-	cmd.Dir = cwd
 	cmd.Stderr = io.Discard
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -596,13 +601,10 @@ func (r Runner) Resume(ctx context.Context, cwd, threadID string) (RunResult, er
 
 // Check verifies that the Codex app-server can be started and initialized.
 func (r Runner) Check(ctx context.Context, cwd string) error {
-	binary := r.Binary
-	if binary == "" {
-		binary = "codex"
+	cmd, err := r.command(ctx, cwd)
+	if err != nil {
+		return fmt.Errorf("prepare app-server process: %w", err)
 	}
-
-	cmd := exec.CommandContext(ctx, binary, "app-server")
-	cmd.Dir = cwd
 	cmd.Stderr = io.Discard
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -621,13 +623,10 @@ func (r Runner) Check(ctx context.Context, cwd string) error {
 }
 
 func (r Runner) runTurn(ctx context.Context, cwd, threadID, prompt string, observer TurnObserver, steering SteeringPolicy) (RunResult, error) {
-	binary := r.Binary
-	if binary == "" {
-		binary = "codex"
+	cmd, err := r.command(ctx, cwd)
+	if err != nil {
+		return RunResult{}, fmt.Errorf("prepare app-server process: %w", err)
 	}
-
-	cmd := exec.CommandContext(ctx, binary, "app-server")
-	cmd.Dir = cwd
 	cmd.Stderr = io.Discard
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -647,10 +646,14 @@ func (r Runner) runTurn(ctx context.Context, cwd, threadID, prompt string, obser
 		return RunResult{}, err
 	}
 	if threadID == "" {
+		sandbox := r.Sandbox
+		if sandbox == "" {
+			sandbox = "read-only"
+		}
 		thread, err := client.ThreadStart(ctx, ThreadStartParams{
 			CWD:            cwd,
 			ApprovalPolicy: "never",
-			Sandbox:        "read-only",
+			Sandbox:        sandbox,
 			ServiceName:    "codex-swarm",
 			ThreadSource:   "user",
 		})

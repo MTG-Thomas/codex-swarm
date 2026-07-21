@@ -48,6 +48,7 @@ type Worker struct {
 	ThreadID         string               `json:"thread_id"`
 	TurnID           string               `json:"turn_id,omitempty"`
 	Engine           string               `json:"engine"`
+	Remote           *RemoteExecution     `json:"remote,omitempty"`
 	Status           WorkerStatus         `json:"status"`
 	Lifecycle        *lifecycle.Lifecycle `json:"lifecycle,omitempty"`
 	Prompt           string               `json:"prompt"`
@@ -57,6 +58,16 @@ type Worker struct {
 	CreatedAt        time.Time            `json:"created_at"`
 	UpdatedAt        time.Time            `json:"updated_at"`
 	Events           []Event              `json:"events,omitempty"`
+}
+
+// RemoteExecution identifies the SSH transport and isolated Git workspace for
+// an app-server worker. It contains no credentials.
+type RemoteExecution struct {
+	Host        string `json:"host"`
+	JumpHost    string `json:"jump_host,omitempty"`
+	CodexBinary string `json:"codex_binary,omitempty"`
+	RepoURL     string `json:"repo_url"`
+	BaseRef     string `json:"base_ref"`
 }
 
 // ApplyStatus updates the worker lifecycle using the current time semantics.

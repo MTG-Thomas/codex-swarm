@@ -18,6 +18,7 @@ import (
 	"github.com/MTG-Thomas/codex-swarm/internal/coordination"
 	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
 	"github.com/MTG-Thomas/codex-swarm/internal/lifecycle"
+	"github.com/MTG-Thomas/codex-swarm/internal/remoteworkspace"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
 
@@ -1136,6 +1137,82 @@ func TestCLISpawnAppserverWithWorktreeRunsInManagedWorktree(t *testing.T) {
 	}
 }
 
+func TestCLISpawnAppserverPreparesRemoteWorktree(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 7, 21, 18, 0, 0, 0, time.UTC)
+	repo := initCLITestRepo(t)
+	runCLITestGit(t, repo, "remote", "add", "origin", "git@github.com:MTG-Thomas/repo.git")
+	remote := &fakeRemoteWorkspace{result: remoteworkspace.Result{
+		Path:    "/home/thomas/.local/share/codex-swarm/workspaces/w-20260721-180000-00000000",
+		Branch:  "cs/w-20260721-180000-00000000",
+		RepoURL: "git@github.com:MTG-Thomas/repo.git",
+		BaseRef: "main",
+	}}
+	var runCWD string
+	c := cli{
+		out:             &out,
+		err:             &bytes.Buffer{},
+		now:             func() time.Time { return now },
+		remoteWorkspace: remote,
+		appserverRunner: fakeAppserverRunner{
+			runTurn: func(_ context.Context, cwd, _ string) (appserver.RunResult, error) {
+				runCWD = cwd
+				return appserver.RunResult{ThreadID: "thread-remote", TurnID: "turn-remote", Status: "completed"}, nil
+			},
+		},
+	}
+	state := filepath.Join(t.TempDir(), "state.json")
+
+	err := c.run([]string{
+		"spawn", "--state", state, "--engine", "appserver", "--repo", repo, "--worktree",
+		"--remote-host", "thomas@remote", "--remote-jump", "root@jump",
+		"--remote-codex", "/home/thomas/.local/bin/codex", "--prompt", "remote task",
+	})
+	if err != nil {
+		t.Fatalf("spawn error = %v", err)
+	}
+	worker := mustFindWorkerByPrompt(t, state, "remote task")
+	if remote.spec.WorkerID != worker.ID || remote.spec.Branch != worker.Branch {
+		t.Fatalf("remote spec = %+v, worker = %+v", remote.spec, worker)
+	}
+	if runCWD != remote.result.Path || worker.Worktree != remote.result.Path {
+		t.Fatalf("run cwd=%q worktree=%q, want %q", runCWD, worker.Worktree, remote.result.Path)
+	}
+	if worker.Remote == nil || worker.Remote.Host != "thomas@remote" || worker.Remote.JumpHost != "root@jump" {
+		t.Fatalf("Remote = %+v", worker.Remote)
+	}
+	if !strings.Contains(out.String(), "remote: host=thomas@remote jump=root@jump base=main") {
+		t.Fatalf("spawn output missing remote identity:\n%s", out.String())
+	}
+}
+
+func TestCLISpawnRemoteRequiresAppserverWorktree(t *testing.T) {
+	c := cli{out: &bytes.Buffer{}, err: &bytes.Buffer{}, now: time.Now}
+	err := c.run([]string{"spawn", "--repo", t.TempDir(), "--remote-host", "host", "--prompt", "invalid"})
+	if err == nil || !strings.Contains(err.Error(), "requires --engine appserver --worktree") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestCLIRunnerForRemoteGrantsGitAuthority(t *testing.T) {
+	runner, ok := (cli{}).runnerFor(store.Worker{Remote: &store.RemoteExecution{
+		Host: "thomas@remote", JumpHost: "root@jump", CodexBinary: "/opt/codex",
+	}}).(appserver.Runner)
+	if !ok {
+		t.Fatalf("runnerFor() type = %T, want appserver.Runner", runner)
+	}
+	if runner.Sandbox != "danger-full-access" {
+		t.Fatalf("Sandbox = %q, want danger-full-access", runner.Sandbox)
+	}
+	process, ok := runner.Process.(appserver.SSHProcess)
+	if !ok {
+		t.Fatalf("Process type = %T, want appserver.SSHProcess", runner.Process)
+	}
+	if process.Target != "thomas@remote" || process.Jump != "root@jump" || process.CodexBinary != "/opt/codex" {
+		t.Fatalf("SSH process = %+v", process)
+	}
+}
+
 func TestCLISpawnAppserverFailurePersistsWorkerState(t *testing.T) {
 	var out bytes.Buffer
 	now := time.Date(2026, 6, 26, 16, 7, 0, 0, time.UTC)
@@ -1883,6 +1960,17 @@ type fakeAppserverRunner struct {
 	runTurn  func(context.Context, string, string) (appserver.RunResult, error)
 	sendTurn func(context.Context, string, string, string) (appserver.RunResult, error)
 	resume   func(context.Context, string, string) (appserver.RunResult, error)
+}
+
+type fakeRemoteWorkspace struct {
+	spec   remoteworkspace.Spec
+	result remoteworkspace.Result
+	err    error
+}
+
+func (f *fakeRemoteWorkspace) Prepare(_ context.Context, spec remoteworkspace.Spec) (remoteworkspace.Result, error) {
+	f.spec = spec
+	return f.result, f.err
 }
 
 func (f fakeAppserverRunner) RunTurn(ctx context.Context, cwd, prompt string) (appserver.RunResult, error) {

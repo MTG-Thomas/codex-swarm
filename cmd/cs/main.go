@@ -24,6 +24,7 @@ import (
 	"github.com/MTG-Thomas/codex-swarm/internal/launchbundle"
 	"github.com/MTG-Thomas/codex-swarm/internal/ownership"
 	"github.com/MTG-Thomas/codex-swarm/internal/protocol"
+	"github.com/MTG-Thomas/codex-swarm/internal/remoteworkspace"
 	"github.com/MTG-Thomas/codex-swarm/internal/repohints"
 	"github.com/MTG-Thomas/codex-swarm/internal/snapshot"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
@@ -37,8 +38,13 @@ type cli struct {
 	err             io.Writer
 	now             func() time.Time
 	appserverRunner appserverRunner
+	remoteWorkspace remoteWorkspacePreparer
 	bifrostRecords  bf.RecordStore
 	bifrostRunner   bf.CommandRunner
+}
+
+type remoteWorkspacePreparer interface {
+	Prepare(context.Context, remoteworkspace.Spec) (remoteworkspace.Result, error)
 }
 
 type appserverRunner interface {
@@ -382,6 +388,12 @@ func (c cli) spawn(args []string) error {
 	parentID := fs.String("parent", "", "parent worker id")
 	issueValue := fs.String("issue", "", "GitHub issue reference, for example owner/repo#123")
 	createWorktree := fs.Bool("worktree", false, "create the worker Git worktree")
+	remoteHost := fs.String("remote-host", "", "SSH target for a remote app-server workspace")
+	remoteJump := fs.String("remote-jump", "", "optional SSH jump host")
+	remoteRoot := fs.String("remote-root", "", "remote workspace root under the remote user's home")
+	remoteRepoURL := fs.String("remote-repo-url", "", "repository URL used by the remote host (defaults to local origin)")
+	remoteCodex := fs.String("remote-codex", "codex", "Codex executable on the remote host")
+	remoteBase := fs.String("remote-base", "main", "Git base ref for the remote worktree")
 	timeout := fs.Duration("timeout", 2*time.Minute, "app-server request timeout")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -402,6 +414,13 @@ func (c cli) spawn(args []string) error {
 	managedName := id
 	if *engine != "mock" && *engine != "appserver" {
 		return fmt.Errorf("unknown engine %q", *engine)
+	}
+	remoteRequested := strings.TrimSpace(*remoteHost) != ""
+	if remoteRequested && (*engine != "appserver" || !*createWorktree) {
+		return errors.New("--remote-host requires --engine appserver --worktree")
+	}
+	if !remoteRequested && (strings.TrimSpace(*remoteJump) != "" || strings.TrimSpace(*remoteRoot) != "" || strings.TrimSpace(*remoteRepoURL) != "" || *remoteCodex != "codex" || *remoteBase != "main") {
+		return errors.New("remote workspace flags require --remote-host")
 	}
 	issue := ""
 	if strings.TrimSpace(*issueValue) != "" {
@@ -442,18 +461,62 @@ func (c cli) spawn(args []string) error {
 	if *createWorktree {
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 		defer cancel()
-		result, err := (worktree.Git{}).Create(ctx, worktree.Spec{
-			RepoRoot: repoRoot,
-			Branch:   worker.Branch,
-			Path:     worker.Worktree,
-		})
-		if err != nil {
-			return fmt.Errorf("create worktree: %w", err)
+		if remoteRequested {
+			repoURL := strings.TrimSpace(*remoteRepoURL)
+			if repoURL == "" {
+				var err error
+				repoURL, err = gitConfigValue(ctx, repoRoot, "remote.origin.url")
+				if err != nil {
+					return fmt.Errorf("resolve remote repository URL: %w", err)
+				}
+			}
+			gitName, _ := gitConfigValue(ctx, repoRoot, "user.name")
+			gitEmail, _ := gitConfigValue(ctx, repoRoot, "user.email")
+			if gitName == "" {
+				gitName = "Codex Swarm"
+			}
+			if gitEmail == "" {
+				gitEmail = "codex-swarm@local.invalid"
+			}
+			provider := c.remoteWorkspace
+			if provider == nil {
+				provider = remoteworkspace.SSH{Target: *remoteHost, Jump: *remoteJump}
+			}
+			result, err := provider.Prepare(ctx, remoteworkspace.Spec{
+				WorkerID: worker.ID,
+				RepoURL:  repoURL,
+				BaseRef:  *remoteBase,
+				Branch:   worker.Branch,
+				Root:     *remoteRoot,
+				GitName:  gitName,
+				GitEmail: gitEmail,
+			})
+			if err != nil {
+				return err
+			}
+			worker.Worktree = result.Path
+			worker.Remote = &store.RemoteExecution{
+				Host:        *remoteHost,
+				JumpHost:    *remoteJump,
+				CodexBinary: *remoteCodex,
+				RepoURL:     result.RepoURL,
+				BaseRef:     result.BaseRef,
+			}
+			worker.Events = append(worker.Events, store.Event{At: now, Type: "remote.worktree.created", Message: worker.Worktree})
+		} else {
+			result, err := (worktree.Git{}).Create(ctx, worktree.Spec{
+				RepoRoot: repoRoot,
+				Branch:   worker.Branch,
+				Path:     worker.Worktree,
+			})
+			if err != nil {
+				return fmt.Errorf("create worktree: %w", err)
+			}
+			for _, warning := range result.Warnings {
+				worker.Events = append(worker.Events, store.Event{At: now, Type: "worktree.warning", Message: warning})
+			}
+			worker.Events = append(worker.Events, store.Event{At: now, Type: "worktree.created", Message: worker.Worktree})
 		}
-		for _, warning := range result.Warnings {
-			worker.Events = append(worker.Events, store.Event{At: now, Type: "worktree.warning", Message: warning})
-		}
-		worker.Events = append(worker.Events, store.Event{At: now, Type: "worktree.created", Message: worker.Worktree})
 		worktreeReady = true
 	}
 
@@ -483,7 +546,7 @@ func (c cli) spawn(args []string) error {
 			appserverPrompt = bundle.Prompt
 			worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.launch.bundle", Message: bundle.Source})
 		}
-		result, err := c.runTurnObserved(ctx, workerExecutionRoot(worker), appserverPrompt, func(started appserver.RunResult) error {
+		result, err := c.runTurnObserved(c.runnerFor(worker), ctx, workerExecutionRoot(worker), appserverPrompt, func(started appserver.RunResult) error {
 			worker.ThreadID = started.ThreadID
 			worker.TurnID = started.TurnID
 			worker.ApplyStatusAt(store.WorkerRunning, c.now().UTC())
@@ -582,6 +645,9 @@ func (c cli) spawn(args []string) error {
 	}
 	if *createWorktree {
 		fmt.Fprintf(c.out, "worktree: %s branch=%s\n", worker.Worktree, worker.Branch)
+		if worker.Remote != nil {
+			fmt.Fprintf(c.out, "remote: host=%s jump=%s base=%s\n", worker.Remote.Host, emptyDash(worker.Remote.JumpHost), worker.Remote.BaseRef)
+		}
 		for _, event := range worker.Events {
 			if event.Type == "worktree.warning" {
 				fmt.Fprintf(c.out, "warning: %s\n", event.Message)
@@ -885,7 +951,7 @@ func (c cli) send(args []string) error {
 			return snapErr
 		}
 		prompt = appserverPromptWithSnapshot(snap, message)
-		appserverResult, appserverErr = c.sendTurnObserved(ctx, workerExecutionRoot(initial), initial.ThreadID, prompt, func(started appserver.RunResult) error {
+		appserverResult, appserverErr = c.sendTurnObserved(c.runnerFor(initial), ctx, workerExecutionRoot(initial), initial.ThreadID, prompt, func(started appserver.RunResult) error {
 			_, err := st.UpdateWorker(id, func(worker *store.Worker) error {
 				at := c.now().UTC()
 				worker.ThreadID = started.ThreadID
@@ -1019,7 +1085,7 @@ func (c cli) resume(args []string) error {
 	if initial.Engine == "appserver" {
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 		defer cancel()
-		appserverResult, appserverErr = c.runner().Resume(ctx, workerExecutionRoot(initial), initial.ThreadID)
+		appserverResult, appserverErr = c.runnerFor(initial).Resume(ctx, workerExecutionRoot(initial), initial.ThreadID)
 	}
 	return c.updateWorker(*statePath, rest[0], func(worker *store.Worker, now time.Time) {
 		if worker.Engine == "appserver" {
@@ -1066,7 +1132,7 @@ func (c cli) inspectThread(args []string) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
-	result, err := c.runner().Resume(ctx, workerExecutionRoot(worker), worker.ThreadID)
+	result, err := c.runnerFor(worker).Resume(ctx, workerExecutionRoot(worker), worker.ThreadID)
 	if err != nil {
 		return fmt.Errorf("inspect app-server thread %s: %w", worker.ThreadID, err)
 	}
@@ -1337,8 +1403,35 @@ func (c cli) runner() appserverRunner {
 	return appserver.Runner{}
 }
 
-func (c cli) runTurnObserved(ctx context.Context, cwd, prompt string, observer appserver.TurnObserver, steering appserver.SteeringPolicy) (appserver.RunResult, error) {
-	runner := c.runner()
+func (c cli) runnerFor(worker store.Worker) appserverRunner {
+	if c.appserverRunner != nil {
+		return c.appserverRunner
+	}
+	if worker.Remote == nil {
+		return appserver.Runner{}
+	}
+	return appserver.Runner{Process: appserver.SSHProcess{
+		Target:      worker.Remote.Host,
+		Jump:        worker.Remote.JumpHost,
+		CodexBinary: worker.Remote.CodexBinary,
+	}, Sandbox: "danger-full-access"}
+}
+
+func gitConfigValue(ctx context.Context, repoRoot, key string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "config", "--get", key)
+	cmd.Dir = repoRoot
+	out, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return "", nil
+		}
+		return "", fmt.Errorf("git config --get %s in %s: %w", key, repoRoot, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+func (c cli) runTurnObserved(runner appserverRunner, ctx context.Context, cwd, prompt string, observer appserver.TurnObserver, steering appserver.SteeringPolicy) (appserver.RunResult, error) {
 	if coordinated, ok := runner.(appserverCoordinatedRunner); ok {
 		return coordinated.RunTurnCoordinated(ctx, cwd, prompt, observer, steering)
 	}
@@ -1348,8 +1441,7 @@ func (c cli) runTurnObserved(ctx context.Context, cwd, prompt string, observer a
 	return runner.RunTurn(ctx, cwd, prompt)
 }
 
-func (c cli) sendTurnObserved(ctx context.Context, cwd, threadID, prompt string, observer appserver.TurnObserver, steering appserver.SteeringPolicy) (appserver.RunResult, error) {
-	runner := c.runner()
+func (c cli) sendTurnObserved(runner appserverRunner, ctx context.Context, cwd, threadID, prompt string, observer appserver.TurnObserver, steering appserver.SteeringPolicy) (appserver.RunResult, error) {
 	if coordinated, ok := runner.(appserverCoordinatedRunner); ok {
 		return coordinated.SendTurnCoordinated(ctx, cwd, threadID, prompt, observer, steering)
 	}
@@ -1373,6 +1465,7 @@ Usage:
   cs status --issues
   cs spawn --repo . --prompt "inspect this repo"
   cs spawn --engine appserver --repo . --prompt "summarize this repo in one sentence"
+  cs spawn --engine appserver --repo . --worktree --remote-host user@host --prompt "work remotely"
   cs spawn --issue owner/repo#123 --repo . --prompt "work this issue"
   cs doctor --appserver
   cs send <worker> "continue with tests"
@@ -1464,6 +1557,9 @@ func workerStatusFromTurn(status string) store.WorkerStatus {
 
 func workerExecutionRoot(worker store.Worker) string {
 	if strings.TrimSpace(worker.Worktree) != "" {
+		if worker.Remote != nil {
+			return worker.Worktree
+		}
 		if info, err := os.Stat(worker.Worktree); err == nil && info.IsDir() {
 			return worker.Worktree
 		}
