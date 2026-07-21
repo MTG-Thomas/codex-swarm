@@ -7,6 +7,17 @@ All notable changes to codex-swarm are documented here.
 ### Added
 
 - Provider-neutral Windows `VERSIONINFO` generation for `cs.exe` and `csd.exe`, including product and file versions for AMD64 and ARM64 release builds.
+- `cs attach` for registering existing tracker or app-server tasks without fabricating worktrees or branches.
+- `cs close` for idempotent, transactional worker closeout with claim release, PR refresh recording, and parent completion forwarding.
+- Typed `path`, `task`, and `live` claim scopes, including atomic multi-scope creation through repeated `--scope` flags.
+- Filtered and JSON `cs status` output with capability-oriented coordination coverage metrics for workers, claims, messages, deliveries, touches, and conflicts.
+
+### Changed
+
+- SQLite worker, claim, gate, and metric reads now query their record kinds directly instead of decoding the entire compatibility table.
+- Worker snapshots use their actual generation time and no longer borrow fabricated worktrees or another worker's gate evidence.
+- Pull-request next actions distinguish open, merged, closed, and unknown states; CodeRabbit remains visible but is counted separately from required CI checks.
+- Runtime behavior and protocol reporting derive stable capabilities from engine identity and durable worker evidence, following the architectural boundary in issue `#68` without adding another coordination store.
 
 ## [0.4.1] - 2026-07-21
 

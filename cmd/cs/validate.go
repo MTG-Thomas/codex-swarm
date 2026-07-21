@@ -151,7 +151,7 @@ func validatorPrompt(implementer store.Worker, gates []string) string {
 		fmt.Fprintf(&b, "Required gates: %s\n", strings.Join(gates, ", "))
 	}
 	b.WriteString("\n")
-	b.WriteString(snapshot.Build(snapshot.Input{Worker: implementer}).Text())
+	b.WriteString(snapshot.Build(snapshot.Input{Worker: implementer, GeneratedAt: implementer.UpdatedAt}).Text())
 	b.WriteString("\n\n")
 	b.WriteString("Review the final diff and gate evidence. Approve with actionable proof or reject with actionable findings.")
 	return b.String()

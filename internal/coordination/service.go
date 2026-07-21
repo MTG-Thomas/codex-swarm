@@ -217,7 +217,7 @@ func (s Service) createAndDeliver(ctx context.Context, requestID string, kind st
 		if err != nil {
 			return SendResult{}, err
 		}
-		if worker.Engine != "appserver" || worker.Status != store.WorkerRunning || worker.ThreadID == "" || worker.TurnID == "" {
+		if !store.CapabilitiesForWorker(worker).Has(store.CapabilityLiveMessage) || worker.Status != store.WorkerRunning || worker.ThreadID == "" || worker.TurnID == "" {
 			continue
 		}
 		root := worker.Worktree

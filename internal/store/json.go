@@ -226,17 +226,16 @@ func (s *JSONStore) UpdateWorkersWithRequest(requestID, command, fingerprint str
 func (s *JSONStore) GetWorker(id string) (Worker, error) {
 	var got Worker
 	err := s.withStateLock(func() error {
-		state, err := s.read()
+		worker, found, err := getRecord[Worker](s.tx, "worker", id)
 		if err != nil {
 			return err
 		}
-		for _, worker := range state.Workers {
-			if worker.ID == id {
-				got = worker
-				return nil
-			}
+		if !found {
+			return ErrWorkerNotFound
 		}
-		return ErrWorkerNotFound
+		normalizeWorkerLifecycleForRead(&worker)
+		got = worker
+		return nil
 	})
 	if err != nil {
 		return Worker{}, err
@@ -248,11 +247,14 @@ func (s *JSONStore) GetWorker(id string) (Worker, error) {
 func (s *JSONStore) ListWorkers() ([]Worker, error) {
 	var workers []Worker
 	err := s.withStateLock(func() error {
-		state, err := s.read()
+		var err error
+		workers, err = listRecords[Worker](s.tx, "worker")
 		if err != nil {
 			return err
 		}
-		workers = append([]Worker(nil), state.Workers...)
+		for i := range workers {
+			normalizeWorkerLifecycleForRead(&workers[i])
+		}
 		sort.Slice(workers, func(i, j int) bool {
 			return workers[i].UpdatedAt.After(workers[j].UpdatedAt)
 		})
@@ -361,11 +363,11 @@ func (s *JSONStore) SaveGateEvidence(evidence GateEvidence) error {
 func (s *JSONStore) ListGateEvidence() ([]GateEvidence, error) {
 	var evidence []GateEvidence
 	err := s.withStateLock(func() error {
-		state, err := s.read()
+		var err error
+		evidence, err = listRecords[GateEvidence](s.tx, "gate_evidence")
 		if err != nil {
 			return err
 		}
-		evidence = append([]GateEvidence(nil), state.GateEvidence...)
 		sort.Slice(evidence, func(i, j int) bool {
 			return evidence[i].CreatedAt.After(evidence[j].CreatedAt)
 		})
@@ -408,32 +410,36 @@ func (s *JSONStore) SaveClaim(claim Claim) error {
 // SaveClaimValidated validates workers and existing claims, then saves a claim
 // under the same state lock and returns the previous claim snapshot.
 func (s *JSONStore) SaveClaimValidated(claim Claim, validate func([]Worker, []Claim) error) ([]Claim, error) {
+	return s.SaveClaimsValidated([]Claim{claim}, validate)
+}
+
+// SaveClaimsValidated validates and inserts a claim set in one transaction.
+func (s *JSONStore) SaveClaimsValidated(claims []Claim, validate func([]Worker, []Claim) error) ([]Claim, error) {
 	var previous []Claim
 	err := s.withStateLock(func() error {
-		state, err := s.read()
+		workers, err := listRecords[Worker](s.tx, "worker")
+		if err != nil {
+			return err
+		}
+		for i := range workers {
+			normalizeWorkerLifecycleForRead(&workers[i])
+		}
+		existing, err := listRecords[Claim](s.tx, "claim")
 		if err != nil {
 			return err
 		}
 		if validate != nil {
-			if err := validate(state.Workers, state.Claims); err != nil {
+			if err := validate(workers, existing); err != nil {
 				return err
 			}
 		}
-		previous = append([]Claim(nil), state.Claims...)
-
-		found := false
-		for i := range state.Claims {
-			if state.Claims[i].ID == claim.ID {
-				state.Claims[i] = claim
-				found = true
-				break
+		previous = append([]Claim(nil), existing...)
+		for _, claim := range claims {
+			if err := s.upsert("claim", claim.ID, claim); err != nil {
+				return err
 			}
 		}
-		if !found {
-			state.Claims = append(state.Claims, claim)
-		}
-
-		return s.upsert("claim", claim.ID, claim)
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -490,17 +496,15 @@ func (s *JSONStore) ImportClaims(claims []Claim, force bool) (imported int, skip
 func (s *JSONStore) GetClaim(id string) (Claim, error) {
 	var got Claim
 	err := s.withStateLock(func() error {
-		state, err := s.read()
+		claim, found, err := getRecord[Claim](s.tx, "claim", id)
 		if err != nil {
 			return err
 		}
-		for _, claim := range state.Claims {
-			if claim.ID == id {
-				got = claim
-				return nil
-			}
+		if !found {
+			return ErrClaimNotFound
 		}
-		return ErrClaimNotFound
+		got = claim
+		return nil
 	})
 	if err != nil {
 		return Claim{}, err
@@ -512,17 +516,86 @@ func (s *JSONStore) GetClaim(id string) (Claim, error) {
 func (s *JSONStore) ListClaims() ([]Claim, error) {
 	var claims []Claim
 	err := s.withStateLock(func() error {
-		state, err := s.read()
+		var err error
+		claims, err = listRecords[Claim](s.tx, "claim")
 		if err != nil {
 			return err
 		}
-		claims = append([]Claim(nil), state.Claims...)
 		sort.Slice(claims, func(i, j int) bool {
 			return claims[i].UpdatedAt.After(claims[j].UpdatedAt)
 		})
 		return nil
 	})
 	return claims, err
+}
+
+// CoordinationMetrics reports durable coordination coverage without loading unrelated records.
+func (s *JSONStore) CoordinationMetrics(now time.Time) (CoordinationMetrics, error) {
+	metrics := CoordinationMetrics{Backend: "sqlite"}
+	err := s.withStateLock(func() error {
+		workers, err := listRecords[Worker](s.tx, "worker")
+		if err != nil {
+			return err
+		}
+		claimList, err := listRecords[Claim](s.tx, "claim")
+		if err != nil {
+			return err
+		}
+		metrics.WorkerCount = len(workers)
+		for i := range workers {
+			normalizeWorkerLifecycleForRead(&workers[i])
+			worker := workers[i]
+			if worker.Status != WorkerDone && worker.Status != WorkerFailed {
+				metrics.ActiveWorkers++
+			}
+			capabilities := CapabilitiesForWorker(worker)
+			if capabilities.Has(CapabilityLiveMessage) {
+				metrics.LiveMessageWorkers++
+				if worker.Status == WorkerRunning && strings.TrimSpace(worker.ThreadID) != "" && strings.TrimSpace(worker.TurnID) != "" {
+					metrics.SteerableWorkers++
+				}
+			}
+			if capabilities.Has(CapabilityResume) {
+				metrics.ResumeWorkers++
+			}
+			if capabilities.Has(CapabilityManagedWorktree) {
+				metrics.ManagedWorktreeWorkers++
+			}
+			if capabilities.Has(CapabilityAutomaticCompletion) {
+				metrics.AutomaticCompletionWorkers++
+			}
+			if capabilities.Has(CapabilityExternalTracker) {
+				metrics.ExternalTrackerWorkers++
+			}
+		}
+		metrics.ClaimCount = len(claimList)
+		for _, claim := range claimList {
+			if (claim.Status == ClaimActive || claim.Status == ClaimBlocked) && (claim.ExpiresAt.IsZero() || claim.ExpiresAt.After(now)) {
+				metrics.ActiveClaims++
+			}
+		}
+		counts := []struct {
+			target *int
+			query  string
+			args   []any
+		}{
+			{&metrics.MessageCount, `SELECT COUNT(*) FROM messages`, nil},
+			{&metrics.QueuedMessages, `SELECT COUNT(*) FROM message_deliveries WHERE state=?`, []any{DeliveryQueued}},
+			{&metrics.SteeredMessages, `SELECT COUNT(*) FROM message_deliveries WHERE state=?`, []any{DeliverySteered}},
+			{&metrics.DeliveredMessages, `SELECT COUNT(*) FROM message_deliveries WHERE state=?`, []any{DeliveryDelivered}},
+			{&metrics.RecentTouches, `SELECT COUNT(*) FROM file_touches WHERE created_at>=?`, []any{now.Add(-touchRetention).UTC().Format(time.RFC3339Nano)}},
+			{&metrics.ConflictMessages, `SELECT COUNT(*) FROM messages WHERE kind=?`, []any{MessageConflict}},
+		}
+		for _, count := range counts {
+			value, err := queryCount(s.tx, count.query, count.args...)
+			if err != nil {
+				return err
+			}
+			*count.target = value
+		}
+		return nil
+	})
+	return metrics, err
 }
 
 // SaveAgent inserts or replaces one agent identity record.
@@ -933,6 +1006,63 @@ func openSQLite(path string) (*sql.DB, error) {
 type sqlExecutor interface {
 	Exec(query string, args ...any) (sql.Result, error)
 	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+func getRecord[T any](q sqlExecutor, kind, id string) (T, bool, error) {
+	var zero T
+	rows, err := q.Query(`SELECT payload FROM records WHERE kind=? AND id=?`, kind, id)
+	if err != nil {
+		return zero, false, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return zero, false, rows.Err()
+	}
+	var payload []byte
+	if err := rows.Scan(&payload); err != nil {
+		return zero, false, err
+	}
+	var value T
+	if err := json.Unmarshal(payload, &value); err != nil {
+		return zero, false, fmt.Errorf("decode SQLite record kind=%q id=%q: %w", kind, id, err)
+	}
+	return value, true, rows.Err()
+}
+
+func listRecords[T any](q sqlExecutor, kind string) (values []T, err error) {
+	rows, err := q.Query(`SELECT payload FROM records WHERE kind=?`, kind)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	for rows.Next() {
+		var payload []byte
+		if err := rows.Scan(&payload); err != nil {
+			return nil, err
+		}
+		var value T
+		if err := json.Unmarshal(payload, &value); err != nil {
+			return nil, fmt.Errorf("decode SQLite record kind=%q: %w", kind, err)
+		}
+		values = append(values, value)
+	}
+	return values, rows.Err()
+}
+
+func queryCount(q sqlExecutor, query string, args ...any) (int, error) {
+	rows, err := q.Query(query, args...)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return 0, rows.Err()
+	}
+	var count int
+	if err := rows.Scan(&count); err != nil {
+		return 0, err
+	}
+	return count, rows.Err()
 }
 
 func readState(q sqlExecutor) (state stateFile, err error) {

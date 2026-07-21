@@ -44,6 +44,10 @@ type eventStore interface {
 	ListEvents() ([]store.Event, error)
 }
 
+type metricsStore interface {
+	CoordinationMetrics(time.Time) (store.CoordinationMetrics, error)
+}
+
 type coordinationStore interface {
 	GetWorker(string) (store.Worker, error)
 	ListWorkers() ([]store.Worker, error)
@@ -244,14 +248,37 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		writeRouteError(w, r, http.StatusInternalServerError, "store_read_failed", err.Error())
 		return
 	}
-	writeJSON(w, Status{
+	status := Status{
 		Daemon:        "running",
 		Version:       Version,
 		StatePath:     s.statePath,
 		WorkerCount:   len(workers),
 		ClaimCount:    len(claimList),
 		ConflictCount: len(findClaimConflicts(claimList, time.Now().UTC())),
-	})
+	}
+	if metricsSource, ok := s.store.(metricsStore); ok {
+		metrics, err := metricsSource.CoordinationMetrics(time.Now().UTC())
+		if err != nil {
+			writeRouteError(w, r, http.StatusInternalServerError, "store_metrics_failed", err.Error())
+			return
+		}
+		status.Backend = metrics.Backend
+		status.ActiveWorkerCount = metrics.ActiveWorkers
+		status.LiveMessageWorkers = metrics.LiveMessageWorkers
+		status.ResumeWorkers = metrics.ResumeWorkers
+		status.ManagedWorktreeWorkers = metrics.ManagedWorktreeWorkers
+		status.AutomaticCompletionWorkers = metrics.AutomaticCompletionWorkers
+		status.ExternalTrackerWorkers = metrics.ExternalTrackerWorkers
+		status.SteerableWorkers = metrics.SteerableWorkers
+		status.ActiveClaimCount = metrics.ActiveClaims
+		status.MessageCount = metrics.MessageCount
+		status.QueuedMessages = metrics.QueuedMessages
+		status.SteeredMessages = metrics.SteeredMessages
+		status.DeliveredMessages = metrics.DeliveredMessages
+		status.RecentTouches = metrics.RecentTouches
+		status.ConflictMessages = metrics.ConflictMessages
+	}
+	writeJSON(w, status)
 }
 
 func (s *Server) handleWorkers(w http.ResponseWriter, r *http.Request) {
@@ -715,8 +742,13 @@ func summarizeWorkers(workers []store.Worker) []WorkerStatus {
 			Issue:            worker.Issue,
 			ValidationOf:     worker.ValidationOf,
 			ValidationStatus: worker.ValidationStatus,
-			Worktree:         worker.Worktree,
+			Worktree:         truthfulWorkerWorktree(worker),
+			Repo:             worker.ProjectRoot,
+			Engine:           worker.Engine,
+			Capabilities:     store.CapabilitiesForWorker(worker).Strings(),
 			ThreadID:         worker.ThreadID,
+			Prompt:           worker.Prompt,
+			UpdatedAt:        worker.UpdatedAt,
 		})
 	}
 	return summaries
@@ -739,11 +771,18 @@ func summarizeLegacyWorkers(workers []protocol.LegacyWorker) []WorkerStatus {
 	return summaries
 }
 
+func truthfulWorkerWorktree(worker store.Worker) string {
+	if store.CapabilitiesForWorker(worker).Has(store.CapabilityManagedWorktree) {
+		return worker.Worktree
+	}
+	return ""
+}
+
 func protocolClaims(claims []store.Claim) []protocol.Claim {
 	result := make([]protocol.Claim, 0, len(claims))
 	for _, claim := range claims {
 		result = append(result, protocol.Claim{
-			ID: claim.ID, WorkerID: claim.WorkerID, Repo: claim.Repo, Scope: claim.Scope,
+			ID: claim.ID, WorkerID: claim.WorkerID, Repo: claim.Repo, ScopeKind: string(claim.ScopeKind), Scope: claim.Scope,
 			Issue: claim.Issue, Status: string(claim.Status), Note: claim.Note,
 			ExternalWorker: claim.ExternalWorker, WorkerSource: claim.WorkerSource,
 			Blocker: claim.Blocker, Next: claim.Next, ExpiresAt: claim.ExpiresAt,

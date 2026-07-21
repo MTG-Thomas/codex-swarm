@@ -88,6 +88,8 @@ func (c cli) run(args []string) error {
 		return c.status(args[1:])
 	case "spawn":
 		return c.spawn(args[1:])
+	case "attach":
+		return c.attach(args[1:])
 	case "send":
 		return c.send(args[1:])
 	case "message":
@@ -130,6 +132,8 @@ func (c cli) run(args []string) error {
 		return c.pr(args[1:])
 	case "report":
 		return c.report(args[1:])
+	case "close":
+		return c.closeWorker(args[1:])
 	case "resume":
 		return c.resume(args[1:])
 	case "inspect-thread":
@@ -149,6 +153,7 @@ func (c cli) doctor(args []string) error {
 	statePath := fs.String("state", defaultStatePath(), "state file path")
 	repo := fs.String("repo", ".", "repository root")
 	checkAppServer := fs.Bool("appserver", false, "start codex app-server and verify JSON-RPC initialize")
+	daemonURL := fs.String("daemon", "", "daemon base URL to probe")
 	timeout := fs.Duration("timeout", 15*time.Second, "app-server initialization timeout")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -191,6 +196,19 @@ func (c cli) doctor(args []string) error {
 		check("state", nil, *statePath)
 	}
 
+	baseURL := configuredDaemonURL(*daemonURL)
+	if baseURL == "" {
+		baseURL = "http://127.0.0.1:8787"
+	}
+	daemonCtx, daemonCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	daemonStatus, daemonErr := (daemon.Client{BaseURL: baseURL}).Status(daemonCtx)
+	daemonCancel()
+	if daemonErr != nil {
+		fmt.Fprintf(c.out, "SKIP daemon: not reachable at %s (%v)\n", baseURL, daemonErr)
+	} else {
+		check("daemon", nil, daemonStatus.String())
+	}
+
 	repoRoot := ""
 	repoOK := false
 	resolvedRepo, err := filepath.Abs(*repo)
@@ -227,49 +245,7 @@ func (c cli) doctor(args []string) error {
 }
 
 func (c cli) status(args []string) error {
-	fs := c.flagSet("status")
-	statePath := fs.String("state", defaultStatePath(), "state file path")
-	daemonURL := fs.String("daemon", "", "daemon base URL, for example http://127.0.0.1:8787")
-	issues := fs.Bool("issues", false, "print compact issue and worker operations dashboard")
-	detail := fs.Bool("detail", false, "include lower-priority dashboard rows")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if *issues {
-		return c.statusIssues(*statePath, *detail)
-	}
-
-	if *daemonURL == "" {
-		*daemonURL = os.Getenv("CODEX_SWARM_DAEMON_URL")
-	}
-	if *daemonURL != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		client := daemon.Client{BaseURL: *daemonURL}
-		status, err := client.Status(ctx)
-		if err != nil {
-			return fmt.Errorf("daemon status: %w", err)
-		}
-		fmt.Fprintln(c.out, status.String())
-		workers, err := client.Workers(ctx)
-		if err != nil {
-			return fmt.Errorf("daemon workers: %w", err)
-		}
-		for _, worker := range workers.Workers {
-			fmt.Fprintf(c.out, "%s\t%s\t%s\t%s\t%s\n", worker.ID, worker.Status, emptyDash(worker.Issue), emptyDash(worker.Worktree), emptyDash(worker.ThreadID))
-		}
-		return nil
-	}
-
-	workers, err := store.NewJSONStore(*statePath).ListWorkers()
-	if err != nil {
-		return err
-	}
-	fmt.Fprintf(c.out, "workers=%d state=%s\n", len(workers), *statePath)
-	for _, worker := range workers {
-		fmt.Fprintf(c.out, "%s\t%s\t%s\t%s\t%s\n", worker.ID, displayWorkerStatus(worker), worker.Engine, worker.ThreadID, short(worker.Prompt, 60))
-	}
-	return nil
+	return c.statusWorkers(args)
 }
 
 func (c cli) statusIssues(statePath string, detail bool) error {
@@ -412,6 +388,8 @@ func (c cli) spawn(args []string) error {
 		return fmt.Errorf("generate worker id: %w", err)
 	}
 	managedName := id
+	managedWorktree := filepath.Join(repoRoot, ".codex-swarm", "worktrees", managedName)
+	managedBranch := "cs/" + managedName
 	if *engine != "mock" && *engine != "appserver" {
 		return fmt.Errorf("unknown engine %q", *engine)
 	}
@@ -444,8 +422,6 @@ func (c cli) spawn(args []string) error {
 		Role:        *role,
 		Issue:       issue,
 		ProjectRoot: repoRoot,
-		Worktree:    filepath.Join(repoRoot, ".codex-swarm", "worktrees", managedName),
-		Branch:      "cs/" + managedName,
 		ThreadID:    threadID,
 		TurnID:      turnID,
 		Engine:      *engine,
@@ -459,6 +435,8 @@ func (c cli) spawn(args []string) error {
 
 	worktreeReady := false
 	if *createWorktree {
+		worker.Worktree = managedWorktree
+		worker.Branch = managedBranch
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 		defer cancel()
 		if remoteRequested {
@@ -946,7 +924,7 @@ func (c cli) send(args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 		defer cancel()
 		prompt := message
-		snap, snapErr := workerSnapshot(st, initial)
+		snap, snapErr := workerSnapshot(st, initial, c.now().UTC())
 		if snapErr != nil {
 			return snapErr
 		}
@@ -1165,7 +1143,7 @@ func (c cli) show(args []string) error {
 		return errors.New("show --json requires --snapshot")
 	}
 	if *printSnapshot {
-		snap, err := workerSnapshot(st, worker)
+		snap, err := workerSnapshot(st, worker, c.now().UTC())
 		if err != nil {
 			return err
 		}
@@ -1363,7 +1341,7 @@ func (c cli) workerCheck(args []string) error {
 	return nil
 }
 
-func workerSnapshot(st *store.JSONStore, worker store.Worker) (snapshot.Snapshot, error) {
+func workerSnapshot(st *store.JSONStore, worker store.Worker, generatedAt time.Time) (snapshot.Snapshot, error) {
 	claims, err := st.ListClaims()
 	if err != nil {
 		return snapshot.Snapshot{}, err
@@ -1376,6 +1354,7 @@ func workerSnapshot(st *store.JSONStore, worker store.Worker) (snapshot.Snapshot
 		Worker:       worker,
 		Claims:       claims,
 		GateEvidence: gates,
+		GeneratedAt:  generatedAt,
 	}), nil
 }
 
@@ -1461,11 +1440,14 @@ func (c cli) printUsage() {
 	fmt.Fprintln(c.out, `cs - Codex swarm operator CLI
 
 Usage:
-  cs status
+  cs status [--since 24h] [--repo .] [--status working,idle] [--limit 50]
+  cs status --all
   cs status --issues
   cs spawn --repo . --prompt "inspect this repo"
   cs spawn --engine appserver --repo . --prompt "summarize this repo in one sentence"
   cs spawn --engine appserver --repo . --worktree --remote-host user@host --prompt "work remotely"
+  cs attach --repo . --thread <thread-id> --prompt "track this Codex task"
+  cs attach --worker <worker-id> --engine appserver --thread <thread-id> --turn <turn-id>
   cs spawn --issue owner/repo#123 --repo . --prompt "work this issue"
   cs doctor --appserver
   cs send <worker> "continue with tests"
@@ -1510,7 +1492,8 @@ Usage:
   cs schedule add --repo . --cron "0 8 * * 1" --prompt "weekly repo check"
   cs schedule list
   cs repo hints --repo .
-  cs report --note "summary" <worker> done`)
+  cs report --note "summary" <worker> done
+  cs close --note "summary" <worker>`)
 }
 
 func emptyDash(value string) string {

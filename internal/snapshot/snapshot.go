@@ -17,6 +17,7 @@ type Input struct {
 	Worker       store.Worker
 	Claims       []store.Claim
 	GateEvidence []store.GateEvidence
+	GeneratedAt  time.Time
 }
 
 type Snapshot struct {
@@ -70,6 +71,7 @@ type Event struct {
 
 func Build(input Input) Snapshot {
 	worker := input.Worker
+	worktree, branch := truthfulCheckout(worker)
 	return Snapshot{
 		Schema: SchemaVersion,
 		Worker: Worker{
@@ -80,8 +82,8 @@ func Build(input Input) Snapshot {
 			ValidationOf:     strings.TrimSpace(worker.ValidationOf),
 			ValidationStatus: strings.TrimSpace(worker.ValidationStatus),
 			Repo:             strings.TrimSpace(worker.ProjectRoot),
-			Worktree:         strings.TrimSpace(worker.Worktree),
-			Branch:           strings.TrimSpace(worker.Branch),
+			Worktree:         worktree,
+			Branch:           branch,
 			ThreadID:         strings.TrimSpace(worker.ThreadID),
 			Engine:           strings.TrimSpace(worker.Engine),
 		},
@@ -90,7 +92,15 @@ func Build(input Input) Snapshot {
 		Report:       strings.TrimSpace(worker.Report),
 		LastMessage:  strings.TrimSpace(worker.LastMessage),
 		RecentEvents: recentEvents(worker.Events, 5),
+		GeneratedAt:  input.GeneratedAt.UTC(),
 	}
+}
+
+func truthfulCheckout(worker store.Worker) (string, string) {
+	if store.CapabilitiesForWorker(worker).Has(store.CapabilityManagedWorktree) {
+		return strings.TrimSpace(worker.Worktree), strings.TrimSpace(worker.Branch)
+	}
+	return "", ""
 }
 
 func (s Snapshot) Text() string {
@@ -168,7 +178,7 @@ func relevantClaims(worker store.Worker, all []store.Claim) []Claim {
 func relevantGateEvidence(worker store.Worker, all []store.GateEvidence) []Gate {
 	gates := []Gate(nil)
 	for _, gate := range all {
-		if gate.WorkerID != worker.ID && !samePath(gate.Repo, worker.ProjectRoot) {
+		if gate.WorkerID != worker.ID {
 			continue
 		}
 		gates = append(gates, Gate{

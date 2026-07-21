@@ -33,8 +33,15 @@ func (s PullRequestStatus) CheckSummary() string {
 }
 
 func (s PullRequestStatus) NextAction() string {
-	if !strings.EqualFold(strings.TrimSpace(s.State), "OPEN") {
-		return "blocked"
+	switch strings.ToUpper(strings.TrimSpace(s.State)) {
+	case "MERGED":
+		return "complete"
+	case "CLOSED":
+		return "closed"
+	case "OPEN":
+		// Continue below.
+	default:
+		return "unknown"
 	}
 	if s.ChecksFailed > 0 {
 		return "fix-ci"
@@ -86,6 +93,7 @@ func (CLIPRStatusProvider) PullRequestStatus(ctx context.Context, url string) (P
 			if strings.EqualFold(status.CodeRabbitStatus, "PENDING") || strings.EqualFold(status.CodeRabbitStatus, "QUEUED") || strings.EqualFold(status.CodeRabbitStatus, "IN_PROGRESS") {
 				status.CodeRabbitPending = true
 			}
+			continue
 		}
 		switch strings.ToUpper(firstNonEmpty(strings.TrimSpace(check.Conclusion), strings.TrimSpace(check.State), strings.TrimSpace(check.Status))) {
 		case "SUCCESS", "PASS", "COMPLETED":

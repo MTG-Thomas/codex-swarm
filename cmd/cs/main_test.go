@@ -892,7 +892,7 @@ func TestCLIStatusPrefersDaemonWithLifecycleAndConflictCounts(t *testing.T) {
 	if !strings.Contains(got, "daemon=running") || !strings.Contains(got, "workers=1") || !strings.Contains(got, "claims=2") || !strings.Contains(got, "conflicts=1") || !strings.Contains(got, "state="+state) {
 		t.Fatalf("status daemon summary = %q", got)
 	}
-	if !strings.Contains(got, "w-stale\tstale\tMTG-Thomas/codex-swarm#42\t/repo/.codex-swarm/worktrees/w-stale\tthread-stale") {
+	if !strings.Contains(got, "w-stale\tstale\tmock\tthread-stale\tstale worker") {
 		t.Fatalf("status daemon worker line = %q", got)
 	}
 }
@@ -1584,7 +1584,7 @@ func TestCLIPRAttachAndStatusRefreshesWorkerState(t *testing.T) {
 	got := out.String()
 	for _, want := range []string{
 		"pr worker=w-pr url=https://github.com/MTG-Thomas/codex-swarm/pull/40 state=OPEN base=main head=codex/pr-stewardship-state",
-		"checks=pass=2 fail=0 pending=0 review=APPROVED coderabbit=SUCCESS next=merge-ready",
+		"checks=pass=1 fail=0 pending=0 review=APPROVED coderabbit=SUCCESS next=merge-ready",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("pr status output missing %q:\n%s", want, got)
@@ -1595,7 +1595,7 @@ func TestCLIPRAttachAndStatusRefreshesWorkerState(t *testing.T) {
 		t.Fatalf("PullRequests = %#v, want one", updated.PullRequests)
 	}
 	pr := updated.PullRequests[0]
-	if pr.NextAction != "merge-ready" || pr.CheckSummary != "pass=2 fail=0 pending=0" || pr.CodeRabbitStatus != "SUCCESS" {
+	if pr.NextAction != "merge-ready" || pr.CheckSummary != "pass=1 fail=0 pending=0" || pr.CodeRabbitStatus != "SUCCESS" {
 		t.Fatalf("stored PR state = %#v", pr)
 	}
 	var attached, refreshed bool

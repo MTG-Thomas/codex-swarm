@@ -12,12 +12,13 @@ import (
 
 func TestBuildDerivesCompactWorkerSnapshot(t *testing.T) {
 	now := time.Date(2026, 6, 27, 18, 0, 0, 0, time.UTC)
+	const workerWorktree = "/repo/.codex-swarm/worktrees/w-1"
 	worker := store.Worker{
 		ID:          "w-1",
 		Role:        "implementer",
 		Issue:       "MTG-Thomas/codex-swarm#17",
 		ProjectRoot: "/repo",
-		Worktree:    "/repo/.codex-swarm/worktrees/w-1",
+		Worktree:    workerWorktree,
 		Branch:      "cs/w-1",
 		ThreadID:    "thread-1",
 		Engine:      "appserver",
@@ -29,13 +30,15 @@ func TestBuildDerivesCompactWorkerSnapshot(t *testing.T) {
 		UpdatedAt:   now,
 		Events: []store.Event{
 			{At: now.Add(-3 * time.Minute), Type: "spawned", Message: "worker created"},
+			{At: now.Add(-3 * time.Minute), Type: "worktree.created", Message: workerWorktree},
 			{At: now.Add(-2 * time.Minute), Type: "message.received", From: "w-review", Message: "from=w-review please check gates"},
 			{At: now.Add(-time.Minute), Type: "quality.gate", Message: "gate=test exit=0 command=go test ./..."},
 		},
 	}
 
 	got := Build(Input{
-		Worker: worker,
+		Worker:      worker,
+		GeneratedAt: now,
 		Claims: []store.Claim{{
 			ID:       "c-1",
 			WorkerID: "w-1",
@@ -64,7 +67,7 @@ func TestBuildDerivesCompactWorkerSnapshot(t *testing.T) {
 	if len(got.Gates) != 1 || got.Gates[0].ID != "test" || got.Gates[0].ExitCode != 0 || got.Gates[0].Commit != "abc123" {
 		t.Fatalf("gates = %#v", got.Gates)
 	}
-	if len(got.RecentEvents) != 3 || got.RecentEvents[2].Type != "quality.gate" {
+	if len(got.RecentEvents) != 4 || got.RecentEvents[3].Type != "quality.gate" {
 		t.Fatalf("recent events = %#v", got.RecentEvents)
 	}
 	text := got.Text()
@@ -88,6 +91,9 @@ func TestBuildDerivesCompactWorkerSnapshot(t *testing.T) {
 	if !strings.Contains(string(data), `"schema":"codex-swarm.worker-snapshot.v1"`) {
 		t.Fatalf("snapshot JSON missing schema: %s", data)
 	}
+	if got.GeneratedAt != now {
+		t.Fatalf("GeneratedAt = %s, want %s", got.GeneratedAt, now)
+	}
 }
 
 func TestBuildFiltersUnrelatedClaimsAndGates(t *testing.T) {
@@ -104,6 +110,7 @@ func TestBuildFiltersUnrelatedClaimsAndGates(t *testing.T) {
 			{ID: "c-issue", WorkerID: "w-other", Issue: "MTG-Thomas/codex-swarm#17", Status: store.ClaimActive},
 			{ID: "c-other", WorkerID: "w-other", Issue: "MTG-Thomas/codex-swarm#99", Status: store.ClaimActive},
 		},
+		GeneratedAt: time.Date(2026, 6, 27, 18, 0, 0, 0, time.UTC),
 		GateEvidence: []store.GateEvidence{
 			{ID: "g-worker", GateID: "test", WorkerID: "w-1", Repo: "/other"},
 			{ID: "g-repo", GateID: "vet", WorkerID: "w-other", Repo: "/repo"},
@@ -113,8 +120,23 @@ func TestBuildFiltersUnrelatedClaimsAndGates(t *testing.T) {
 	if len(got.Claims) != 2 || got.Claims[0].ID != "c-issue" || got.Claims[1].ID != "c-worker" {
 		t.Fatalf("claims = %#v", got.Claims)
 	}
-	if len(got.Gates) != 2 || got.Gates[0].ID != "test" || got.Gates[1].ID != "vet" {
+	if len(got.Gates) != 1 || got.Gates[0].ID != "test" {
 		t.Fatalf("gates = %#v", got.Gates)
+	}
+}
+
+func TestBuildOmitsPlannedCheckoutWithoutCreationEvent(t *testing.T) {
+	got := Build(Input{
+		Worker: store.Worker{
+			ID:       "w-tracker",
+			Worktree: "/repo/.codex-swarm/worktrees/w-tracker",
+			Branch:   "cs/w-tracker",
+			Status:   store.WorkerIdle,
+		},
+		GeneratedAt: time.Date(2026, 6, 27, 18, 0, 0, 0, time.UTC),
+	})
+	if got.Worker.Worktree != "" || got.Worker.Branch != "" {
+		t.Fatalf("checkout = worktree:%q branch:%q, want omitted", got.Worker.Worktree, got.Worker.Branch)
 	}
 }
 
