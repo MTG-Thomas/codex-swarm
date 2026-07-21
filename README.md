@@ -36,6 +36,21 @@ go run ./cmd/csd version
 
 The current MVP can drive a real `codex app-server` thread and keeps a deterministic mock engine for tests or offline demos.
 
+App-server workers can also use isolated Git branches on an SSH host. The
+remote host owns Git and Codex authentication; swarm stores only routing and
+workspace identity:
+
+```powershell
+cs spawn --engine appserver --repo . --worktree `
+  --remote-host user@remote-host --remote-jump user@jump-host `
+  --remote-repo-url git@github.com:owner/repo.git `
+  --remote-codex /home/user/.local/bin/codex `
+  --prompt "Implement, commit, and push the assigned branch."
+```
+
+See [docs/remote-sessions.md](docs/remote-sessions.md) for the Git/Bifrost
+boundary and prerequisites.
+
 ```powershell
 go run ./cmd/cs spawn --engine appserver --repo . --prompt "reply with exactly: codex-swarm-ok"
 go run ./cmd/cs spawn --repo . --prompt "isolated mock worker" --worktree
