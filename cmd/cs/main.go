@@ -18,10 +18,12 @@ import (
 
 	"github.com/MTG-Thomas/codex-swarm/internal/appserver"
 	bf "github.com/MTG-Thomas/codex-swarm/internal/bifrost"
+	"github.com/MTG-Thomas/codex-swarm/internal/coordination"
 	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
 	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
 	"github.com/MTG-Thomas/codex-swarm/internal/launchbundle"
 	"github.com/MTG-Thomas/codex-swarm/internal/ownership"
+	"github.com/MTG-Thomas/codex-swarm/internal/protocol"
 	"github.com/MTG-Thomas/codex-swarm/internal/repohints"
 	"github.com/MTG-Thomas/codex-swarm/internal/snapshot"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
@@ -43,6 +45,16 @@ type appserverRunner interface {
 	RunTurn(ctx context.Context, cwd, prompt string) (appserver.RunResult, error)
 	SendTurn(ctx context.Context, cwd, threadID, prompt string) (appserver.RunResult, error)
 	Resume(ctx context.Context, cwd, threadID string) (appserver.RunResult, error)
+}
+
+type appserverObservedRunner interface {
+	RunTurnObserved(context.Context, string, string, appserver.TurnObserver) (appserver.RunResult, error)
+	SendTurnObserved(context.Context, string, string, string, appserver.TurnObserver) (appserver.RunResult, error)
+}
+
+type appserverCoordinatedRunner interface {
+	RunTurnCoordinated(context.Context, string, string, appserver.TurnObserver, appserver.SteeringPolicy) (appserver.RunResult, error)
+	SendTurnCoordinated(context.Context, string, string, string, appserver.TurnObserver, appserver.SteeringPolicy) (appserver.RunResult, error)
 }
 
 func main() {
@@ -74,6 +86,10 @@ func (c cli) run(args []string) error {
 		return c.send(args[1:])
 	case "message":
 		return c.message(args[1:])
+	case "inbox":
+		return c.inbox(args[1:])
+	case "touch":
+		return c.touch(args[1:])
 	case "handoff":
 		return c.handoff(args[1:])
 	case "workpacket":
@@ -400,6 +416,8 @@ func (c cli) spawn(args []string) error {
 	turnID := ""
 	lastMessage := mockSummary(*prompt)
 	status := store.WorkerIdle
+	var appserverResult appserver.RunResult
+	activePersisted := false
 	events := []store.Event{{At: now, Type: "spawned", Message: "worker created"}}
 	worker := store.Worker{
 		ID:          id,
@@ -465,12 +483,35 @@ func (c cli) spawn(args []string) error {
 			appserverPrompt = bundle.Prompt
 			worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.launch.bundle", Message: bundle.Source})
 		}
-		result, err := c.runner().RunTurn(ctx, workerExecutionRoot(worker), appserverPrompt)
+		result, err := c.runTurnObserved(ctx, workerExecutionRoot(worker), appserverPrompt, func(started appserver.RunResult) error {
+			worker.ThreadID = started.ThreadID
+			worker.TurnID = started.TurnID
+			worker.ApplyStatusAt(store.WorkerRunning, c.now().UTC())
+			worker.LastMessage = fmt.Sprintf("app-server turn active: thread=%s turn=%s", started.ThreadID, started.TurnID)
+			worker.Events = append(worker.Events, store.Event{At: c.now().UTC(), Type: "appserver.turn.started", Message: worker.LastMessage})
+			if err := store.NewJSONStore(*statePath).SaveWorker(worker); err != nil {
+				return err
+			}
+			activePersisted = true
+			return nil
+		}, c.workerSteeringPolicy(*statePath, worker.ID))
 		if err != nil {
-			worker.ApplyStatusAt(store.WorkerFailed, now)
-			worker.LastMessage = "app-server spawn failed: " + err.Error()
-			worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.spawn.failed", Message: worker.LastMessage})
-			if saveErr := store.NewJSONStore(*statePath).SaveWorker(worker); saveErr != nil {
+			failure := "app-server spawn failed: " + err.Error()
+			var saveErr error
+			if activePersisted {
+				_, saveErr = store.NewJSONStore(*statePath).UpdateWorker(worker.ID, func(current *store.Worker) error {
+					current.ApplyStatusAt(store.WorkerFailed, now)
+					current.LastMessage = failure
+					current.Events = append(current.Events, store.Event{At: now, Type: "appserver.spawn.failed", Message: failure})
+					return nil
+				})
+			} else {
+				worker.ApplyStatusAt(store.WorkerFailed, now)
+				worker.LastMessage = failure
+				worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.spawn.failed", Message: failure})
+				saveErr = store.NewJSONStore(*statePath).SaveWorker(worker)
+			}
+			if saveErr != nil {
 				return errors.Join(fmt.Errorf("run app-server worker: %w", err), fmt.Errorf("save failed app-server worker: %w", saveErr))
 			}
 			return fmt.Errorf("run app-server worker: %w", err)
@@ -479,8 +520,12 @@ func (c cli) spawn(args []string) error {
 		turnID = result.TurnID
 		status = workerStatusFromTurn(result.Status)
 		lastMessage = fmt.Sprintf("app-server turn submitted: thread=%s turn=%s status=%s", result.ThreadID, result.TurnID, result.Status)
-		worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.turn.started", Message: lastMessage})
+		if !activePersisted {
+			worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.turn.started", Message: lastMessage})
+		}
 		worker.Events = appendAppserverWarnings(worker.Events, now, result.Warnings)
+		worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.turn.completed", Message: lastMessage})
+		appserverResult = result
 	} else {
 		worker.Events = append(worker.Events, store.Event{At: now, Type: "mock.turn.completed", Message: lastMessage})
 	}
@@ -490,14 +535,34 @@ func (c cli) spawn(args []string) error {
 	worker.LastMessage = lastMessage
 	worker.ApplyStatusAt(status, now)
 
-	if err := store.NewJSONStore(*statePath).SaveWorker(worker); err != nil {
+	st := store.NewJSONStore(*statePath)
+	if activePersisted {
+		updated, err := st.UpdateWorker(worker.ID, func(current *store.Worker) error {
+			current.ThreadID = worker.ThreadID
+			current.TurnID = worker.TurnID
+			current.ApplyStatusAt(worker.Status, now)
+			current.LastMessage = worker.LastMessage
+			current.Events = appendAppserverWarnings(current.Events, now, appserverResult.Warnings)
+			current.Events = append(current.Events, store.Event{At: now, Type: "appserver.turn.completed", Message: worker.LastMessage})
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		worker = updated
+	} else if err := st.SaveWorker(worker); err != nil {
 		return err
 	}
-	saved, err := store.NewJSONStore(*statePath).GetWorker(worker.ID)
+	saved, err := st.GetWorker(worker.ID)
 	if err != nil {
 		return err
 	}
 	worker = saved
+	if worker.Engine == "appserver" && len(appserverResult.FileChanges) > 0 {
+		if err := c.recordAppserverFileChanges(*statePath, worker, appserverResult.FileChanges); err != nil {
+			return fmt.Errorf("record app-server file changes for worker %s: %w", worker.ID, err)
+		}
+	}
 	fmt.Fprintf(c.out, "spawned %s engine=%s thread=%s status=%s\n", worker.ID, worker.Engine, worker.ThreadID, displayWorkerStatus(worker))
 	if worker.Role != "" || worker.ParentID != "" {
 		fmt.Fprintf(c.out, "swarm: role=%s parent=%s\n", emptyDash(worker.Role), emptyDash(worker.ParentID))
@@ -680,6 +745,8 @@ func (c cli) message(args []string) error {
 	fs := c.flagSet("message")
 	statePath := fs.String("state", defaultStatePath(), "state file path")
 	requestIDFlag := fs.String("request-id", "", "idempotency key for this mutation")
+	daemonURL := fs.String("daemon", "", "daemon base URL")
+	subtree := fs.Bool("subtree", false, "deliver to the target worker and its descendants")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -698,29 +765,33 @@ func (c cli) message(args []string) error {
 	if err != nil {
 		return err
 	}
-	fingerprint := mutationFingerprint("message", fromID, toID, text)
-	s := store.NewJSONStore(*statePath)
-	result, _, err := s.UpdateWorkersWithRequest(requestID, "message", fingerprint, []string{fromID, toID}, func(workers map[string]*store.Worker) (store.WorkerMutationResult, error) {
-		from := workers[fromID]
-		to := workers[toID]
-		event := store.Event{At: now, Type: "message", Message: text, From: from.ID, To: to.ID, Issue: eventIssue(from, to), WorkerID: from.ID, RequestID: requestID}
-		from.Events = append(from.Events, store.Event{At: now, Type: "message.sent", Message: fmt.Sprintf("to=%s %s", to.ID, text), From: from.ID, To: to.ID, Issue: event.Issue, WorkerID: from.ID, RequestID: requestID})
-		from.UpdatedAt = now
-		to.Events = append(to.Events, store.Event{At: now, Type: "message.received", Message: fmt.Sprintf("from=%s %s", from.ID, text), From: from.ID, To: to.ID, Issue: event.Issue, WorkerID: to.ID, RequestID: requestID})
-		to.UpdatedAt = now
-		return store.WorkerMutationResult{
-			Fingerprint: fingerprint,
-			Output:      fmt.Sprintf("message %s -> %s request=%s\n", from.ID, to.ID, requestID),
-			Events:      []store.Event{event},
-		}, nil
-	})
+	kind := store.MessageDirect
+	if *subtree {
+		kind = store.MessageSubtree
+	}
+	request := protocol.MessageRequest{RequestID: requestID, Kind: kind, From: fromID, To: toID, Body: text}
+	var response protocol.MessageResponse
+	if baseURL := configuredDaemonURL(*daemonURL); baseURL != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		response, err = (daemon.Client{BaseURL: baseURL}).Message(ctx, request)
+	} else {
+		result, sendErr := (coordination.Service{Store: store.NewJSONStore(*statePath), Now: c.now}).Send(context.Background(), coordination.SendRequest{
+			RequestID: request.RequestID, Kind: request.Kind, From: request.From, To: request.To, Body: request.Body,
+		})
+		err = sendErr
+		response = protocol.MessageResponse{Message: result.Message, Deliveries: result.Deliveries, Replayed: result.Replayed}
+	}
 	if err != nil {
 		if errors.Is(err, store.ErrWorkerNotFound) {
 			return fmt.Errorf("message worker not found: %w", err)
 		}
 		return err
 	}
-	fmt.Fprint(c.out, result.Output)
+	fmt.Fprintf(c.out, "message %s -> %s kind=%s request=%s deliveries=%d\n", fromID, toID, kind, requestID, len(response.Deliveries))
+	for _, delivery := range response.Deliveries {
+		fmt.Fprintf(c.out, "%s\t%s\t%s\n", delivery.RecipientID, delivery.State, emptyDash(delivery.LastError))
+	}
 	return nil
 }
 
@@ -797,6 +868,14 @@ func (c cli) send(args []string) error {
 		}
 		return err
 	}
+	queued, err := st.ListQueuedMessages(id)
+	if err != nil {
+		return fmt.Errorf("load queued messages for worker %s: %w", id, err)
+	}
+	deliveryPrompt := queuedMessagePrompt(queued)
+	if deliveryPrompt != "" {
+		message = deliveryPrompt + "\n\nUSER_MESSAGE\n" + message
+	}
 	if initial.Engine == "appserver" {
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 		defer cancel()
@@ -806,9 +885,20 @@ func (c cli) send(args []string) error {
 			return snapErr
 		}
 		prompt = appserverPromptWithSnapshot(snap, message)
-		appserverResult, appserverErr = c.runner().SendTurn(ctx, workerExecutionRoot(initial), initial.ThreadID, prompt)
+		appserverResult, appserverErr = c.sendTurnObserved(ctx, workerExecutionRoot(initial), initial.ThreadID, prompt, func(started appserver.RunResult) error {
+			_, err := st.UpdateWorker(id, func(worker *store.Worker) error {
+				at := c.now().UTC()
+				worker.ThreadID = started.ThreadID
+				worker.TurnID = started.TurnID
+				worker.ApplyStatusAt(store.WorkerRunning, at)
+				worker.LastMessage = fmt.Sprintf("app-server turn active: thread=%s turn=%s", started.ThreadID, started.TurnID)
+				worker.Events = append(worker.Events, store.Event{At: at, Type: "appserver.turn.started", Message: worker.LastMessage})
+				return nil
+			})
+			return err
+		}, c.workerSteeringPolicy(*statePath, id, queuedDeliveryIDs(queued)...))
 	}
-	return c.updateWorker(*statePath, id, func(worker *store.Worker, now time.Time) {
+	err = c.updateWorker(*statePath, id, func(worker *store.Worker, now time.Time) {
 		worker.Events = append(worker.Events, store.Event{At: now, Type: "message.sent", Message: message})
 		if worker.Engine == "appserver" {
 			if appserverErr != nil {
@@ -820,7 +910,7 @@ func (c cli) send(args []string) error {
 			worker.TurnID = appserverResult.TurnID
 			worker.ApplyStatusAt(workerStatusFromTurn(appserverResult.Status), now)
 			worker.LastMessage = fmt.Sprintf("app-server turn submitted: thread=%s turn=%s status=%s", appserverResult.ThreadID, appserverResult.TurnID, appserverResult.Status)
-			worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.turn.started", Message: worker.LastMessage})
+			worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.turn.completed", Message: worker.LastMessage})
 			worker.Events = appendAppserverWarnings(worker.Events, now, appserverResult.Warnings)
 			return
 		}
@@ -831,6 +921,24 @@ func (c cli) send(args []string) error {
 		fmt.Fprintf(c.out, "sent %s status=%s\n%s\n", worker.ID, displayWorkerStatus(worker), worker.LastMessage)
 		printWarnings(c.out, appserverResult.Warnings)
 	})
+	if err != nil {
+		return err
+	}
+	if initial.Engine != "appserver" || appserverErr == nil {
+		if err := markMessagesDelivered(st, queued, c.now().UTC()); err != nil {
+			return fmt.Errorf("mark queued messages delivered for worker %s: %w", id, err)
+		}
+	}
+	if initial.Engine == "appserver" && appserverErr == nil && len(appserverResult.FileChanges) > 0 {
+		updated, err := st.GetWorker(id)
+		if err != nil {
+			return err
+		}
+		if err := c.recordAppserverFileChanges(*statePath, updated, appserverResult.FileChanges); err != nil {
+			return fmt.Errorf("record app-server file changes for worker %s: %w", id, err)
+		}
+	}
+	return nil
 }
 
 func appserverPromptWithSnapshot(snap snapshot.Snapshot, message string) string {
@@ -841,6 +949,8 @@ func (c cli) report(args []string) error {
 	fs := c.flagSet("report")
 	statePath := fs.String("state", defaultStatePath(), "state file path")
 	note := fs.String("note", "", "report note")
+	daemonURL := fs.String("daemon", "", "daemon base URL")
+	requestIDFlag := fs.String("request-id", "", "idempotency key for completion forwarding")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -853,7 +963,7 @@ func (c cli) report(args []string) error {
 	if *note != "" {
 		report = report + ": " + *note
 	}
-	return c.updateWorker(*statePath, id, func(worker *store.Worker, now time.Time) {
+	err := c.updateWorker(*statePath, id, func(worker *store.Worker, now time.Time) {
 		switch rest[1] {
 		case "done", "completed":
 			worker.ApplyStatusAt(store.WorkerDone, now)
@@ -873,6 +983,17 @@ func (c cli) report(args []string) error {
 	}, func(worker store.Worker) {
 		fmt.Fprintf(c.out, "reported %s status=%s report=%q\n", worker.ID, displayWorkerStatus(worker), worker.Report)
 	})
+	if err != nil {
+		return err
+	}
+	if rest[1] != "done" && rest[1] != "completed" && rest[1] != "failed" {
+		return nil
+	}
+	requestID, err := c.requestID(*requestIDFlag, c.now().UTC())
+	if err != nil {
+		return err
+	}
+	return c.forwardCompletion(*statePath, *daemonURL, requestID, id, report)
 }
 
 func (c cli) resume(args []string) error {
@@ -1216,6 +1337,28 @@ func (c cli) runner() appserverRunner {
 	return appserver.Runner{}
 }
 
+func (c cli) runTurnObserved(ctx context.Context, cwd, prompt string, observer appserver.TurnObserver, steering appserver.SteeringPolicy) (appserver.RunResult, error) {
+	runner := c.runner()
+	if coordinated, ok := runner.(appserverCoordinatedRunner); ok {
+		return coordinated.RunTurnCoordinated(ctx, cwd, prompt, observer, steering)
+	}
+	if observed, ok := runner.(appserverObservedRunner); ok {
+		return observed.RunTurnObserved(ctx, cwd, prompt, observer)
+	}
+	return runner.RunTurn(ctx, cwd, prompt)
+}
+
+func (c cli) sendTurnObserved(ctx context.Context, cwd, threadID, prompt string, observer appserver.TurnObserver, steering appserver.SteeringPolicy) (appserver.RunResult, error) {
+	runner := c.runner()
+	if coordinated, ok := runner.(appserverCoordinatedRunner); ok {
+		return coordinated.SendTurnCoordinated(ctx, cwd, threadID, prompt, observer, steering)
+	}
+	if observed, ok := runner.(appserverObservedRunner); ok {
+		return observed.SendTurnObserved(ctx, cwd, threadID, prompt, observer)
+	}
+	return runner.SendTurn(ctx, cwd, threadID, prompt)
+}
+
 func (c cli) flagSet(name string) *flag.FlagSet {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(c.err)
@@ -1234,6 +1377,9 @@ Usage:
   cs doctor --appserver
   cs send <worker> "continue with tests"
   cs message --request-id <id> <from-worker> <to-worker> "note"
+  cs message --subtree <from-worker> <root-worker> "note"
+  cs inbox --queued <worker>
+  cs touch --worker <worker> --repo . --path internal/store/store.go --intent "edit store"
   cs handoff --request-id <id> <from-worker> <to-worker> "summary"
   cs workpacket --worker <worker>
   cs trace start "Fix deploy" --key fix-deploy

@@ -24,7 +24,8 @@ Exit criteria: a new user can spawn a real Codex worker, find the thread in the 
 - Keep direct CLI state mode available until daemon mode is proven.
 - Persist daemon events in the same worker event model.
 - Recover cleanly after daemon restart.
-- Keep daemon HTTP endpoints read-only until mutation APIs have a stronger local auth and idempotency model.
+- Keep broad daemon HTTP surfaces read-only; the loopback message, touch,
+  completion, and dispatch mutations require explicit idempotency keys.
 
 Exit criteria: repeated `cs` commands do not start a new app-server process each time, and `csd` can be restarted without losing worker identity.
 
@@ -41,7 +42,9 @@ Exit criteria: parallel workers can operate on one repository without trampling 
 ## Phase 3: local swarm primitives
 
 - Track parent/child workers.
-- Add local message and handoff records.
+- Keep durable DM and subtree message deliveries in normalized SQLite tables.
+- Forward child completion reports automatically and create bilateral,
+  warning-only conflict messages from overlapping file writes.
 - Add role labels such as implementer, reviewer, tester, and docs.
 - Add transcript and work-packet artifacts so workers can resume from durable
   state instead of chat history.
@@ -77,7 +80,8 @@ Exit criteria: routine repo hygiene or issue triage agents can run on a schedule
 
 ## Phase 6: maturity and distribution
 
-- Move from JSON state to SQLite when concurrent daemon writes, migration safety, or query complexity justify it.
+- Continue the completed JSON-to-SQLite migration with narrow schema changes;
+  compatibility records remain available while coordination uses normalized tables.
 - Add release builds for Windows, macOS, and Linux.
 - Add service install helpers for Windows service, launchd, and systemd.
 - Add a service manager dependency only when platform helpers stop being small, testable standard-library code.

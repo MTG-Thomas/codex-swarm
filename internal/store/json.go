@@ -18,7 +18,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const stateLockTimeout = 5 * time.Second
+const stateLockTimeout = 15 * time.Second
 
 type JSONStore struct {
 	path string
@@ -875,6 +875,7 @@ func openSQLite(path string) (*sql.DB, error) {
 		`PRAGMA busy_timeout = 5000`,
 		`PRAGMA journal_mode = WAL`,
 		`PRAGMA synchronous = FULL`,
+		`PRAGMA foreign_keys = ON`,
 		`CREATE TABLE IF NOT EXISTS records (
 			kind TEXT NOT NULL,
 			id TEXT NOT NULL,
@@ -882,6 +883,40 @@ func openSQLite(path string) (*sql.DB, error) {
 			updated_at TEXT NOT NULL,
 			PRIMARY KEY(kind, id)
 		)`,
+		`CREATE TABLE IF NOT EXISTS messages (
+			id TEXT PRIMARY KEY,
+			request_id TEXT NOT NULL UNIQUE,
+			kind TEXT NOT NULL,
+			sender TEXT NOT NULL,
+			body TEXT NOT NULL,
+			fingerprint TEXT NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS message_deliveries (
+			id TEXT PRIMARY KEY,
+			message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+			recipient_id TEXT NOT NULL,
+			state TEXT NOT NULL,
+			last_error TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			UNIQUE(message_id, recipient_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS message_deliveries_recipient_state ON message_deliveries(recipient_id, state, created_at)`,
+		`CREATE TABLE IF NOT EXISTS file_touches (
+			id TEXT PRIMARY KEY,
+			worker_id TEXT NOT NULL,
+			repo TEXT NOT NULL,
+			repo_key TEXT NOT NULL,
+			path TEXT NOT NULL,
+			path_key TEXT NOT NULL,
+			operation TEXT NOT NULL,
+			line_start INTEGER NOT NULL DEFAULT 0,
+			line_end INTEGER NOT NULL DEFAULT 0,
+			intent TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS file_touches_conflict_lookup ON file_touches(repo_key, path_key, operation, created_at)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			_ = db.Close()

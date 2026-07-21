@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/MTG-Thomas/codex-swarm/internal/claims"
+	"github.com/MTG-Thomas/codex-swarm/internal/coordination"
 	"github.com/MTG-Thomas/codex-swarm/internal/dispatch"
 	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
 	"github.com/MTG-Thomas/codex-swarm/internal/protocol"
@@ -43,11 +44,21 @@ type eventStore interface {
 	ListEvents() ([]store.Event, error)
 }
 
+type coordinationStore interface {
+	GetWorker(string) (store.Worker, error)
+	ListWorkers() ([]store.Worker, error)
+	CreateMessage(store.Message, []string) (store.Message, []store.Delivery, bool, error)
+	UpdateDelivery(string, store.DeliveryState, string, time.Time) error
+	RecordFileTouch(store.FileTouch) ([]store.TouchConflict, error)
+	ListMessages(string) ([]store.DeliveredMessage, error)
+}
+
 // Server exposes read-only daemon HTTP endpoints over swarm state.
 type Server struct {
 	store         readStore
 	statePath     string
 	issueProvider readiness.IssueMetadataProvider
+	steerer       coordination.TurnSteerer
 }
 
 // NewServer builds a read-only daemon server over the provided store.
@@ -67,6 +78,12 @@ func NewServerWithIssueProvider(statePath string, st readStore, provider readine
 	}
 }
 
+// SetTurnSteerer installs an optional daemon-owned runtime. By default active
+// workers poll the durable queue over their existing app-server connection.
+func (s *Server) SetTurnSteerer(steerer coordination.TurnSteerer) {
+	s.steerer = steerer
+}
+
 // Handler returns the daemon HTTP handler.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -77,9 +94,131 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/readiness", s.handleReadiness)
 	mux.HandleFunc("/dispatch", s.handleDispatch)
 	mux.HandleFunc("/v1/events", s.handleEvents)
+	mux.HandleFunc("/v1/messages", s.handleMessages)
+	mux.HandleFunc("/v1/touches", s.handleTouches)
+	mux.HandleFunc("/v1/completions", s.handleCompletions)
 	mux.HandleFunc("/v1/dispatch", s.handleDispatch)
 	mux.HandleFunc("/v1/status", s.handleLegacyStatus)
 	return mux
+}
+
+func (s *Server) coordinationService() (coordination.Service, coordinationStore, error) {
+	st, ok := s.store.(coordinationStore)
+	if !ok {
+		return coordination.Service{}, nil, errors.New("store does not support durable coordination")
+	}
+	return coordination.Service{Store: st, Steerer: s.steerer}, st, nil
+}
+
+func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
+	service, st, err := s.coordinationService()
+	if err != nil {
+		writeRouteError(w, r, http.StatusNotImplemented, "coordination_unavailable", err.Error())
+		return
+	}
+	if r.Method == http.MethodGet {
+		workerID := strings.TrimSpace(r.URL.Query().Get("worker"))
+		if workerID == "" {
+			writeRouteError(w, r, http.StatusBadRequest, "worker_required", "worker query parameter is required")
+			return
+		}
+		messages, err := st.ListMessages(workerID)
+		if err != nil {
+			writeRouteError(w, r, http.StatusInternalServerError, "store_read_failed", err.Error())
+			return
+		}
+		writeJSON(w, protocol.InboxResponse{Messages: messages})
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, r)
+		return
+	}
+	if !isLoopbackRemote(r.RemoteAddr) {
+		writeRouteError(w, r, http.StatusForbidden, "loopback_required", "message delivery requires loopback daemon access")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req protocol.MessageRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeRouteError(w, r, http.StatusBadRequest, "invalid_json", "parse message request: "+err.Error())
+		return
+	}
+	result, err := service.Send(r.Context(), coordination.SendRequest{
+		RequestID: req.RequestID, Kind: req.Kind, From: req.From, To: req.To, Body: req.Body,
+	})
+	if err != nil {
+		writeRouteError(w, r, coordinationStatus(err), coordinationCode(err), err.Error())
+		return
+	}
+	writeJSON(w, protocol.MessageResponse{Message: result.Message, Deliveries: result.Deliveries, Replayed: result.Replayed})
+}
+
+func (s *Server) handleTouches(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, r)
+		return
+	}
+	if !isLoopbackRemote(r.RemoteAddr) {
+		writeRouteError(w, r, http.StatusForbidden, "loopback_required", "file touch delivery requires loopback daemon access")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	service, _, err := s.coordinationService()
+	if err != nil {
+		writeRouteError(w, r, http.StatusNotImplemented, "coordination_unavailable", err.Error())
+		return
+	}
+	var req protocol.TouchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeRouteError(w, r, http.StatusBadRequest, "invalid_json", "parse touch request: "+err.Error())
+		return
+	}
+	result, err := service.Touch(r.Context(), coordination.TouchRequest{
+		RequestID: req.RequestID, WorkerID: req.WorkerID, Repo: req.Repo, Path: req.Path, Operation: req.Operation,
+		LineStart: req.LineStart, LineEnd: req.LineEnd, Intent: req.Intent,
+	})
+	if err != nil {
+		writeRouteError(w, r, coordinationStatus(err), coordinationCode(err), err.Error())
+		return
+	}
+	warnings := make([]protocol.MessageResponse, 0, len(result.Warnings))
+	for _, warning := range result.Warnings {
+		warnings = append(warnings, protocol.MessageResponse{Message: warning.Message, Deliveries: warning.Deliveries, Replayed: warning.Replayed})
+	}
+	writeJSON(w, protocol.TouchResponse{Touch: result.Touch, Conflicts: result.Conflicts, Warnings: warnings})
+}
+
+func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, r)
+		return
+	}
+	if !isLoopbackRemote(r.RemoteAddr) {
+		writeRouteError(w, r, http.StatusForbidden, "loopback_required", "completion forwarding requires loopback daemon access")
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	service, _, err := s.coordinationService()
+	if err != nil {
+		writeRouteError(w, r, http.StatusNotImplemented, "coordination_unavailable", err.Error())
+		return
+	}
+	var req protocol.CompletionRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeRouteError(w, r, http.StatusBadRequest, "invalid_json", "parse completion request: "+err.Error())
+		return
+	}
+	result, forwarded, err := service.ForwardCompletion(r.Context(), req.RequestID, req.WorkerID, req.Report)
+	if err != nil {
+		writeRouteError(w, r, coordinationStatus(err), coordinationCode(err), err.Error())
+		return
+	}
+	response := protocol.CompletionResponse{Forwarded: forwarded}
+	if forwarded {
+		response.Message = &protocol.MessageResponse{Message: result.Message, Deliveries: result.Deliveries, Replayed: result.Replayed}
+	}
+	writeJSON(w, response)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -349,6 +488,28 @@ func isReplayMismatch(err error) bool {
 	return strings.Contains(err.Error(), "does not match original mutation fingerprint")
 }
 
+func coordinationStatus(err error) int {
+	switch {
+	case errors.Is(err, store.ErrWorkerNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, store.ErrMessageReplayMismatch):
+		return http.StatusConflict
+	default:
+		return http.StatusBadRequest
+	}
+}
+
+func coordinationCode(err error) string {
+	switch {
+	case errors.Is(err, store.ErrWorkerNotFound):
+		return "worker_not_found"
+	case errors.Is(err, store.ErrMessageReplayMismatch):
+		return "request_replay_mismatch"
+	default:
+		return "coordination_failed"
+	}
+}
+
 // Client reads status from a running codex-swarm daemon.
 type Client struct {
 	BaseURL    string
@@ -436,6 +597,44 @@ func (c Client) Dispatch(ctx context.Context, request DispatchRequest) (Dispatch
 	var response DispatchResponse
 	if err := c.post(ctx, "/dispatch", request, &response); err != nil {
 		return DispatchResponse{}, err
+	}
+	return response, nil
+}
+
+// Message routes a DM or subtree broadcast through the daemon courier.
+func (c Client) Message(ctx context.Context, request protocol.MessageRequest) (protocol.MessageResponse, error) {
+	var response protocol.MessageResponse
+	if err := c.post(ctx, "/v1/messages", request, &response); err != nil {
+		return protocol.MessageResponse{}, err
+	}
+	return response, nil
+}
+
+// Inbox returns all durable deliveries for one worker.
+func (c Client) Inbox(ctx context.Context, workerID string) (protocol.InboxResponse, error) {
+	var response protocol.InboxResponse
+	query := url.Values{}
+	query.Set("worker", workerID)
+	if err := c.get(ctx, "/v1/messages?"+query.Encode(), &response); err != nil {
+		return protocol.InboxResponse{}, err
+	}
+	return response, nil
+}
+
+// Touch records a file touch and returns warning-only conflicts.
+func (c Client) Touch(ctx context.Context, request protocol.TouchRequest) (protocol.TouchResponse, error) {
+	var response protocol.TouchResponse
+	if err := c.post(ctx, "/v1/touches", request, &response); err != nil {
+		return protocol.TouchResponse{}, err
+	}
+	return response, nil
+}
+
+// Completion forwards a child terminal report to its parent.
+func (c Client) Completion(ctx context.Context, request protocol.CompletionRequest) (protocol.CompletionResponse, error) {
+	var response protocol.CompletionResponse
+	if err := c.post(ctx, "/v1/completions", request, &response); err != nil {
+		return protocol.CompletionResponse{}, err
 	}
 	return response, nil
 }

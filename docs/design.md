@@ -44,12 +44,12 @@ lineage, but it does not make filesystem writes safe. Parallel mutation still
 requires explicit branch and worktree isolation, and the CLI must keep warning
 when a worker has a session without a distinct worktree.
 
-The daemon is read-only until mutation over HTTP has a stronger local
-authorization model. For now `csd` can expose status, workers, claims, and
-conflict readbacks for dashboards and subagents while `cs` remains the mutation
-entry point. Any future daemon mutation API must first define how callers are
-authenticated, how request IDs are replayed idempotently, and how dangerous
-operations are bounded on a shared developer machine.
+The daemon keeps broad operational surfaces read-only, while a narrow set of
+loopback-only mutations use explicit request IDs and idempotent replay:
+dispatch, messages, file touches, and completion forwarding. These routes do
+not expose arbitrary commands, Git mutations, or filesystem writes. Messages
+are durable before delivery is attempted, and conflict records are warnings,
+not locks.
 
 Daemon API contracts that are intended to be consumed outside the handler live
 in `internal/protocol`. Versioned `/v1/*` mutation paths return typed JSON
@@ -94,14 +94,19 @@ The first demoable slice supports both a deterministic mock worker and a real `c
 - `status` lists current workers from local durable state.
 - `--engine mock` uses the same state model without live Codex calls.
 
-This proves the operator workflow, persistence shape, real app-server protocol boundary, and CLI contract before the daemon owns a long-running app-server process.
+SQLite stores compatibility records plus normalized messages, per-recipient
+deliveries, and recent file touches. An active CLI-owned app-server turn is
+persisted immediately after `turn/start`; the existing connection polls queued
+deliveries and uses `turn/steer`. This provides live delivery without requiring
+the daemon to open a second app-server process. Non-steerable deliveries remain
+queued for the next turn.
 
 Next real-worker slice:
 
-1. Keep a daemon-owned app-server process alive instead of one-shot startup per command.
-2. Stream assistant deltas and item events into the worker event model.
-3. Add worktree creation and branch isolation.
-4. Add GitHub issue linkage.
+1. Move remaining spawn/send/report control into the daemon where it improves recovery.
+2. Stream more assistant deltas and tool intents into the worker event model.
+3. Add precise pre-edit read intents when Codex exposes a stable hook.
+4. Keep the DM/subtree/conflict/completion vocabulary small.
 
 ## Dependency policy
 
@@ -109,8 +114,8 @@ Start with the Go standard library. Add dependencies only when they reduce opera
 
 Expected future triggers:
 
-- SQLite: adopt when concurrent daemon writes, historical queries, or migration
-  safety outgrow the locked JSON state file.
+- SQLite schema: extend only when a normalized query or transactional boundary
+  is proven by an operator workflow.
 - GitHub client library: adopt when fake-`gh` coverage becomes harder to
   maintain than typed API tests, or when issue sync needs API features the `gh`
   boundary cannot express cleanly.

@@ -40,6 +40,12 @@ type TurnStartParams struct {
 	CWD      string      `json:"cwd,omitempty"`
 }
 
+type TurnSteerParams struct {
+	ThreadID       string      `json:"threadId"`
+	ExpectedTurnID string      `json:"expectedTurnId"`
+	Input          []UserInput `json:"input"`
+}
+
 type UserInput struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
@@ -69,6 +75,15 @@ type TurnCompletedParams struct {
 	Turn     Turn   `json:"turn"`
 }
 
+type TurnSteerResponse struct {
+	TurnID string `json:"turnId"`
+}
+
+type FileChange struct {
+	Path string `json:"path"`
+	Kind string `json:"kind,omitempty"`
+}
+
 type Thread struct {
 	ID string `json:"id"`
 }
@@ -80,8 +95,10 @@ type Turn struct {
 }
 
 type RunResult struct {
-	ThreadID string
-	TurnID   string
-	Status   string
-	Warnings []string
+	ThreadID     string
+	TurnID       string
+	Status       string
+	Warnings     []string
+	FinalMessage string
+	FileChanges  []FileChange
 }

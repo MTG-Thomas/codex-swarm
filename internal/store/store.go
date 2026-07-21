@@ -14,6 +14,8 @@ var (
 	ErrAgentNotFound            = errors.New("agent not found")
 	ErrTraceNotFound            = errors.New("trace lane not found")
 	ErrBifrostChangesetNotFound = errors.New("bifrost changeset not found")
+	ErrMessageNotFound          = errors.New("message not found")
+	ErrMessageReplayMismatch    = errors.New("message request replay mismatch")
 )
 
 const (
@@ -200,6 +202,71 @@ type Event struct {
 	Issue     string    `json:"issue,omitempty"`
 	WorkerID  string    `json:"worker,omitempty"`
 	RequestID string    `json:"request_id,omitempty"`
+}
+
+// MessageKind is the intentionally small coordination vocabulary.
+type MessageKind string
+
+const (
+	MessageDirect     MessageKind = "dm"
+	MessageSubtree    MessageKind = "subtree"
+	MessageConflict   MessageKind = "conflict"
+	MessageCompletion MessageKind = "completion"
+)
+
+// DeliveryState records how a durable message reached a worker.
+type DeliveryState string
+
+const (
+	DeliveryQueued    DeliveryState = "queued"
+	DeliverySteered   DeliveryState = "steered"
+	DeliveryDelivered DeliveryState = "delivered"
+)
+
+// Message is one immutable coordination message.
+type Message struct {
+	ID        string      `json:"id"`
+	RequestID string      `json:"request_id"`
+	Kind      MessageKind `json:"kind"`
+	From      string      `json:"from"`
+	Body      string      `json:"body"`
+	CreatedAt time.Time   `json:"created_at"`
+}
+
+// Delivery is the per-recipient state for a message.
+type Delivery struct {
+	ID          string        `json:"id"`
+	MessageID   string        `json:"message_id"`
+	RecipientID string        `json:"recipient_id"`
+	State       DeliveryState `json:"state"`
+	LastError   string        `json:"last_error,omitempty"`
+	CreatedAt   time.Time     `json:"created_at"`
+	UpdatedAt   time.Time     `json:"updated_at"`
+}
+
+// DeliveredMessage joins a message with its recipient delivery state.
+type DeliveredMessage struct {
+	Message  Message  `json:"message"`
+	Delivery Delivery `json:"delivery"`
+}
+
+// FileTouch is a recent worker read or write intent used for warning-only conflicts.
+type FileTouch struct {
+	ID        string    `json:"id"`
+	WorkerID  string    `json:"worker_id"`
+	Repo      string    `json:"repo"`
+	Path      string    `json:"path"`
+	Operation string    `json:"operation"`
+	LineStart int       `json:"line_start,omitempty"`
+	LineEnd   int       `json:"line_end,omitempty"`
+	Intent    string    `json:"intent,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// TouchConflict describes a high-confidence overlapping peer write.
+type TouchConflict struct {
+	Touch     FileTouch `json:"touch"`
+	PeerTouch FileTouch `json:"peer_touch"`
 }
 
 // TraceItem records one nested task frame in a per-agent trace stack.
