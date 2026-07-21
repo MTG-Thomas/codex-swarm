@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -99,15 +100,18 @@ func maybeRunService() (bool, error) {
 	if !isService {
 		return false, nil
 	}
-	return true, svc.Run(serviceName, windowsService{})
+	return true, svc.Run(serviceName, windowsService{processArgs: os.Args[1:]})
 }
 
-type windowsService struct{}
+type windowsService struct {
+	processArgs []string
+}
 
-func (windowsService) Execute(args []string, requests <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
+func (s windowsService) Execute(startArgs []string, requests <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
+	args := windowsServiceArgs(s.processArgs, startArgs)
 	if len(args) > 0 && args[0] == "serve" {
 		args = args[1:]
 	}
@@ -142,6 +146,13 @@ func (windowsService) Execute(args []string, requests <-chan svc.ChangeRequest, 
 			return false, 0
 		}
 	}
+}
+
+func windowsServiceArgs(processArgs, startArgs []string) []string {
+	if len(processArgs) > 0 {
+		return processArgs
+	}
+	return startArgs
 }
 
 func defaultServiceStatePath() string {
