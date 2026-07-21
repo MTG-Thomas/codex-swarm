@@ -194,6 +194,7 @@ func TestServerWorkers(t *testing.T) {
 		ThreadID:  "thread-1",
 		CreatedAt: time.Date(2026, 6, 25, 1, 0, 0, 0, time.UTC),
 		UpdatedAt: time.Date(2026, 6, 25, 1, 0, 0, 0, time.UTC),
+		Events:    []store.Event{{At: time.Date(2026, 6, 25, 1, 0, 0, 0, time.UTC), Type: "worktree.created", WorkerID: "w-1"}},
 	}}})
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/workers", nil)

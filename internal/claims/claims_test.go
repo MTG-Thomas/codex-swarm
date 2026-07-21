@@ -181,3 +181,37 @@ func TestIsExternalWorkerReadsLegacyNoteMarker(t *testing.T) {
 		t.Fatalf("IsExternalWorker(%#v) = false, want legacy marker readable", claim)
 	}
 }
+
+func TestTypedScopesDoNotCrossKinds(t *testing.T) {
+	now := time.Date(2026, 7, 21, 18, 0, 0, 0, time.UTC)
+	pathClaim := store.Claim{ID: "c-path", Repo: "/repo", ScopeKind: store.ClaimScopePath, Scope: "cmd/cs", Status: store.ClaimActive, ExpiresAt: now.Add(time.Hour)}
+	taskClaim := store.Claim{ID: "c-task", Repo: "/repo", ScopeKind: store.ClaimScopeTask, Scope: "cmd/cs", Status: store.ClaimActive, ExpiresAt: now.Add(time.Hour)}
+	if Conflicts(pathClaim, taskClaim, now) {
+		t.Fatal("path and task claims conflicted")
+	}
+	taskChild := taskClaim
+	taskChild.ID = "c-task-child"
+	taskChild.Scope = "cmd/cs/child"
+	if Conflicts(taskClaim, taskChild, now) {
+		t.Fatal("task claims used path-prefix overlap")
+	}
+}
+
+func TestNormalizeScopeSupportsTypedLiveHierarchyAndRejectsCommaPacking(t *testing.T) {
+	kind, value, err := NormalizeScope(store.ClaimScopePath, "live:pve-t340/vm114")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kind != store.ClaimScopeLive || value != "pve-t340/vm114" {
+		t.Fatalf("NormalizeScope() = %s:%s", kind, value)
+	}
+	if _, _, err := NormalizeScope(store.ClaimScopePath, "cmd/cs,internal/store"); err == nil {
+		t.Fatal("NormalizeScope(comma-packed) error = nil")
+	}
+	now := time.Date(2026, 7, 21, 18, 0, 0, 0, time.UTC)
+	parent := store.Claim{ID: "c-parent", Repo: "/repo", ScopeKind: store.ClaimScopeLive, Scope: "pve-t340", Status: store.ClaimActive, ExpiresAt: now.Add(time.Hour)}
+	child := store.Claim{ID: "c-child", Repo: "/repo", ScopeKind: store.ClaimScopeLive, Scope: "pve-t340/vm114", Status: store.ClaimActive, ExpiresAt: now.Add(time.Hour)}
+	if !Conflicts(parent, child, now) {
+		t.Fatal("hierarchical live scopes did not conflict")
+	}
+}

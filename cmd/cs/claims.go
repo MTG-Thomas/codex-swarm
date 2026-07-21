@@ -15,6 +15,15 @@ import (
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
 
+type stringListFlag []string
+
+func (f *stringListFlag) String() string { return strings.Join(*f, ",") }
+
+func (f *stringListFlag) Set(value string) error {
+	*f = append(*f, value)
+	return nil
+}
+
 func (c cli) claim(args []string) error {
 	if len(args) == 0 {
 		return errors.New("claim requires <create|list|conflicts|show|release|block|export|push>")
@@ -45,7 +54,9 @@ func (c cli) claimCreate(args []string) error {
 	fs := c.flagSet("claim create")
 	statePath := fs.String("state", defaultStatePath(), "state file path")
 	repo := fs.String("repo", ".", "repository root")
-	scope := fs.String("scope", "", "claimed path or task scope")
+	var scopeValues stringListFlag
+	fs.Var(&scopeValues, "scope", "typed scope; repeat for multiple values (path:, task:, or live:)")
+	scopeKind := fs.String("kind", "", "scope kind for unprefixed values: path, task, or live")
 	workerID := fs.String("worker", "", "worker id")
 	issueValue := fs.String("issue", "", "GitHub issue reference, for example owner/repo#123")
 	note := fs.String("note", "", "claim note")
@@ -53,7 +64,7 @@ func (c cli) claimCreate(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if strings.TrimSpace(*scope) == "" {
+	if len(scopeValues) == 0 {
 		return errors.New("claim create requires --scope")
 	}
 	workerIDValue := strings.TrimSpace(*workerID)
@@ -67,43 +78,45 @@ func (c cli) claimCreate(args []string) error {
 		return err
 	}
 	now := c.now().UTC()
-	claimID, err := newClaimID(now)
-	if err != nil {
-		return err
+	newClaims := make([]store.Claim, 0, len(scopeValues))
+	for _, scopeValue := range scopeValues {
+		kind, scope, err := claims.NormalizeScope(store.ClaimScopeKind(strings.ToLower(strings.TrimSpace(*scopeKind))), scopeValue)
+		if err != nil {
+			return err
+		}
+		claimID, err := newClaimID(now)
+		if err != nil {
+			return err
+		}
+		newClaims = append(newClaims, store.Claim{
+			ID: claimID, WorkerID: workerIDValue, Repo: repoRoot, ScopeKind: kind, Scope: scope, Issue: issue,
+			Status: store.ClaimActive, Note: *note, ExpiresAt: now.Add(*ttl), CreatedAt: now, UpdatedAt: now,
+		})
 	}
-	claim := store.Claim{
-		ID:        claimID,
-		WorkerID:  workerIDValue,
-		Repo:      repoRoot,
-		Scope:     *scope,
-		Issue:     issue,
-		Status:    store.ClaimActive,
-		Note:      *note,
-		ExpiresAt: now.Add(*ttl),
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	all, err := st.SaveClaimValidated(claim, func(workers []store.Worker, existing []store.Claim) error {
+	all, err := st.SaveClaimsValidated(newClaims, func(workers []store.Worker, existing []store.Claim) error {
 		return claims.ValidateWorkerForRepo(workerIDValue, repoRoot, workers)
 	})
 	if err != nil {
 		return err
 	}
-	conflicts := claims.FindConflicts(all, claim, now)
-	fmt.Fprintf(c.out, "claim %s status=%s scope=%s repo=%s\n", claim.ID, claim.Status, claim.Scope, claim.Repo)
-	if claim.WorkerID != "" {
-		fmt.Fprintf(c.out, "worker=%s\n", claim.WorkerID)
-	}
-	if claim.Issue != "" {
-		fmt.Fprintf(c.out, "issue=%s\n", claim.Issue)
-	}
-	if len(conflicts) > 0 {
-		fmt.Fprintf(c.out, "conflicts=%d\n", len(conflicts))
-		for _, conflict := range conflicts {
-			printClaimLine(c.out, conflict, now)
+	fmt.Fprintf(c.out, "claims=%d\n", len(newClaims))
+	for _, claim := range newClaims {
+		conflicts := claims.FindConflicts(all, claim, now)
+		fmt.Fprintf(c.out, "claim %s status=%s scope=%s repo=%s\n", claim.ID, claim.Status, claims.ScopeLabel(claim), claim.Repo)
+		if claim.WorkerID != "" {
+			fmt.Fprintf(c.out, "worker=%s\n", claim.WorkerID)
 		}
-	} else {
-		fmt.Fprintln(c.out, "conflicts=0")
+		if claim.Issue != "" {
+			fmt.Fprintf(c.out, "issue=%s\n", claim.Issue)
+		}
+		if len(conflicts) > 0 {
+			fmt.Fprintf(c.out, "conflicts=%d\n", len(conflicts))
+			for _, conflict := range conflicts {
+				printClaimLine(c.out, conflict, now)
+			}
+		} else {
+			fmt.Fprintln(c.out, "conflicts=0")
+		}
 	}
 	return nil
 }
@@ -146,7 +159,8 @@ func (c cli) claimConflicts(args []string) error {
 	fs := c.flagSet("claim conflicts")
 	statePath := fs.String("state", defaultStatePath(), "state file path")
 	repo := fs.String("repo", ".", "repository root")
-	scope := fs.String("scope", "", "candidate path or task scope")
+	scope := fs.String("scope", "", "typed candidate scope: path:, task:, or live:")
+	scopeKind := fs.String("kind", "", "scope kind for an unprefixed value")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -158,13 +172,17 @@ func (c cli) claimConflicts(args []string) error {
 		return fmt.Errorf("resolve repo: %w", err)
 	}
 	now := c.now().UTC()
-	candidate := store.Claim{Repo: repoRoot, Scope: *scope, Status: store.ClaimActive, ExpiresAt: now.Add(time.Hour)}
+	kind, normalizedScope, err := claims.NormalizeScope(store.ClaimScopeKind(strings.ToLower(strings.TrimSpace(*scopeKind))), *scope)
+	if err != nil {
+		return err
+	}
+	candidate := store.Claim{Repo: repoRoot, ScopeKind: kind, Scope: normalizedScope, Status: store.ClaimActive, ExpiresAt: now.Add(time.Hour)}
 	all, err := store.NewJSONStore(*statePath).ListClaims()
 	if err != nil {
 		return err
 	}
 	conflicts := claims.FindConflicts(all, candidate, now)
-	fmt.Fprintf(c.out, "conflicts=%d repo=%s scope=%s\n", len(conflicts), repoRoot, *scope)
+	fmt.Fprintf(c.out, "conflicts=%d repo=%s scope=%s\n", len(conflicts), repoRoot, claims.ScopeLabel(candidate))
 	for _, conflict := range conflicts {
 		printClaimLine(c.out, conflict, now)
 	}
@@ -364,7 +382,7 @@ func claimIssueMarkdown(issue string, all []store.Claim, now time.Time) string {
 			claim.ID,
 			status,
 			emptyDash(claim.WorkerID),
-			claim.Scope,
+			claims.ScopeLabel(claim),
 			claim.ExpiresAt.Format(time.RFC3339),
 			markdownCell(claim.Note),
 		)
@@ -404,7 +422,7 @@ func printClaimLine(out interface{ Write([]byte) (int, error) }, claim store.Cla
 	if claim.Status == store.ClaimActive && !claims.IsOpen(claim, now) {
 		status = "expired"
 	}
-	fmt.Fprintf(out, "%s\t%s\t%s\t%s\t%s\t%s\n", claim.ID, status, emptyDash(claim.WorkerID), claim.Scope, emptyDash(claim.Issue), claim.Note)
+	fmt.Fprintf(out, "%s\t%s\t%s\t%s\t%s\t%s\n", claim.ID, status, emptyDash(claim.WorkerID), claims.ScopeLabel(claim), emptyDash(claim.Issue), claim.Note)
 }
 
 func printClaimDetail(out interface{ Write([]byte) (int, error) }, claim store.Claim, now time.Time) {
@@ -412,7 +430,7 @@ func printClaimDetail(out interface{ Write([]byte) (int, error) }, claim store.C
 	if claim.Status == store.ClaimActive && !claims.IsOpen(claim, now) {
 		status = "expired"
 	}
-	fmt.Fprintf(out, "id=%s\nstatus=%s\nworker=%s\nrepo=%s\nscope=%s\n", claim.ID, status, emptyDash(claim.WorkerID), claim.Repo, claim.Scope)
+	fmt.Fprintf(out, "id=%s\nstatus=%s\nworker=%s\nrepo=%s\nscope=%s\n", claim.ID, status, emptyDash(claim.WorkerID), claim.Repo, claims.ScopeLabel(claim))
 	if claim.Issue != "" {
 		fmt.Fprintf(out, "issue=%s\n", claim.Issue)
 	}

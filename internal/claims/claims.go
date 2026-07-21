@@ -28,12 +28,12 @@ func Conflicts(existing, candidate store.Claim, now time.Time) bool {
 		return false
 	}
 	if sameIssue(existing.Issue, candidate.Issue) {
-		return scopesOverlap(existing.Scope, candidate.Scope)
+		return scopesOverlap(existing, candidate)
 	}
 	if !sameRepoPath(cleanRepo(existing.Repo), cleanRepo(candidate.Repo)) {
 		return false
 	}
-	return scopesOverlap(existing.Scope, candidate.Scope)
+	return scopesOverlap(existing, candidate)
 }
 
 func FindConflicts(all []store.Claim, candidate store.Claim, now time.Time) []store.Claim {
@@ -110,13 +110,103 @@ func findWorker(workerID string, workers []store.Worker) (store.Worker, error) {
 	return store.Worker{}, fmt.Errorf("worker %q not found", workerID)
 }
 
-func scopesOverlap(a, b string) bool {
-	a = cleanScope(a)
-	b = cleanScope(b)
-	if a == "" || b == "" {
+func scopesOverlap(a, b store.Claim) bool {
+	aKind, aValue := splitScope(a.ScopeKind, a.Scope)
+	bKind, bValue := splitScope(b.ScopeKind, b.Scope)
+	if aKind != bKind || aValue == "" || bValue == "" {
 		return false
 	}
-	return a == b || strings.HasPrefix(a, b+"/") || strings.HasPrefix(b, a+"/")
+	if aKind == store.ClaimScopeTask {
+		return strings.EqualFold(aValue, bValue)
+	}
+	return equalScopeValue(aValue, bValue) || scopeHasPrefix(aValue, bValue) || scopeHasPrefix(bValue, aValue)
+}
+
+// NormalizeScope validates and canonicalizes a new typed claim scope.
+func NormalizeScope(kind store.ClaimScopeKind, value string) (store.ClaimScopeKind, string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", "", errors.New("claim scope is required")
+	}
+	if strings.Contains(value, ",") {
+		return "", "", errors.New("claim scope must contain one value; repeat --scope instead of using commas")
+	}
+	if inferred, remainder, ok := strings.Cut(value, ":"); ok {
+		inferredKind := store.ClaimScopeKind(strings.ToLower(strings.TrimSpace(inferred)))
+		if validScopeKind(inferredKind) {
+			if kind != "" && kind != store.ClaimScopePath && kind != inferredKind {
+				return "", "", fmt.Errorf("claim scope prefix %q conflicts with --kind %q", inferredKind, kind)
+			}
+			kind = inferredKind
+			value = remainder
+		}
+	}
+	if kind == "" {
+		kind = store.ClaimScopePath
+	}
+	if !validScopeKind(kind) {
+		return "", "", fmt.Errorf("unsupported claim scope kind %q", kind)
+	}
+	value = cleanScopeValue(kind, value)
+	if value == "" {
+		return "", "", errors.New("claim scope value is required")
+	}
+	if kind == store.ClaimScopePath && (filepath.IsAbs(value) || value == ".." || strings.HasPrefix(value, "../")) {
+		return "", "", fmt.Errorf("path claim scope must be repository-relative: %q", value)
+	}
+	return kind, value, nil
+}
+
+// ScopeLabel renders a stable typed scope for operator output.
+func ScopeLabel(claim store.Claim) string {
+	kind, value := splitScope(claim.ScopeKind, claim.Scope)
+	return string(kind) + ":" + value
+}
+
+func splitScope(kind store.ClaimScopeKind, value string) (store.ClaimScopeKind, string) {
+	value = strings.TrimSpace(value)
+	if kind == "" {
+		if prefix, remainder, ok := strings.Cut(value, ":"); ok {
+			candidate := store.ClaimScopeKind(strings.ToLower(strings.TrimSpace(prefix)))
+			if validScopeKind(candidate) {
+				kind = candidate
+				value = remainder
+			}
+		}
+	}
+	if kind == "" {
+		kind = store.ClaimScopePath
+	}
+	return kind, cleanScopeValue(kind, value)
+}
+
+func validScopeKind(kind store.ClaimScopeKind) bool {
+	return kind == store.ClaimScopePath || kind == store.ClaimScopeTask || kind == store.ClaimScopeLive
+}
+
+func cleanScopeValue(kind store.ClaimScopeKind, value string) string {
+	value = strings.TrimSpace(value)
+	if kind == store.ClaimScopePath {
+		return cleanScope(value)
+	}
+	value = filepath.ToSlash(value)
+	value = strings.Trim(value, "/")
+	return value
+}
+
+func equalScopeValue(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+func scopeHasPrefix(value, prefix string) bool {
+	if runtime.GOOS == "windows" {
+		value = strings.ToLower(value)
+		prefix = strings.ToLower(prefix)
+	}
+	return strings.HasPrefix(value, prefix+"/")
 }
 
 func cleanRepo(value string) string {

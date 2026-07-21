@@ -261,6 +261,25 @@ type DeliveredMessage struct {
 	Delivery Delivery `json:"delivery"`
 }
 
+// CoordinationMetrics summarizes whether durable coordination is actually in use.
+type CoordinationMetrics struct {
+	Backend           string `json:"backend"`
+	WorkerCount       int    `json:"worker_count"`
+	ActiveWorkers     int    `json:"active_workers"`
+	AppserverWorkers  int    `json:"appserver_workers"`
+	SteerableWorkers  int    `json:"steerable_workers"`
+	TrackerWorkers    int    `json:"tracker_workers"`
+	MockWorkers       int    `json:"mock_workers"`
+	ClaimCount        int    `json:"claim_count"`
+	ActiveClaims      int    `json:"active_claims"`
+	MessageCount      int    `json:"message_count"`
+	QueuedMessages    int    `json:"queued_messages"`
+	SteeredMessages   int    `json:"steered_messages"`
+	DeliveredMessages int    `json:"delivered_messages"`
+	RecentTouches     int    `json:"recent_touches"`
+	ConflictMessages  int    `json:"conflict_messages"`
+}
+
 // FileTouch is a recent worker read or write intent used for warning-only conflicts.
 type FileTouch struct {
 	ID        string    `json:"id"`
@@ -369,22 +388,32 @@ const (
 	ClaimBlocked  ClaimStatus = "blocked"
 )
 
+// ClaimScopeKind distinguishes repository paths from logical tasks and live resources.
+type ClaimScopeKind string
+
+const (
+	ClaimScopePath ClaimScopeKind = "path"
+	ClaimScopeTask ClaimScopeKind = "task"
+	ClaimScopeLive ClaimScopeKind = "live"
+)
+
 // Claim records warning-only ownership of a repo scope.
 type Claim struct {
-	ID             string      `json:"id"`
-	WorkerID       string      `json:"worker_id,omitempty"`
-	Repo           string      `json:"repo"`
-	Scope          string      `json:"scope"`
-	Issue          string      `json:"issue,omitempty"`
-	Status         ClaimStatus `json:"status"`
-	Note           string      `json:"note,omitempty"`
-	ExternalWorker bool        `json:"external_worker,omitempty"`
-	WorkerSource   string      `json:"worker_source,omitempty"`
-	Blocker        string      `json:"blocker,omitempty"`
-	Next           string      `json:"next,omitempty"`
-	ExpiresAt      time.Time   `json:"expires_at"`
-	CreatedAt      time.Time   `json:"created_at"`
-	UpdatedAt      time.Time   `json:"updated_at"`
+	ID             string         `json:"id"`
+	WorkerID       string         `json:"worker_id,omitempty"`
+	Repo           string         `json:"repo"`
+	ScopeKind      ClaimScopeKind `json:"scope_kind,omitempty"`
+	Scope          string         `json:"scope"`
+	Issue          string         `json:"issue,omitempty"`
+	Status         ClaimStatus    `json:"status"`
+	Note           string         `json:"note,omitempty"`
+	ExternalWorker bool           `json:"external_worker,omitempty"`
+	WorkerSource   string         `json:"worker_source,omitempty"`
+	Blocker        string         `json:"blocker,omitempty"`
+	Next           string         `json:"next,omitempty"`
+	ExpiresAt      time.Time      `json:"expires_at"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
 }
 
 // Agent is a named local agent identity.
