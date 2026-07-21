@@ -9,7 +9,7 @@ import (
 func TestCoordinationMetricsReportsLiveCoverage(t *testing.T) {
 	now := time.Date(2026, 7, 21, 18, 0, 0, 0, time.UTC)
 	st := NewJSONStore(filepath.Join(t.TempDir(), "state.db"))
-	appserver := Worker{ID: "w-app", Engine: "appserver", ThreadID: "thread-1", TurnID: "turn-1", Status: WorkerRunning, CreatedAt: now, UpdatedAt: now}
+	appserver := Worker{ID: "w-app", Engine: "appserver", ThreadID: "thread-1", TurnID: "turn-1", Worktree: "/repo/worktree", Events: []Event{{At: now, Type: "worktree.created"}}, Status: WorkerRunning, CreatedAt: now, UpdatedAt: now}
 	appserver.ApplyStatusAt(WorkerRunning, now)
 	tracker := Worker{ID: "w-tracker", Engine: "tracker", Status: WorkerIdle, CreatedAt: now, UpdatedAt: now}
 	tracker.ApplyStatusAt(WorkerIdle, now)
@@ -31,7 +31,7 @@ func TestCoordinationMetricsReportsLiveCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if metrics.Backend != "sqlite" || metrics.WorkerCount != 2 || metrics.ActiveWorkers != 2 || metrics.AppserverWorkers != 1 || metrics.SteerableWorkers != 1 || metrics.TrackerWorkers != 1 {
+	if metrics.Backend != "sqlite" || metrics.WorkerCount != 2 || metrics.ActiveWorkers != 2 || metrics.LiveMessageWorkers != 1 || metrics.ResumeWorkers != 1 || metrics.ManagedWorktreeWorkers != 1 || metrics.AutomaticCompletionWorkers != 1 || metrics.ExternalTrackerWorkers != 1 || metrics.SteerableWorkers != 1 {
 		t.Fatalf("worker metrics = %#v", metrics)
 	}
 	if metrics.ClaimCount != 1 || metrics.ActiveClaims != 1 || metrics.MessageCount != 1 || metrics.QueuedMessages != 1 || metrics.RecentTouches != 1 {

@@ -83,8 +83,8 @@ func CheckWorker(input Input) Report {
 	if strings.TrimSpace(input.Worker.ParentID) != "" && strings.TrimSpace(input.Worker.Issue) == "" {
 		add("parent_without_issue", SeverityWarning, "child worker has no issue ref to compare with parent scope")
 	}
-	if input.Worker.Engine == "appserver" && strings.TrimSpace(input.Worker.ThreadID) == "" {
-		add("thread_missing", SeverityWarning, "appserver worker has no thread id")
+	if store.CapabilitiesForWorker(input.Worker).Has(store.CapabilityResume) && strings.TrimSpace(input.Worker.ThreadID) == "" {
+		add("thread_missing", SeverityWarning, "resumable worker has no thread id")
 	}
 	for _, claim := range input.Claims {
 		if !claims.IsOpen(claim, input.Now.UTC()) {

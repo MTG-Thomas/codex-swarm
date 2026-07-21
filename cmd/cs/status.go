@@ -130,8 +130,9 @@ func (c cli) readWorkerStatus(statePath, daemonURL string) (protocol.Status, []p
 	}
 	status := protocol.Status{
 		Daemon: "direct", Version: version.Version, StatePath: statePath, Backend: metrics.Backend,
-		WorkerCount: metrics.WorkerCount, ActiveWorkerCount: metrics.ActiveWorkers, AppserverWorkers: metrics.AppserverWorkers,
-		SteerableWorkers: metrics.SteerableWorkers, TrackerWorkers: metrics.TrackerWorkers, MockWorkers: metrics.MockWorkers,
+		WorkerCount: metrics.WorkerCount, ActiveWorkerCount: metrics.ActiveWorkers, LiveMessageWorkers: metrics.LiveMessageWorkers,
+		ResumeWorkers: metrics.ResumeWorkers, ManagedWorktreeWorkers: metrics.ManagedWorktreeWorkers, AutomaticCompletionWorkers: metrics.AutomaticCompletionWorkers,
+		ExternalTrackerWorkers: metrics.ExternalTrackerWorkers, SteerableWorkers: metrics.SteerableWorkers,
 		ClaimCount: metrics.ClaimCount, ActiveClaimCount: metrics.ActiveClaims, ConflictCount: countClaimConflicts(claimList, c.now().UTC()),
 		MessageCount: metrics.MessageCount, QueuedMessages: metrics.QueuedMessages, SteeredMessages: metrics.SteeredMessages,
 		DeliveredMessages: metrics.DeliveredMessages, RecentTouches: metrics.RecentTouches, ConflictMessages: metrics.ConflictMessages,
@@ -145,17 +146,15 @@ func summarizeStatusWorkers(workers []store.Worker) []protocol.WorkerStatus {
 		result = append(result, protocol.WorkerStatus{
 			ID: worker.ID, Status: displayWorkerStatus(worker), Role: worker.Role, Issue: worker.Issue,
 			ValidationOf: worker.ValidationOf, ValidationStatus: worker.ValidationStatus, Worktree: truthfulWorkerWorktree(worker),
-			Repo: worker.ProjectRoot, Engine: worker.Engine, ThreadID: worker.ThreadID, Prompt: worker.Prompt, UpdatedAt: worker.UpdatedAt,
+			Repo: worker.ProjectRoot, Engine: worker.Engine, Capabilities: store.CapabilitiesForWorker(worker).Strings(), ThreadID: worker.ThreadID, Prompt: worker.Prompt, UpdatedAt: worker.UpdatedAt,
 		})
 	}
 	return result
 }
 
 func truthfulWorkerWorktree(worker store.Worker) string {
-	for _, event := range worker.Events {
-		if event.Type == "worktree.created" {
-			return worker.Worktree
-		}
+	if store.CapabilitiesForWorker(worker).Has(store.CapabilityManagedWorktree) {
+		return worker.Worktree
 	}
 	return ""
 }

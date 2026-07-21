@@ -264,10 +264,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		}
 		status.Backend = metrics.Backend
 		status.ActiveWorkerCount = metrics.ActiveWorkers
-		status.AppserverWorkers = metrics.AppserverWorkers
+		status.LiveMessageWorkers = metrics.LiveMessageWorkers
+		status.ResumeWorkers = metrics.ResumeWorkers
+		status.ManagedWorktreeWorkers = metrics.ManagedWorktreeWorkers
+		status.AutomaticCompletionWorkers = metrics.AutomaticCompletionWorkers
+		status.ExternalTrackerWorkers = metrics.ExternalTrackerWorkers
 		status.SteerableWorkers = metrics.SteerableWorkers
-		status.TrackerWorkers = metrics.TrackerWorkers
-		status.MockWorkers = metrics.MockWorkers
 		status.ActiveClaimCount = metrics.ActiveClaims
 		status.MessageCount = metrics.MessageCount
 		status.QueuedMessages = metrics.QueuedMessages
@@ -743,6 +745,7 @@ func summarizeWorkers(workers []store.Worker) []WorkerStatus {
 			Worktree:         truthfulWorkerWorktree(worker),
 			Repo:             worker.ProjectRoot,
 			Engine:           worker.Engine,
+			Capabilities:     store.CapabilitiesForWorker(worker).Strings(),
 			ThreadID:         worker.ThreadID,
 			Prompt:           worker.Prompt,
 			UpdatedAt:        worker.UpdatedAt,
@@ -769,10 +772,8 @@ func summarizeLegacyWorkers(workers []protocol.LegacyWorker) []WorkerStatus {
 }
 
 func truthfulWorkerWorktree(worker store.Worker) string {
-	for _, event := range worker.Events {
-		if event.Type == "worktree.created" {
-			return worker.Worktree
-		}
+	if store.CapabilitiesForWorker(worker).Has(store.CapabilityManagedWorktree) {
+		return worker.Worktree
 	}
 	return ""
 }

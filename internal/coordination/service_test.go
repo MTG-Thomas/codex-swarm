@@ -30,6 +30,7 @@ func TestSendSubtreeSteersActiveWorkerAndQueuesIdleDescendant(t *testing.T) {
 		store.Worker{ID: "parent", Engine: "mock", Status: store.WorkerIdle, CreatedAt: at, UpdatedAt: at},
 		store.Worker{ID: "active", ParentID: "parent", Engine: "appserver", Status: store.WorkerRunning, ThreadID: "thread-1", TurnID: "turn-1", ProjectRoot: `C:\repo`, CreatedAt: at, UpdatedAt: at},
 		store.Worker{ID: "idle", ParentID: "active", Engine: "appserver", Status: store.WorkerIdle, ThreadID: "thread-2", ProjectRoot: `C:\repo`, CreatedAt: at, UpdatedAt: at},
+		store.Worker{ID: "future", ParentID: "active", Engine: "future-engine", Status: store.WorkerRunning, ThreadID: "thread-3", TurnID: "turn-3", ProjectRoot: `C:\repo`, CreatedAt: at, UpdatedAt: at},
 		store.Worker{ID: "sender", Engine: "mock", Status: store.WorkerIdle, CreatedAt: at, UpdatedAt: at},
 	)
 	steerer := &recordingSteerer{}
@@ -38,14 +39,14 @@ func TestSendSubtreeSteersActiveWorkerAndQueuesIdleDescendant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Send() error = %v", err)
 	}
-	if len(result.Deliveries) != 2 || len(steerer.calls) != 1 {
+	if len(result.Deliveries) != 3 || len(steerer.calls) != 1 {
 		t.Fatalf("deliveries=%#v steer calls=%#v", result.Deliveries, steerer.calls)
 	}
 	states := map[string]store.DeliveryState{}
 	for _, delivery := range result.Deliveries {
 		states[delivery.RecipientID] = delivery.State
 	}
-	if states["active"] != store.DeliverySteered || states["idle"] != store.DeliveryQueued {
+	if states["active"] != store.DeliverySteered || states["idle"] != store.DeliveryQueued || states["future"] != store.DeliveryQueued {
 		t.Fatalf("delivery states = %#v", states)
 	}
 }

@@ -7,25 +7,27 @@ import (
 
 // Status is the compact operator-facing state returned by the daemon.
 type Status struct {
-	Daemon            string `json:"daemon"`
-	Version           string `json:"version"`
-	StatePath         string `json:"state_path"`
-	Backend           string `json:"backend,omitempty"`
-	WorkerCount       int    `json:"worker_count"`
-	ActiveWorkerCount int    `json:"active_worker_count,omitempty"`
-	AppserverWorkers  int    `json:"appserver_workers,omitempty"`
-	SteerableWorkers  int    `json:"steerable_workers,omitempty"`
-	TrackerWorkers    int    `json:"tracker_workers,omitempty"`
-	MockWorkers       int    `json:"mock_workers,omitempty"`
-	ClaimCount        int    `json:"claim_count"`
-	ActiveClaimCount  int    `json:"active_claim_count,omitempty"`
-	ConflictCount     int    `json:"conflict_count"`
-	MessageCount      int    `json:"message_count,omitempty"`
-	QueuedMessages    int    `json:"queued_messages,omitempty"`
-	SteeredMessages   int    `json:"steered_messages,omitempty"`
-	DeliveredMessages int    `json:"delivered_messages,omitempty"`
-	RecentTouches     int    `json:"recent_touches,omitempty"`
-	ConflictMessages  int    `json:"conflict_messages,omitempty"`
+	Daemon                     string `json:"daemon"`
+	Version                    string `json:"version"`
+	StatePath                  string `json:"state_path"`
+	Backend                    string `json:"backend,omitempty"`
+	WorkerCount                int    `json:"worker_count"`
+	ActiveWorkerCount          int    `json:"active_worker_count,omitempty"`
+	LiveMessageWorkers         int    `json:"live_message_workers,omitempty"`
+	ResumeWorkers              int    `json:"resume_workers,omitempty"`
+	ManagedWorktreeWorkers     int    `json:"managed_worktree_workers,omitempty"`
+	AutomaticCompletionWorkers int    `json:"automatic_completion_workers,omitempty"`
+	ExternalTrackerWorkers     int    `json:"external_tracker_workers,omitempty"`
+	SteerableWorkers           int    `json:"steerable_workers,omitempty"`
+	ClaimCount                 int    `json:"claim_count"`
+	ActiveClaimCount           int    `json:"active_claim_count,omitempty"`
+	ConflictCount              int    `json:"conflict_count"`
+	MessageCount               int    `json:"message_count,omitempty"`
+	QueuedMessages             int    `json:"queued_messages,omitempty"`
+	SteeredMessages            int    `json:"steered_messages,omitempty"`
+	DeliveredMessages          int    `json:"delivered_messages,omitempty"`
+	RecentTouches              int    `json:"recent_touches,omitempty"`
+	ConflictMessages           int    `json:"conflict_messages,omitempty"`
 }
 
 // String renders a compact human-readable daemon status line.
@@ -34,8 +36,8 @@ func (s Status) String() string {
 	if s.Backend == "" {
 		return base
 	}
-	return fmt.Sprintf("%s backend=%s active=%d appserver=%d steerable=%d tracker=%d mock=%d active_claims=%d messages=%d queued=%d steered=%d delivered=%d touches_30m=%d conflict_messages=%d",
-		base, s.Backend, s.ActiveWorkerCount, s.AppserverWorkers, s.SteerableWorkers, s.TrackerWorkers, s.MockWorkers, s.ActiveClaimCount,
+	return fmt.Sprintf("%s backend=%s active=%d live_message=%d resume=%d managed_worktree=%d automatic_completion=%d external_tracker=%d steerable=%d active_claims=%d messages=%d queued=%d steered=%d delivered=%d touches_30m=%d conflict_messages=%d",
+		base, s.Backend, s.ActiveWorkerCount, s.LiveMessageWorkers, s.ResumeWorkers, s.ManagedWorktreeWorkers, s.AutomaticCompletionWorkers, s.ExternalTrackerWorkers, s.SteerableWorkers, s.ActiveClaimCount,
 		s.MessageCount, s.QueuedMessages, s.SteeredMessages, s.DeliveredMessages, s.RecentTouches, s.ConflictMessages)
 }
 
@@ -50,6 +52,7 @@ type WorkerStatus struct {
 	Worktree         string    `json:"worktree,omitempty"`
 	Repo             string    `json:"repo,omitempty"`
 	Engine           string    `json:"engine,omitempty"`
+	Capabilities     []string  `json:"capabilities,omitempty"`
 	ThreadID         string    `json:"thread_id,omitempty"`
 	Prompt           string    `json:"prompt,omitempty"`
 	UpdatedAt        time.Time `json:"updated_at,omitempty"`

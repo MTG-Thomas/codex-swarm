@@ -97,10 +97,8 @@ func Build(input Input) Snapshot {
 }
 
 func truthfulCheckout(worker store.Worker) (string, string) {
-	for _, event := range worker.Events {
-		if event.Type == "worktree.created" {
-			return strings.TrimSpace(worker.Worktree), strings.TrimSpace(worker.Branch)
-		}
+	if store.CapabilitiesForWorker(worker).Has(store.CapabilityManagedWorktree) {
+		return strings.TrimSpace(worker.Worktree), strings.TrimSpace(worker.Branch)
 	}
 	return "", ""
 }

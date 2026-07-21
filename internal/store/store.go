@@ -263,21 +263,23 @@ type DeliveredMessage struct {
 
 // CoordinationMetrics summarizes whether durable coordination is actually in use.
 type CoordinationMetrics struct {
-	Backend           string `json:"backend"`
-	WorkerCount       int    `json:"worker_count"`
-	ActiveWorkers     int    `json:"active_workers"`
-	AppserverWorkers  int    `json:"appserver_workers"`
-	SteerableWorkers  int    `json:"steerable_workers"`
-	TrackerWorkers    int    `json:"tracker_workers"`
-	MockWorkers       int    `json:"mock_workers"`
-	ClaimCount        int    `json:"claim_count"`
-	ActiveClaims      int    `json:"active_claims"`
-	MessageCount      int    `json:"message_count"`
-	QueuedMessages    int    `json:"queued_messages"`
-	SteeredMessages   int    `json:"steered_messages"`
-	DeliveredMessages int    `json:"delivered_messages"`
-	RecentTouches     int    `json:"recent_touches"`
-	ConflictMessages  int    `json:"conflict_messages"`
+	Backend                    string `json:"backend"`
+	WorkerCount                int    `json:"worker_count"`
+	ActiveWorkers              int    `json:"active_workers"`
+	LiveMessageWorkers         int    `json:"live_message_workers"`
+	ResumeWorkers              int    `json:"resume_workers"`
+	ManagedWorktreeWorkers     int    `json:"managed_worktree_workers"`
+	AutomaticCompletionWorkers int    `json:"automatic_completion_workers"`
+	ExternalTrackerWorkers     int    `json:"external_tracker_workers"`
+	SteerableWorkers           int    `json:"steerable_workers"`
+	ClaimCount                 int    `json:"claim_count"`
+	ActiveClaims               int    `json:"active_claims"`
+	MessageCount               int    `json:"message_count"`
+	QueuedMessages             int    `json:"queued_messages"`
+	SteeredMessages            int    `json:"steered_messages"`
+	DeliveredMessages          int    `json:"delivered_messages"`
+	RecentTouches              int    `json:"recent_touches"`
+	ConflictMessages           int    `json:"conflict_messages"`
 }
 
 // FileTouch is a recent worker read or write intent used for warning-only conflicts.

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -87,6 +88,53 @@ func TestCLIStatusDefaultsToRecentAndWorkingWorkers(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "w-old-idle") {
 		t.Fatalf("status --all omitted old worker:\n%s", out.String())
+	}
+}
+
+func TestCLIStatusJSONReportsCapabilitiesWithoutEngineSpecificShape(t *testing.T) {
+	now := time.Date(2026, 7, 21, 18, 0, 0, 0, time.UTC)
+	state := filepath.Join(t.TempDir(), "state.db")
+	st := store.NewJSONStore(state)
+	workers := []store.Worker{
+		{ID: "w-app", ProjectRoot: "/repo", Engine: "appserver", Status: store.WorkerRunning, ThreadID: "thread", TurnID: "turn", CreatedAt: now, UpdatedAt: now},
+		{ID: "w-tracker", ProjectRoot: "/repo", Engine: "tracker", Status: store.WorkerIdle, CreatedAt: now, UpdatedAt: now},
+		{ID: "w-future", ProjectRoot: "/repo", Engine: "future-engine", Status: store.WorkerIdle, CreatedAt: now, UpdatedAt: now},
+	}
+	for i := range workers {
+		workers[i].ApplyStatusAt(workers[i].Status, workers[i].UpdatedAt)
+	}
+	if err := st.SaveWorkers(workers...); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+	if err := c.run([]string{"status", "--state", state, "--all", "--json"}); err != nil {
+		t.Fatalf("status JSON error = %v", err)
+	}
+	var view workerStatusView
+	if err := json.Unmarshal(out.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.Status.LiveMessageWorkers != 1 || view.Status.ResumeWorkers != 1 || view.Status.AutomaticCompletionWorkers != 1 || view.Status.ExternalTrackerWorkers != 1 {
+		t.Fatalf("capability status = %#v", view.Status)
+	}
+	capabilities := map[string][]string{}
+	for _, worker := range view.Workers {
+		capabilities[worker.ID] = worker.Capabilities
+	}
+	if strings.Join(capabilities["w-app"], ",") != "live_message,resume,automatic_completion" || strings.Join(capabilities["w-tracker"], ",") != "external_tracker" || len(capabilities["w-future"]) != 0 {
+		t.Fatalf("worker capabilities = %#v", capabilities)
+	}
+	var raw struct {
+		Status map[string]json.RawMessage `json:"status"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"appserver_workers", "tracker_workers", "mock_workers"} {
+		if _, found := raw.Status[forbidden]; found {
+			t.Fatalf("status JSON contains engine-specific field %q: %s", forbidden, out.String())
+		}
 	}
 }
 

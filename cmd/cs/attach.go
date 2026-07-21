@@ -91,7 +91,7 @@ func (c cli) attach(args []string) error {
 }
 
 func applyAttachedStatus(worker *store.Worker, now time.Time) {
-	if worker.Engine == "appserver" && strings.TrimSpace(worker.TurnID) != "" {
+	if store.CapabilitiesForWorker(*worker).Has(store.CapabilityLiveMessage) && strings.TrimSpace(worker.TurnID) != "" {
 		worker.ApplyStatusAt(store.WorkerRunning, now)
 		return
 	}
@@ -104,9 +104,10 @@ func attachmentMessage(worker store.Worker) string {
 
 func printAttachment(out interface{ Write([]byte) (int, error) }, worker store.Worker) {
 	liveMessages := "queued"
-	if worker.Engine == "appserver" && worker.Status == store.WorkerRunning && worker.TurnID != "" {
+	capabilities := store.CapabilitiesForWorker(worker)
+	if capabilities.Has(store.CapabilityLiveMessage) && worker.Status == store.WorkerRunning && worker.TurnID != "" {
 		liveMessages = "steerable"
 	}
-	fmt.Fprintf(out, "attached worker=%s engine=%s thread=%s turn=%s status=%s live_messages=%s\n",
-		worker.ID, worker.Engine, worker.ThreadID, emptyDash(worker.TurnID), displayWorkerStatus(worker), liveMessages)
+	fmt.Fprintf(out, "attached worker=%s engine=%s capabilities=%s thread=%s turn=%s status=%s live_messages=%s\n",
+		worker.ID, worker.Engine, strings.Join(capabilities.Strings(), ","), worker.ThreadID, emptyDash(worker.TurnID), displayWorkerStatus(worker), liveMessages)
 }

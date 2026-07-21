@@ -548,16 +548,24 @@ func (s *JSONStore) CoordinationMetrics(now time.Time) (CoordinationMetrics, err
 			if worker.Status != WorkerDone && worker.Status != WorkerFailed {
 				metrics.ActiveWorkers++
 			}
-			switch worker.Engine {
-			case "appserver":
-				metrics.AppserverWorkers++
+			capabilities := CapabilitiesForWorker(worker)
+			if capabilities.Has(CapabilityLiveMessage) {
+				metrics.LiveMessageWorkers++
 				if worker.Status == WorkerRunning && strings.TrimSpace(worker.ThreadID) != "" && strings.TrimSpace(worker.TurnID) != "" {
 					metrics.SteerableWorkers++
 				}
-			case "tracker":
-				metrics.TrackerWorkers++
-			case "mock":
-				metrics.MockWorkers++
+			}
+			if capabilities.Has(CapabilityResume) {
+				metrics.ResumeWorkers++
+			}
+			if capabilities.Has(CapabilityManagedWorktree) {
+				metrics.ManagedWorktreeWorkers++
+			}
+			if capabilities.Has(CapabilityAutomaticCompletion) {
+				metrics.AutomaticCompletionWorkers++
+			}
+			if capabilities.Has(CapabilityExternalTracker) {
+				metrics.ExternalTrackerWorkers++
 			}
 		}
 		metrics.ClaimCount = len(claimList)
