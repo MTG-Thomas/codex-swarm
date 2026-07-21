@@ -2,6 +2,13 @@
 
 All notable changes to codex-swarm are documented here.
 
+## [0.4.1] - 2026-07-21
+
+### Fixed
+
+- Windows services now honor the persisted `serve --addr ... --state ...` arguments in their ImagePath instead of silently falling back to the LocalSystem default state path.
+- Explicit service state paths can therefore share the same SQLite coordination ledger as the interactive `cs` client across service restarts and machine reboots.
+
 ## [0.4.0] - 2026-07-21
 
 ### Added
