@@ -2,6 +2,12 @@
 
 All notable changes to codex-swarm are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Provider-neutral Windows `VERSIONINFO` generation for `cs.exe` and `csd.exe`, including product and file versions for AMD64 and ARM64 release builds.
+
 ## [0.4.1] - 2026-07-21
 
 ### Fixed
