@@ -45,6 +45,7 @@ jobs:
           ext=""
           if [ "${{ matrix.goos }}" = "windows" ]; then
             ext=".exe"
+            go run ./scripts/generate-windows-resources.go -version "$version"
           fi
           ldflags="-s -w -X github.com/MTG-Thomas/codex-swarm/internal/version.Version=$version -X github.com/MTG-Thomas/codex-swarm/internal/version.Commit=$commit -X github.com/MTG-Thomas/codex-swarm/internal/version.Date=$date"
           GOOS="${{ matrix.goos }}" GOARCH="${{ matrix.goarch }}" go build -trimpath -ldflags "$ldflags" -o "dist/cs${ext}" ./cmd/cs

@@ -5,3 +5,4 @@ bin/
 coverage.out
 *.exe
 *.test
+cmd/*/resource_windows_*.syso

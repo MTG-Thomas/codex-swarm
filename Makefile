@@ -1,4 +1,4 @@
-.PHONY: all build test vet fmt fmt-check vulncheck check clean
+.PHONY: all build test vet fmt fmt-check vulncheck check windows-resources clean
 
 GO ?= go
 BIN_DIR ?= bin
@@ -26,6 +26,11 @@ vulncheck:
 
 check: fmt-check vet test
 
+windows-resources:
+	@test -n "$(VERSION)" || (echo "VERSION is required, for example make windows-resources VERSION=0.4.1" >&2; exit 1)
+	$(GO) run ./scripts/generate-windows-resources.go -version "$(VERSION)"
+
 clean:
 	$(GO) clean
 	rm -rf $(BIN_DIR)
+	rm -f cmd/cs/resource_windows_*.syso cmd/csd/resource_windows_*.syso
