@@ -153,7 +153,7 @@ func (c cli) codexTaskCollectStatus(args []string) error {
 	if status.FinalizedAt != nil {
 		state = "finalized"
 	}
-	fmt.Fprintf(c.out, "task collection status host=%s observation=%s state=%s pages=%d tasks=%d next_page=%d next_cursor=%s coverage=%s\n", status.HostID, status.ObservationID, state, status.Pages, status.Tasks, status.NextPage, emptyDash(status.NextCursor), emptyDash(status.Coverage))
+	fmt.Fprintf(c.out, "task collection status host=%s observation=%s state=%s pages=%d tasks=%d next_page=%d next_cursor=%q coverage=%s\n", status.HostID, status.ObservationID, state, status.Pages, status.Tasks, status.NextPage, status.NextCursor, emptyDash(status.Coverage))
 	return nil
 }
 

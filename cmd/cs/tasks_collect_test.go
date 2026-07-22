@@ -33,10 +33,11 @@ func TestCLICodexTaskCollectionPersistsPagesAndFinishes(t *testing.T) {
 		return path
 	}
 	page1, page2 := writePage("page-1.json", 0, 50), writePage("page-2.json", 50, 25)
+	opaqueCursor := " \npage-2\t "
 	var out bytes.Buffer
 	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
 	base := []string{"tasks", "collect", "page", "--state", state, "--host", "desktop", "--observation", "heartbeat-7"}
-	args := append(append([]string(nil), base...), "--page", "1", "--next-cursor", "  page-2  ", "--file", page1)
+	args := append(append([]string(nil), base...), "--page", "1", "--next-cursor", opaqueCursor, "--file", page1)
 	if err := c.run(args); err != nil {
 		t.Fatalf("page 1 error = %v", err)
 	}
@@ -48,11 +49,11 @@ func TestCLICodexTaskCollectionPersistsPagesAndFinishes(t *testing.T) {
 	if err := c.run(statusArgs); err != nil {
 		t.Fatalf("status error = %v", err)
 	}
-	if !strings.Contains(out.String(), "next_page=2") || !strings.Contains(out.String(), "next_cursor=  page-2  ") {
+	if !strings.Contains(out.String(), "next_page=2") || !strings.Contains(out.String(), `next_cursor=" \npage-2\t "`) || strings.Count(out.String(), "\n") != 1 {
 		t.Fatalf("status output = %q", out.String())
 	}
 	out.Reset()
-	args = append(append([]string(nil), base...), "--page", "2", "--cursor", "  page-2  ", "--file", page2)
+	args = append(append([]string(nil), base...), "--page", "2", "--cursor", opaqueCursor, "--file", page2)
 	if err := c.run(args); err != nil {
 		t.Fatalf("page 2 error = %v", err)
 	}
