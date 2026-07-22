@@ -60,6 +60,9 @@ type coordinationStore interface {
 
 type codexTaskStore interface {
 	IngestCodexTasks(store.CodexTaskIngestRequest) (store.CodexTaskIngestResult, error)
+	AddCodexTaskCollectionPage(store.CodexTaskCollectionPageRequest) (store.CodexTaskCollectionPageResult, error)
+	FinishCodexTaskCollection(store.CodexTaskCollectionFinishRequest) (store.CodexTaskCollectionFinishResult, error)
+	GetCodexTaskCollectionStatus(string, string) (store.CodexTaskCollectionStatus, error)
 	ListCodexTasks(store.CodexTaskListFilter) (store.CodexTaskPage, error)
 	CodexTaskStats(*time.Time) (store.CodexTaskStats, error)
 }
@@ -110,6 +113,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/completions", s.handleCompletions)
 	mux.HandleFunc("/v1/codex-tasks", s.handleCodexTasks)
 	mux.HandleFunc("/v1/codex-tasks/ingest", s.handleCodexTaskIngest)
+	mux.HandleFunc("/v1/codex-tasks/collections/pages", s.handleCodexTaskCollectionPage)
+	mux.HandleFunc("/v1/codex-tasks/collections/finish", s.handleCodexTaskCollectionFinish)
+	mux.HandleFunc("/v1/codex-tasks/collections/status", s.handleCodexTaskCollectionStatus)
 	mux.HandleFunc("/v1/codex-tasks/status", s.handleCodexTaskStatus)
 	mux.HandleFunc("/v1/dispatch", s.handleDispatch)
 	mux.HandleFunc("/v1/status", s.handleLegacyStatus)

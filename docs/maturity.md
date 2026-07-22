@@ -50,6 +50,9 @@ in [roadmap.md](roadmap.md).
 - Product-visible live steering for `cs`-owned turns plus a guarded native-host
   bridge for attached Codex tasks, queue fallback, and durable final-agent
   acknowledgement capture.
+- Durable metadata-only Codex task discovery plus a host-owned paginated
+  collector hook; coordinator heartbeats can stage more than 50 tasks and read
+  the resulting status immediately without blocking on child turns.
 - Atomic `close` with claim release and pull-request refresh.
 - Repository hints and commit-bound validation evidence.
 - Read-only stale-state inspection plus explicit janitor application.

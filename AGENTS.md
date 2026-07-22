@@ -35,6 +35,7 @@ Do not install upstream skill packs globally for this repo. Use `docs/skills.md`
 - Keep worker engine identity for diagnostics, but make coordination decisions through stable runtime capabilities rather than engine-name checks.
 - Claims and conflict messages are warning-only. Git, GitHub, Bifrost, and other target systems retain authority for their own mutations and conflicts.
 - When `cs message --json` returns `native_steering`, use the owning Codex host's native task-message tool with the returned host, thread, and prompt. Confirm success with `cs message confirm-steered`, or record tool failure with `cs message steering-failed`; never open a competing app-server process to steer an externally owned turn.
+- After a coordinator's host-owned `list_threads` inventory, feed each metadata-only page through `cs tasks collect page` and finalize it with `cs tasks collect finish`. Use `cs tasks collect status` to resume an interrupted page walk. Use a stable host and observation ID, preserve opaque cursors byte-for-byte, use `window` coverage unless the host proved an exhausted complete listing, and read the resulting index without holding the foreground turn in a long wait.
 - `close` is the preferred terminal lifecycle operation because it releases claims and preserves pull-request and completion evidence atomically.
 - Keep the daemon loopback-only by default. New mutation routes require narrow inputs, explicit request IDs, idempotent replay, and durable readback.
 

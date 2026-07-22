@@ -1633,6 +1633,9 @@ Usage:
   cs operation list [--key <operation-key> | --issue owner/repo#123 | --worker <worker>] [--json]
   cs operation show <operation-key> [--json]
   cs tasks list [--host local] [--status idle] [--limit 100] [--cursor <opaque>] [--json]
+  cs tasks collect page --host local --observation <id> --page 1 --file page.json
+  cs tasks collect finish --host local --observation <id> [--coverage window|complete]
+  cs tasks collect status --host local --observation <id> [--json]
   cs tasks ingest --file snapshot.json [--request-id <id>] [--daemon http://127.0.0.1:8787]
   cs tasks status [--stale-for 24h] [--json]
   cs spawn --repo . --prompt "inspect this repo"
