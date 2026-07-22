@@ -118,7 +118,13 @@ cs spawn --engine appserver --repo . --worktree `
 ```
 
 `--worktree` creates and records an isolated branch and worktree. Conversation
-isolation alone does not isolate filesystem writes.
+isolation alone does not isolate filesystem writes. `cs spawn` returns after a
+`csd` runtime has durably recorded the host, thread, turn, and worktree
+identity, while that runtime continues to own the first turn. A matching
+user-session daemon is preferred. A privileged Windows service or root daemon
+refuses to launch Codex, so `cs` starts a listener-free, detached `csd` runtime
+under the caller's identity instead. A caller timeout does not mark that
+resumable task failed; inspect the recorded worker before retrying.
 
 ### Claim scope before editing
 
@@ -464,7 +470,12 @@ Run `cs` or `cs <command> --help` for the current command contract.
 - Claims and file-touch conflicts are warnings, never hard locks.
 - Worktree creation, GitHub writes, service changes, and platform mutations
   require explicit commands.
-- The daemon does not expose arbitrary command or filesystem execution.
+- The daemon exposes only narrow worker operations; it does not expose
+  arbitrary command or filesystem execution. App-server spawn accepts an
+  existing persisted worker and an idempotent worker-bound request ID.
+- Privileged service identities never launch Codex. The caller-owned runtime
+  receives its prompt over stdin, not the process command line, and opens no
+  listener.
 - Tokens, private keys, and platform credentials do not belong in the ledger.
 - Remote Git credentials remain on the remote host.
 - Schedules are persisted control-plane records; they do not execute workers

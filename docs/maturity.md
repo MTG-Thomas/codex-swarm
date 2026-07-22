@@ -30,7 +30,10 @@ in [roadmap.md](roadmap.md).
 - Derived logical-operation grouping plus request-ID-idempotent, evidence-backed
   decision records with atomic supersession history and visible provenance gaps.
 - Capability-based runtime behavior independent of engine identity.
-- Durable app-server thread and turn identity, including live steering.
+- Daemon-owned app-server first turns with prompt durable identity readback,
+  idempotent launch replay, asynchronous completion, and live steering.
+- Privileged-daemon launch refusal plus a detached, listener-free caller-owned
+  `csd` runtime for Windows service and root-daemon installations.
 - Managed local worktrees and isolated remote Git sessions over SSH.
 - Loopback daemon with read-only operational APIs and narrow idempotent
   mutation routes.
@@ -63,9 +66,10 @@ in [roadmap.md](roadmap.md).
 ## Maturity constraints
 
 - Scheduling records are persisted but do not yet execute workers.
-- Daemon ownership of `cs`-spawned app-server runtime and restart recovery is
-  incomplete; externally owned turns require their Codex host to execute the
-  native-steering request and confirm it.
+- Daemon restart preserves resumable task identity but does not yet reconnect
+  an interrupted app-server transport automatically; externally owned turns
+  require their Codex host to execute the native-steering request and confirm
+  it.
 - Exact pre-edit intent depends on runtime hooks; file-change evidence is more
   complete than pre-write evidence.
 - GitHub synchronization remains explicit and local state remains authoritative.

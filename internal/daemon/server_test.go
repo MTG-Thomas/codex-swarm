@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -121,6 +122,39 @@ func TestServerStatus(t *testing.T) {
 	if status.WorkerCount != 1 || status.ClaimCount != 2 || status.ConflictCount != 1 {
 		t.Fatalf("status counts = workers:%d claims:%d conflicts:%d", status.WorkerCount, status.ClaimCount, status.ConflictCount)
 	}
+}
+
+func TestSpawnAppserverUsesCallerDeadlineWithoutHiddenTenSecondTimeout(t *testing.T) {
+	if timeout := defaultAppserverHTTPClient().Timeout; timeout != 0 {
+		t.Fatalf("default app-server HTTP timeout = %s, want caller context only", timeout)
+	}
+	deadlineSeen := make(chan time.Duration, 1)
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		deadline, ok := request.Context().Deadline()
+		if !ok {
+			deadlineSeen <- 0
+		} else {
+			deadlineSeen <- time.Until(deadline)
+		}
+		body := io.NopCloser(strings.NewReader(`{"request_id":"appserver-spawn-worker","worker_id":"worker","thread_id":"thread","turn_id":"turn","status":"running"}`))
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Body: body, Header: make(http.Header)}, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, err := (Client{BaseURL: "http://daemon.invalid", HTTPClient: &http.Client{Transport: transport}}).SpawnAppserver(ctx, protocol.AppserverSpawnRequest{RequestID: "appserver-spawn-worker", WorkerID: "worker", Prompt: "slow initialization"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining := <-deadlineSeen
+	if remaining < 20*time.Second {
+		t.Fatalf("request deadline remaining = %s, want caller deadline rather than hidden 10s HTTP timeout", remaining)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
 }
 
 func TestServerLegacyStatusShape(t *testing.T) {

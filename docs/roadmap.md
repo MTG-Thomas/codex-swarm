@@ -24,9 +24,6 @@ obvious loss of context or safety.
 
 ## 2. Strengthen daemon-owned delivery and recovery
 
-- Move ownership of long-lived, `cs`-spawned app-server processes into `csd`
-  where it improves restart recovery; keep attached-task steering in the
-  owning Codex host.
 - Recover active turn and delivery state after daemon restart without
   duplicating messages or confusing native CLI steering with runtime ownership.
 - Stream bounded tool-intent and intermediate completion events into the

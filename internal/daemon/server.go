@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/MTG-Thomas/codex-swarm/internal/claims"
@@ -73,6 +74,13 @@ type Server struct {
 	statePath     string
 	issueProvider readiness.IssueMetadataProvider
 	steerer       coordination.TurnSteerer
+	runtimeCtx    context.Context
+	runtimeCancel context.CancelFunc
+	spawnRunner   AppserverTurnRunner
+	launchMu      sync.Mutex
+	launches      map[string]*appserverLaunch
+	spawnDisabled string
+	runtimeWG     sync.WaitGroup
 }
 
 // NewServer builds a read-only daemon server over the provided store.
@@ -85,11 +93,32 @@ func NewServer(statePath string, st readStore) *Server {
 }
 
 func NewServerWithIssueProvider(statePath string, st readStore, provider readiness.IssueMetadataProvider) *Server {
+	runtimeCtx, runtimeCancel := context.WithCancel(context.Background())
 	return &Server{
 		store:         st,
 		statePath:     statePath,
 		issueProvider: provider,
+		runtimeCtx:    runtimeCtx,
+		runtimeCancel: runtimeCancel,
+		launches:      map[string]*appserverLaunch{},
+		spawnDisabled: privilegedRuntimeReason(),
 	}
+}
+
+// SetAppserverTurnRunner installs a deterministic daemon-owned runner. It is
+// intended for tests and alternate runtimes configured before serving.
+func (s *Server) SetAppserverTurnRunner(runner AppserverTurnRunner) {
+	s.spawnRunner = runner
+	// A deterministic injected runner cannot launch a real privileged process.
+	// Clearing this guard keeps unit tests portable in root-owned containers.
+	s.spawnDisabled = ""
+}
+
+// Close stops daemon-owned app-server processes without converting their
+// already-persisted task identities into false failures.
+func (s *Server) Close() {
+	s.runtimeCancel()
+	s.runtimeWG.Wait()
 }
 
 // SetTurnSteerer installs an optional daemon-owned runtime. By default active
@@ -117,6 +146,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/codex-tasks/collections/finish", s.handleCodexTaskCollectionFinish)
 	mux.HandleFunc("/v1/codex-tasks/collections/status", s.handleCodexTaskCollectionStatus)
 	mux.HandleFunc("/v1/codex-tasks/status", s.handleCodexTaskStatus)
+	mux.HandleFunc("/v1/appserver/spawns", s.handleAppserverSpawn)
 	mux.HandleFunc("/v1/dispatch", s.handleDispatch)
 	mux.HandleFunc("/v1/status", s.handleLegacyStatus)
 	return mux
@@ -767,6 +797,17 @@ func isLegacyFallbackStatus(err error) bool {
 	return errors.As(err, &status) && (status.StatusCode == http.StatusNotFound || status.StatusCode == http.StatusNotImplemented)
 }
 
+// AppserverSpawnNeedsCallerRuntime reports only failures that prove the daemon
+// did not accept a spawn. Transport failures after POST are intentionally not
+// safe to retry because the original daemon may still be creating the task.
+func AppserverSpawnNeedsCallerRuntime(err error) bool {
+	var status statusError
+	if !errors.As(err, &status) {
+		return false
+	}
+	return status.StatusCode == http.StatusNotFound || status.StatusCode == http.StatusNotImplemented || status.StatusCode == http.StatusServiceUnavailable
+}
+
 // Claims returns claims and conflict summaries from the daemon.
 func (c Client) Claims(ctx context.Context) (ClaimsResponse, error) {
 	var claimList ClaimsResponse
@@ -794,6 +835,26 @@ func (c Client) Dispatch(ctx context.Context, request DispatchRequest) (Dispatch
 		return DispatchResponse{}, err
 	}
 	return response, nil
+}
+
+// SpawnAppserver transfers one persisted worker's first turn to csd and
+// returns after csd has durably recorded the task identity.
+func (c Client) SpawnAppserver(ctx context.Context, request protocol.AppserverSpawnRequest) (protocol.AppserverSpawnResponse, error) {
+	// Unlike read-only daemon calls, task creation may legitimately take longer
+	// than ten seconds to initialize Codex. The caller's context is the sole
+	// request deadline unless an explicit HTTPClient was supplied.
+	if c.HTTPClient == nil {
+		c.HTTPClient = defaultAppserverHTTPClient()
+	}
+	var response protocol.AppserverSpawnResponse
+	if err := c.post(ctx, "/v1/appserver/spawns", request, &response); err != nil {
+		return protocol.AppserverSpawnResponse{}, err
+	}
+	return response, nil
+}
+
+func defaultAppserverHTTPClient() *http.Client {
+	return &http.Client{}
 }
 
 // Message routes a DM or subtree broadcast through the daemon courier.

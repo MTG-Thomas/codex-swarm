@@ -67,9 +67,15 @@ mark unseen records missing. Task list and status endpoints remain immediate,
 nonblocking projections over the resulting index, while compact collection
 status exposes the next page and exact opaque cursor needed after a restart.
 
-Host-observed task status does not derive from an attached swarm worker. This
-keeps an active/resumable Codex task visible when a synchronous launch request
-times out and marks only its worker attempt failed.
+Host-observed task status does not derive from an attached swarm worker. For a
+`cs`-spawned app-server worker, the CLI persists the worker and transfers the
+first turn to `csd`; the daemon returns durable host, thread, turn, and
+worktree readback before continuing the turn asynchronously. Request timeout
+is not a task failure, and idempotent replay cannot create a second task.
+If the installed daemon runs as root or Windows LocalSystem, its mutation route
+refuses the launch. The CLI instead starts a detached, listener-free `csd`
+runtime under the caller's identity so Codex credentials and process authority
+remain user-owned.
 
 Logical operations are also derived rather than persisted. A normalized GitHub
 issue reference is the strongest key; otherwise workers inherit the root
@@ -105,7 +111,8 @@ ownership. App-server workers record host, thread, turn, and runtime owner. A
 externally owned task exposes a native-steering request for its owning Codex
 host instead of opening a competing connection. Remote app-server workers
 retain the same coordination model while their checkout and Codex process live
-over SSH.
+over SSH. Daemon shutdown detaches an already-persisted task as resumable
+instead of converting process cancellation into a false terminal failure.
 
 ## State and events
 

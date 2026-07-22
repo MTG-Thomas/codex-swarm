@@ -34,13 +34,15 @@ import (
 )
 
 type cli struct {
-	out             io.Writer
-	err             io.Writer
-	now             func() time.Time
-	appserverRunner appserverRunner
-	remoteWorkspace remoteWorkspacePreparer
-	bifrostRecords  bf.RecordStore
-	bifrostRunner   bf.CommandRunner
+	out              io.Writer
+	err              io.Writer
+	now              func() time.Time
+	appserverRunner  appserverRunner
+	appserverSpawner appserverSpawnClient
+	userRuntime      appserverUserRuntime
+	remoteWorkspace  remoteWorkspacePreparer
+	bifrostRecords   bf.RecordStore
+	bifrostRunner    bf.CommandRunner
 }
 
 type remoteWorkspacePreparer interface {
@@ -61,6 +63,14 @@ type appserverObservedRunner interface {
 type appserverCoordinatedRunner interface {
 	RunTurnCoordinated(context.Context, string, string, appserver.TurnObserver, appserver.SteeringPolicy) (appserver.RunResult, error)
 	SendTurnCoordinated(context.Context, string, string, string, appserver.TurnObserver, appserver.SteeringPolicy) (appserver.RunResult, error)
+}
+
+type appserverSpawnClient interface {
+	SpawnAppserver(context.Context, protocol.AppserverSpawnRequest) (protocol.AppserverSpawnResponse, error)
+}
+
+type appserverUserRuntime interface {
+	SpawnAppserver(context.Context, string, protocol.AppserverSpawnRequest) (protocol.AppserverSpawnResponse, error)
 }
 
 func main() {
@@ -421,8 +431,6 @@ func (c cli) spawn(args []string) error {
 	turnID := ""
 	lastMessage := mockSummary(*prompt)
 	status := store.WorkerIdle
-	var appserverResult appserver.RunResult
-	activePersisted := false
 	events := []store.Event{{At: now, Type: "spawned", Message: "worker created"}}
 	worker := store.Worker{
 		ID:          id,
@@ -442,6 +450,10 @@ func (c cli) spawn(args []string) error {
 	}
 	if worker.Engine == "appserver" {
 		worker.RuntimeOwner = store.RuntimeOwnerCS
+		worker.Status = store.WorkerPending
+		worker.HostID = "local"
+		worker.ThreadID = ""
+		worker.TurnID = ""
 	}
 
 	worktreeReady := false
@@ -491,6 +503,7 @@ func (c cli) spawn(args []string) error {
 				RepoURL:     result.RepoURL,
 				BaseRef:     result.BaseRef,
 			}
+			worker.HostID = *remoteHost
 			worker.Events = append(worker.Events, store.Event{At: now, Type: "remote.worktree.created", Message: worker.Worktree})
 		} else {
 			result, err := (worktree.Git{}).Create(ctx, worktree.Spec{
@@ -525,63 +538,52 @@ func (c cli) spawn(args []string) error {
 				worker.LastMessage = "app-server launch bundle failed: " + err.Error()
 				worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.launch.bundle.failed", Message: worker.LastMessage})
 				if saveErr := store.NewJSONStore(*statePath).SaveWorker(worker); saveErr != nil {
-					return errors.Join(
-						fmt.Errorf("build app-server launch bundle for worker=%s thread=%s repo=%s worktree=%s issue=%s: %w", worker.ID, worker.ThreadID, worker.ProjectRoot, worker.Worktree, worker.Issue, err),
-						fmt.Errorf("save failed app-server worker: %w", saveErr),
-					)
+					return errors.Join(fmt.Errorf("build app-server launch bundle for worker=%s repo=%s worktree=%s issue=%s: %w", worker.ID, worker.ProjectRoot, worker.Worktree, worker.Issue, err), fmt.Errorf("save failed app-server worker: %w", saveErr))
 				}
-				return fmt.Errorf("build app-server launch bundle for worker=%s thread=%s repo=%s worktree=%s issue=%s: %w", worker.ID, worker.ThreadID, worker.ProjectRoot, worker.Worktree, worker.Issue, err)
+				return fmt.Errorf("build app-server launch bundle for worker=%s repo=%s worktree=%s issue=%s: %w", worker.ID, worker.ProjectRoot, worker.Worktree, worker.Issue, err)
 			}
 			appserverPrompt = bundle.Prompt
 			worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.launch.bundle", Message: bundle.Source})
 		}
-		result, err := c.runTurnObserved(c.runnerFor(worker), ctx, workerExecutionRoot(worker), appserverPrompt, func(started appserver.RunResult) error {
-			worker.ThreadID = started.ThreadID
-			worker.TurnID = started.TurnID
-			worker.ApplyStatusAt(store.WorkerRunning, c.now().UTC())
-			worker.LastMessage = fmt.Sprintf("app-server turn active: thread=%s turn=%s", started.ThreadID, started.TurnID)
-			worker.Events = append(worker.Events, store.Event{At: c.now().UTC(), Type: "appserver.turn.started", Message: worker.LastMessage})
-			if err := store.NewJSONStore(*statePath).SaveWorker(worker); err != nil {
-				return err
-			}
-			activePersisted = true
-			return nil
-		}, c.workerSteeringPolicy(*statePath, worker.ID))
+		worker.ApplyStatusAt(store.WorkerPending, now)
+		worker.LastMessage = fmt.Sprintf("requesting daemon-owned app-server turn: host=%s worktree=%s", emptyDash(worker.HostID), emptyDash(worker.Worktree))
+		if err := store.NewJSONStore(*statePath).SaveWorker(worker); err != nil {
+			return fmt.Errorf("persist app-server worker before launch worker=%s host=%s worktree=%s: %w", worker.ID, worker.HostID, worker.Worktree, err)
+		}
+		request := protocol.AppserverSpawnRequest{RequestID: "appserver-spawn-" + worker.ID, WorkerID: worker.ID, Prompt: appserverPrompt}
+		var response protocol.AppserverSpawnResponse
+		if c.appserverSpawner == nil && c.appserverRunner != nil {
+			response, err = c.runInjectedAppserverSpawn(ctx, *statePath, worker, appserverPrompt, request.RequestID)
+		} else {
+			response, err = c.spawnAppserver(ctx, *statePath, request)
+		}
 		if err != nil {
-			failedAt := c.now().UTC()
-			failure := "app-server spawn failed: " + err.Error()
-			var saveErr error
-			if activePersisted {
-				_, saveErr = store.NewJSONStore(*statePath).UpdateWorker(worker.ID, func(current *store.Worker) error {
-					current.ApplyStatusAt(store.WorkerFailed, failedAt)
-					current.LastMessage = failure
-					current.Events = append(current.Events, store.Event{At: failedAt, Type: "appserver.spawn.failed", Message: failure})
+			observed, readErr := store.NewJSONStore(*statePath).GetWorker(worker.ID)
+			if readErr == nil && observed.ThreadID != "" && observed.TurnID != "" {
+				worker = observed
+			} else if readErr == nil && observed.Status == store.WorkerFailed {
+				return fmt.Errorf("daemon-owned app-server launch failed worker=%s host=%s worktree=%s: %w", worker.ID, worker.HostID, worker.Worktree, err)
+			} else {
+				at := c.now().UTC()
+				_, _ = store.NewJSONStore(*statePath).UpdateWorker(worker.ID, func(current *store.Worker) error {
+					current.UpdatedAt = at
+					current.LastMessage = "daemon launch request ended before durable task readback: " + err.Error()
+					current.Events = append(current.Events, store.Event{At: at, Type: "appserver.spawn.request.uncertain", Message: current.LastMessage, WorkerID: current.ID, Issue: current.Issue, RequestID: request.RequestID})
 					return nil
 				})
-			} else {
-				worker.ApplyStatusAt(store.WorkerFailed, failedAt)
-				worker.LastMessage = failure
-				worker.Events = append(worker.Events, store.Event{At: failedAt, Type: "appserver.spawn.failed", Message: failure})
-				saveErr = store.NewJSONStore(*statePath).SaveWorker(worker)
+				return fmt.Errorf("request daemon-owned app-server launch worker=%s host=%s worktree=%s (worker remains non-terminal; inspect before retrying): %w", worker.ID, worker.HostID, worker.Worktree, err)
 			}
-			if saveErr != nil {
-				return errors.Join(fmt.Errorf("run app-server worker: %w", err), fmt.Errorf("save failed app-server worker: %w", saveErr))
+		} else {
+			observed, readErr := store.NewJSONStore(*statePath).GetWorker(worker.ID)
+			if readErr != nil {
+				return fmt.Errorf("read back daemon-owned app-server worker=%s thread=%s turn=%s: %w", worker.ID, response.ThreadID, response.TurnID, readErr)
 			}
-			return fmt.Errorf("run app-server worker: %w", err)
+			if observed.ThreadID != response.ThreadID || observed.TurnID != response.TurnID || observed.Worktree != response.Worktree || observed.HostID != response.HostID {
+				return fmt.Errorf("daemon app-server identity mismatch worker=%s response(host=%s thread=%s turn=%s worktree=%s) durable(host=%s thread=%s turn=%s worktree=%s)", worker.ID, response.HostID, response.ThreadID, response.TurnID, response.Worktree, observed.HostID, observed.ThreadID, observed.TurnID, observed.Worktree)
+			}
+			worker = observed
 		}
-		completedAt := c.now().UTC()
-		threadID = result.ThreadID
-		turnID = result.TurnID
-		status = workerStatusFromTurn(result.Status)
-		lastMessage = fmt.Sprintf("app-server turn submitted: thread=%s turn=%s status=%s", result.ThreadID, result.TurnID, result.Status)
-		if !activePersisted {
-			worker.Events = append(worker.Events, store.Event{At: completedAt, Type: "appserver.turn.started", Message: lastMessage})
-		}
-		worker.Events = appendAppserverWarnings(worker.Events, completedAt, result.Warnings)
-		worker.Events = append(worker.Events, store.Event{At: completedAt, Type: "appserver.turn.completed", Message: lastMessage})
-		worker.Events = appendAppserverFinalMessage(worker.Events, completedAt, result.FinalMessage)
-		appserverResult = result
-		now = completedAt
+		threadID, turnID, status, lastMessage = worker.ThreadID, worker.TurnID, worker.Status, worker.LastMessage
 	} else {
 		worker.Events = append(worker.Events, store.Event{At: now, Type: "mock.turn.completed", Message: lastMessage})
 	}
@@ -592,34 +594,18 @@ func (c cli) spawn(args []string) error {
 	worker.ApplyStatusAt(status, now)
 
 	st := store.NewJSONStore(*statePath)
-	if activePersisted {
-		updated, err := st.UpdateWorker(worker.ID, func(current *store.Worker) error {
-			current.ThreadID = worker.ThreadID
-			current.TurnID = worker.TurnID
-			current.ApplyStatusAt(worker.Status, now)
-			current.LastMessage = worker.LastMessage
-			current.Events = appendAppserverWarnings(current.Events, now, appserverResult.Warnings)
-			current.Events = append(current.Events, store.Event{At: now, Type: "appserver.turn.completed", Message: worker.LastMessage})
-			current.Events = appendAppserverFinalMessage(current.Events, now, appserverResult.FinalMessage)
-			return nil
-		})
-		if err != nil {
+	if worker.Engine != "appserver" {
+		if err := st.SaveWorker(worker); err != nil {
 			return err
 		}
-		worker = updated
-	} else if err := st.SaveWorker(worker); err != nil {
-		return err
+	} else if worker.ThreadID == "" || worker.TurnID == "" {
+		return fmt.Errorf("daemon returned without durable app-server identity worker=%s host=%s worktree=%s", worker.ID, worker.HostID, worker.Worktree)
 	}
 	saved, err := st.GetWorker(worker.ID)
 	if err != nil {
 		return err
 	}
 	worker = saved
-	if worker.Engine == "appserver" && len(appserverResult.FileChanges) > 0 {
-		if err := c.recordAppserverFileChanges(*statePath, worker, appserverResult.FileChanges); err != nil {
-			return fmt.Errorf("record app-server file changes for worker %s: %w", worker.ID, err)
-		}
-	}
 	fmt.Fprintf(c.out, "spawned %s engine=%s thread=%s status=%s\n", worker.ID, worker.Engine, worker.ThreadID, displayWorkerStatus(worker))
 	if worker.Role != "" || worker.ParentID != "" {
 		fmt.Fprintf(c.out, "swarm: role=%s parent=%s\n", emptyDash(worker.Role), emptyDash(worker.ParentID))
@@ -1570,6 +1556,39 @@ func (c cli) runner() appserverRunner {
 	return appserver.Runner{}
 }
 
+func (c cli) spawnAppserver(ctx context.Context, statePath string, request protocol.AppserverSpawnRequest) (protocol.AppserverSpawnResponse, error) {
+	if c.appserverSpawner != nil {
+		return c.appserverSpawner.SpawnAppserver(ctx, request)
+	}
+	baseURL := configuredDaemonURL("")
+	if baseURL == "" {
+		baseURL = "http://127.0.0.1:8787"
+	}
+	client := daemon.Client{BaseURL: baseURL}
+	status, err := client.Status(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return protocol.AppserverSpawnResponse{}, ctx.Err()
+		}
+		return c.callerRuntime().SpawnAppserver(ctx, statePath, request)
+	}
+	if !sameStatePath(status.StatePath, statePath) {
+		return c.callerRuntime().SpawnAppserver(ctx, statePath, request)
+	}
+	response, err := client.SpawnAppserver(ctx, request)
+	if err != nil && daemon.AppserverSpawnNeedsCallerRuntime(err) {
+		return c.callerRuntime().SpawnAppserver(ctx, statePath, request)
+	}
+	return response, err
+}
+
+func (c cli) callerRuntime() appserverUserRuntime {
+	if c.userRuntime != nil {
+		return c.userRuntime
+	}
+	return csdAppserverRuntime{stderr: c.err}
+}
+
 func (c cli) runnerFor(worker store.Worker) appserverRunner {
 	if c.appserverRunner != nil {
 		return c.appserverRunner
@@ -1606,6 +1625,60 @@ func (c cli) runTurnObserved(runner appserverRunner, ctx context.Context, cwd, p
 		return observed.RunTurnObserved(ctx, cwd, prompt, observer)
 	}
 	return runner.RunTurn(ctx, cwd, prompt)
+}
+
+// runInjectedAppserverSpawn preserves the existing narrow fake-runner seam for
+// CLI unit tests. Production spawn always transfers ownership to csd.
+func (c cli) runInjectedAppserverSpawn(ctx context.Context, statePath string, worker store.Worker, prompt, requestID string) (protocol.AppserverSpawnResponse, error) {
+	st := store.NewJSONStore(statePath)
+	startedPersisted := false
+	result, err := c.runTurnObserved(c.runnerFor(worker), ctx, workerExecutionRoot(worker), prompt, func(started appserver.RunResult) error {
+		at := c.now().UTC()
+		updated, updateErr := st.UpdateWorker(worker.ID, func(current *store.Worker) error {
+			current.ThreadID = started.ThreadID
+			current.TurnID = started.TurnID
+			current.ApplyStatusAt(store.WorkerRunning, at)
+			current.UpdatedAt = at
+			current.LastMessage = fmt.Sprintf("daemon owns active app-server turn: host=%s thread=%s turn=%s worktree=%s", emptyDash(current.HostID), started.ThreadID, started.TurnID, emptyDash(current.Worktree))
+			current.Events = append(current.Events, store.Event{At: at, Type: "appserver.turn.started", Message: current.LastMessage, WorkerID: current.ID, Issue: current.Issue, RequestID: requestID})
+			return nil
+		})
+		if updateErr != nil {
+			return updateErr
+		}
+		worker = updated
+		startedPersisted = true
+		return nil
+	}, c.workerSteeringPolicy(statePath, worker.ID))
+	at := c.now().UTC()
+	if err != nil {
+		_, _ = st.UpdateWorker(worker.ID, func(current *store.Worker) error {
+			current.ApplyStatusAt(store.WorkerFailed, at)
+			current.UpdatedAt = at
+			current.LastMessage = "app-server spawn failed: " + err.Error()
+			current.Events = append(current.Events, store.Event{At: at, Type: "appserver.spawn.failed", Message: current.LastMessage, WorkerID: current.ID, Issue: current.Issue, RequestID: requestID})
+			return nil
+		})
+		return protocol.AppserverSpawnResponse{}, err
+	}
+	updated, err := st.UpdateWorker(worker.ID, func(current *store.Worker) error {
+		current.ThreadID = result.ThreadID
+		current.TurnID = result.TurnID
+		current.ApplyStatusAt(workerStatusFromTurn(result.Status), at)
+		current.UpdatedAt = at
+		current.LastMessage = fmt.Sprintf("app-server turn completed: host=%s thread=%s turn=%s status=%s", emptyDash(current.HostID), result.ThreadID, result.TurnID, result.Status)
+		if !startedPersisted {
+			current.Events = append(current.Events, store.Event{At: at, Type: "appserver.turn.started", Message: current.LastMessage, WorkerID: current.ID, Issue: current.Issue, RequestID: requestID})
+		}
+		current.Events = appendAppserverWarnings(current.Events, at, result.Warnings)
+		current.Events = append(current.Events, store.Event{At: at, Type: "appserver.turn.completed", Message: current.LastMessage, WorkerID: current.ID, Issue: current.Issue, RequestID: requestID})
+		current.Events = appendAppserverFinalMessage(current.Events, at, result.FinalMessage)
+		return nil
+	})
+	if err != nil {
+		return protocol.AppserverSpawnResponse{}, err
+	}
+	return protocol.AppserverSpawnResponse{RequestID: requestID, WorkerID: updated.ID, HostID: updated.HostID, ThreadID: updated.ThreadID, TurnID: updated.TurnID, Worktree: updated.Worktree, Status: string(updated.Status), RuntimeOwner: string(updated.RuntimeOwner)}, nil
 }
 
 func (c cli) sendTurnObserved(runner appserverRunner, ctx context.Context, cwd, threadID, prompt string, observer appserver.TurnObserver, steering appserver.SteeringPolicy) (appserver.RunResult, error) {
