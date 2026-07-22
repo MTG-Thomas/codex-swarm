@@ -181,6 +181,8 @@ clears blocker fields, and forwards completion to the parent worker. Use
 ```powershell
 cs status --repo .
 cs status --issues
+cs attention --repo .
+cs attention --json
 cs show --snapshot <worker-id>
 cs worker check <worker-id> --repo .
 cs janitor stale
@@ -188,6 +190,11 @@ cs janitor stale
 
 `status` reports both engine identity and capability coverage. Snapshots,
 transcripts, and work packets provide progressively richer handoff context.
+`attention` is a read-only projection over the same SQLite authority. It
+surfaces queued messages, blocked claims, stale non-terminal workers, validator
+rejections, current failed gates, and recorded pull-request next actions. It
+does not refresh GitHub or create a second open-loop ledger; use `cs pr status`
+when a recorded pull-request state needs live readback.
 
 ### Coordinate issue and pull-request work
 

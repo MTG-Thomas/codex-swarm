@@ -4,6 +4,12 @@ All notable changes to codex-swarm are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `cs attention` derives a scriptable human or JSON open-loop view from the
+  authoritative SQLite records for queued messages, blocked claims, stale
+  workers, validator rejections, failed gates, and pull-request next actions.
+
 ## [0.6.1] - 2026-07-22
 
 ### Fixed
