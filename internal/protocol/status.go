@@ -28,11 +28,15 @@ type Status struct {
 	DeliveredMessages          int    `json:"delivered_messages,omitempty"`
 	RecentTouches              int    `json:"recent_touches,omitempty"`
 	ConflictMessages           int    `json:"conflict_messages,omitempty"`
+	CodexTaskCount             int    `json:"codex_task_count,omitempty"`
 }
 
 // String renders a compact human-readable daemon status line.
 func (s Status) String() string {
 	base := fmt.Sprintf("daemon=%s version=%s workers=%d claims=%d conflicts=%d state=%s", s.Daemon, s.Version, s.WorkerCount, s.ClaimCount, s.ConflictCount, s.StatePath)
+	if s.CodexTaskCount > 0 {
+		base += fmt.Sprintf(" tasks=%d", s.CodexTaskCount)
+	}
 	if s.Backend == "" {
 		return base
 	}

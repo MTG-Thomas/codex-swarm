@@ -16,6 +16,7 @@ var (
 	ErrBifrostChangesetNotFound = errors.New("bifrost changeset not found")
 	ErrMessageNotFound          = errors.New("message not found")
 	ErrMessageReplayMismatch    = errors.New("message request replay mismatch")
+	ErrCodexTaskReplayMismatch  = errors.New("codex task snapshot request replay mismatch")
 )
 
 const (

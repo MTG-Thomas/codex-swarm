@@ -196,6 +196,74 @@ rejections, current failed gates, and recorded pull-request next actions. It
 does not refresh GitHub or create a second open-loop ledger; use `cs pr status`
 when a recorded pull-request state needs live readback.
 
+### Retain Codex task discovery beyond the host window
+
+Codex hosts can submit each `list_threads` observation to a durable discovery
+index. This preserves task identity after a task falls outside a host's newest
+task window without attaching the task as a swarm worker:
+
+```powershell
+cs tasks ingest --file codex-task-snapshot.json
+cs tasks list --limit 100 --json
+cs tasks status --stale-for 24h
+```
+
+The metadata-only snapshot contract is:
+
+```json
+{
+  "request_id": "local-20260722T170000Z",
+  "host_id": "local",
+  "source": "codex.list_threads",
+  "observed_at": "2026-07-22T17:00:00Z",
+  "coverage": "window",
+  "tasks": [
+    {
+      "thread_id": "019f84c9-84e0-7b43-ab2f-a0de6287c627",
+      "title": "Coordinator",
+      "project": "codex-swarm",
+      "cwd": "C:\\Users\\ThomasBray\\src\\codex-swarm",
+      "status": "active",
+      "unread": false,
+      "wait_cursor": "opaque-host-cursor",
+      "coordinator": true,
+      "classification": {
+        "tier": "P0",
+        "last_meaningful_outcome": "Implementation is under review",
+        "unresolved_loop": "PR has not merged",
+        "smallest_next_action": "Read review findings"
+      }
+    }
+  ]
+}
+```
+
+Use `coverage: "window"` for bounded `list_threads` results. Absence from a
+window never means complete or deleted. `coverage: "complete"` may mark an
+older record `missing_since`, and an explicit task `tombstoned: true` records a
+host-observed tombstone. The index keeps titles, paths, status, unread state,
+timestamps, discovery source, and opaque cursors; it does not accept prompt,
+final-message, or transcript bodies. Optional coordinator classification keeps
+P0-P3 tier, last outcome, unresolved loop, operator decision, smallest next
+action, and classification time. Omitting `wait_cursor` preserves the last
+cursor; supplying an empty string clears it. Walk every result page with
+`next_cursor`; the default page size is 50, but the retained inventory is not
+limited to 50.
+
+The cache begins with what a host explicitly ingests. It prevents future
+forgetting and can bootstrap older known task IDs, but it does not scrape Codex
+session files or claim to discover pre-index history on its own.
+
+Indexed `status` is the Codex host's observation, independent of an attached
+swarm worker lifecycle. A task may therefore remain `active` and resumable even
+when a synchronous launch request timed out and its worker record says failed.
+
+When `CODEX_SWARM_DAEMON_URL` or `--daemon` is set, the CLI uses the typed
+loopback API. Hosts may also post the same document to
+`POST /v1/codex-tasks/ingest` and read `GET /v1/codex-tasks` or
+`GET /v1/codex-tasks/status`. Ingestion requires an idempotency request ID.
+Replay records are bounded to the latest 5,000 ingests.
+
 ### Coordinate issue and pull-request work
 
 ```powershell
@@ -257,6 +325,7 @@ competing app-server connection that cannot see the in-flight turn.
 | Area | Commands |
 | --- | --- |
 | Health and identity | `doctor`, `version`, `agent`, `status` |
+| Codex task discovery | `tasks ingest`, `tasks list`, `tasks status` |
 | Worker lifecycle | `spawn`, `attach`, `send`, `resume`, `show`, `close`, `report` |
 | Coordination | `claim`, `message`, `inbox`, `touch`, `handoff`, `worker check` |
 | Handoff context | `workpacket`, `transcript`, `show --snapshot` |

@@ -44,6 +44,21 @@ Other systems keep their own authority:
 - Remote SSH hosts own their Git and Codex credentials.
 - Codex app-server owns its threads, turns, and runtime events.
 
+The Codex task index is a durable discovery cache, not lifecycle authority.
+Codex hosts explicitly ingest bounded metadata snapshots. Stable host/thread
+identity, labels, paths, observed status and unread state, source timestamps,
+last-seen state, and opaque wait cursors remain discoverable after the task
+falls outside the host's current listing window. Prompt and response bodies are
+not part of this schema. Coordinator-authored P0-P3 classification, outcome,
+unresolved-loop, operator-decision, and next-action summaries may be retained
+without copying task messages. A missing task is recorded only from a host-declared
+complete snapshot; absence from a bounded window is not completion, deletion,
+or even evidence that the task is unavailable.
+
+Host-observed task status does not derive from an attached swarm worker. This
+keeps an active/resumable Codex task visible when a synchronous launch request
+times out and marks only its worker attempt failed.
+
 Swarm records identity, warnings, links, and returned evidence. It does not
 silently override a target system's decision.
 
@@ -78,6 +93,16 @@ SQLite transactions preserve worker lifecycle, normalized messages and
 deliveries, append-only delivery transitions, claims, recent file touches,
 gates, and event envelopes. Store
 mutations must be atomic and safe under concurrent CLI and daemon access.
+
+The task index uses normalized SQLite rows because host, status, unread,
+staleness, and project filters plus keyset pagination are proven query needs.
+Snapshot ingestion has its own durable request-ID replay table. Reusing a
+request ID with different normalized metadata is rejected. The replay table is
+bounded to the latest 5,000 ingests so a long-running heartbeat cannot grow it
+without limit. Seen, missing, and tombstoned transitions share a durable
+observation-time/request-ID watermark, while coordinator classification has a
+separate classification-time/request-ID watermark; late snapshots cannot
+regress either state machine.
 
 Worker snapshots are deterministic handoff artifacts. Transcripts expose the
 durable event timeline. Work packets combine worker identity, repository,
@@ -138,6 +163,11 @@ without an explicit operator action.
 Broad daemon surfaces are read-only. Mutation routes remain loopback-only,
 small, typed, and idempotent. API contracts shared outside handlers live in
 `internal/protocol`; versioned mutation paths return typed JSON errors.
+
+`GET /v1/codex-tasks` and `GET /v1/codex-tasks/status` expose the discovery
+cache. `POST /v1/codex-tasks/ingest` is the only task-index mutation: it accepts
+a bounded metadata-only snapshot, requires loopback access and a request ID,
+and does not start Codex or scrape proprietary session storage.
 
 The daemon's message route is queue-capable but intentionally does not launch
 Codex processes. Native steering of an external task belongs to the Codex host

@@ -88,6 +88,8 @@ func (c cli) run(args []string) error {
 		return c.status(args[1:])
 	case "attention":
 		return c.attention(args[1:])
+	case "tasks":
+		return c.codexTasks(args[1:])
 	case "spawn":
 		return c.spawn(args[1:])
 	case "attach":
@@ -1626,6 +1628,9 @@ Usage:
   cs status --all
   cs status --issues
   cs attention [--repo .] [--kind queued_message,blocked_claim] [--json]
+  cs tasks list [--host local] [--status idle] [--limit 100] [--cursor <opaque>] [--json]
+  cs tasks ingest --file snapshot.json [--request-id <id>] [--daemon http://127.0.0.1:8787]
+  cs tasks status [--stale-for 24h] [--json]
   cs spawn --repo . --prompt "inspect this repo"
   cs spawn --engine appserver --repo . --prompt "summarize this repo in one sentence"
   cs spawn --engine appserver --repo . --worktree --remote-host user@host --prompt "work remotely"

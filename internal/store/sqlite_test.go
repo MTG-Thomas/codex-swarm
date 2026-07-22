@@ -97,6 +97,9 @@ func TestJSONStoreMigratesLegacyJSONToSQLite(t *testing.T) {
 	if err != nil || !bytes.Equal(backupAgain, data) {
 		t.Fatalf("backup after reopen changed: err=%v", err)
 	}
+	if _, err := st.IngestCodexTasks(CodexTaskIngestRequest{RequestID: "post-migration", HostID: "local", Source: "test", ObservedAt: now, Tasks: []CodexTaskObservation{{ThreadID: "thread-index"}}}); err != nil {
+		t.Fatalf("IngestCodexTasks() after legacy migration error = %v", err)
+	}
 }
 
 func TestJSONStoreConcurrentWritersUseSQLiteWithoutLostUpdates(t *testing.T) {
