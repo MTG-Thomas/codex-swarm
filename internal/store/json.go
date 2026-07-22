@@ -1063,6 +1063,31 @@ func openSQLite(path string) (*sql.DB, error) {
 			PRIMARY KEY(host_id, observation_id, page_number),
 			FOREIGN KEY(host_id, observation_id) REFERENCES codex_task_collections(host_id, observation_id) ON DELETE CASCADE
 		)`,
+		`CREATE TABLE IF NOT EXISTS decisions (
+			id TEXT PRIMARY KEY,
+			request_id TEXT NOT NULL UNIQUE,
+			fingerprint TEXT NOT NULL,
+			operation_key TEXT NOT NULL DEFAULT '',
+			repo TEXT NOT NULL DEFAULT '',
+			repo_key TEXT NOT NULL DEFAULT '',
+			issue TEXT NOT NULL DEFAULT '',
+			summary TEXT NOT NULL,
+			rationale TEXT NOT NULL,
+			evidence BLOB NOT NULL,
+			dissent TEXT NOT NULL DEFAULT '',
+			author_worker TEXT NOT NULL,
+			provenance_gaps BLOB NOT NULL,
+			supersedes_id TEXT,
+			superseded_by_id TEXT,
+			created_at TEXT NOT NULL,
+			superseded_at TEXT,
+			FOREIGN KEY(supersedes_id) REFERENCES decisions(id),
+			FOREIGN KEY(superseded_by_id) REFERENCES decisions(id),
+			UNIQUE(supersedes_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS decisions_operation_created ON decisions(operation_key, created_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS decisions_repo_created ON decisions(repo_key, created_at DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS decisions_issue_created ON decisions(issue, created_at DESC, id DESC)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			_ = db.Close()

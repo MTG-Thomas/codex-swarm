@@ -386,6 +386,35 @@ cs gate record --repo . --worker <worker-id> --gate test `
 Recorded evidence includes the command, result, commit, timestamp, and worker.
 Recording a gate does not run the command for you.
 
+### Preserve coordination decisions
+
+Record an explicit decision against the logical operation derived by
+`cs operation`, along with its rationale and bounded evidence references:
+
+```powershell
+cs decision record --request-id decide-76-retention `
+  --author <worker-id> --issue owner/repo#76 `
+  --summary "Keep decision history in SQLite" `
+  --rationale "Supersession must preserve the evidence used at the time" `
+  --evidence gate:<gate-evidence-id> `
+  --dissent "Revisit retention after measuring use"
+
+cs decision list --issue owner/repo#76 --current
+cs decision show <decision-id>
+cs decision supersede <decision-id> --request-id decide-76-retention-v2 `
+  --summary "Keep bounded decision history" `
+  --rationale "Observed volume supports retaining explicit records"
+```
+
+`record` and `supersede` are narrow, request-ID-idempotent SQLite writes.
+Supersession creates a new record, timestamps the prior record, and keeps both
+readable. Use `--clear-evidence` or `--clear-dissent` when a replacement should
+not inherit those fields. Local `worker:`, `gate:`, `claim:`, `decision:`, and `operation:`
+evidence references are checked when written. Missing authors or evidence stay
+visible as provenance gaps; external references are retained without fetching
+their content. Decision records never ingest prompts, transcripts, or tool
+output.
+
 ### Run the daemon
 
 ```powershell
@@ -418,6 +447,7 @@ competing app-server connection that cannot see the in-flight turn.
 | --- | --- |
 | Health and identity | `doctor`, `version`, `agent`, `status` |
 | Codex task discovery | `tasks ingest`, `tasks list`, `tasks status` |
+| Logical operations and decisions | `operation list`, `operation show`, `decision record`, `decision list`, `decision show`, `decision supersede` |
 | Worker lifecycle | `spawn`, `attach`, `send`, `resume`, `show`, `close`, `report` |
 | Coordination | `claim`, `message`, `inbox`, `touch`, `handoff`, `worker check` |
 | Handoff context | `workpacket`, `transcript`, `show --snapshot` |

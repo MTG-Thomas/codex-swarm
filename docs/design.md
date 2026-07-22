@@ -114,6 +114,22 @@ deliveries, append-only delivery transitions, claims, recent file touches,
 gates, and event envelopes. Store
 mutations must be atomic and safe under concurrent CLI and daemon access.
 
+Logical operations are deterministic projections over those authoritative
+records, not another persisted ledger. An issue-backed lineage uses its
+case-normalized issue reference as the operation key; otherwise a healthy
+lineage uses its root worker ID. Missing parents, parent cycles, invalid issue
+references, and unlinked records remain visible without a fabricated fallback.
+
+Operator decisions are the narrow persisted complement to that projection.
+They retain an optional operation key, repository and issue references,
+summary, rationale, bounded evidence references, dissent, author worker, and
+provenance gaps. Recording and superseding require idempotency request IDs.
+Supersession inserts a successor and timestamps the prior decision in one
+SQLite transaction, preserving history and leaving one current successor.
+Local evidence references are checked at write time; external references are
+not fetched. Decision storage does not index prompts, transcripts, responses,
+or tool output.
+
 The task index uses normalized SQLite rows because host, status, unread,
 staleness, and project filters plus keyset pagination are proven query needs.
 Snapshot ingestion has its own durable request-ID replay table. Reusing a

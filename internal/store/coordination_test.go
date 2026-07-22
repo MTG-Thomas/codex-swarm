@@ -147,3 +147,25 @@ func TestRecordFileTouchWarnsOnlyForOverlappingPeerWrites(t *testing.T) {
 		t.Fatalf("overlap conflicts = %#v, want latest overlapping peer w-1", conflicts)
 	}
 }
+
+func TestPathKeyNormalizesWindowsPathsIndependentOfHost(t *testing.T) {
+	tests := map[string]string{
+		`C:\Repo\.\Sub`:                "c:/repo/sub",
+		`c:/repo/Other/../Sub`:         "c:/repo/sub",
+		`C:\`:                          "c:/",
+		`C:`:                           "c:.",
+		`C:\..\Repo`:                   "c:/repo",
+		`\\Server\Share\Repo`:          "//server/share/repo",
+		`\\Server\Share\`:              "//server/share/",
+		`\\Server\Share`:               "//server/share",
+		`\\Server\Share\..\Repo`:       "//server/share/repo",
+		`//SERVER/SHARE/Repo/..`:       "//server/share/",
+		`\\?\UNC\Server\Share\`:        "//?/unc/server/share/",
+		`\\?\UNC\Server\Share\..\Repo`: "//?/unc/server/share/repo",
+	}
+	for input, want := range tests {
+		if got := pathKey(input); got != want {
+			t.Errorf("pathKey(%q) = %q; want %q", input, got, want)
+		}
+	}
+}

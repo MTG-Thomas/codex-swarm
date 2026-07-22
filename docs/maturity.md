@@ -27,6 +27,8 @@ in [roadmap.md](roadmap.md).
 - SQLite-backed machine-global authority with legacy JSON migration.
 - Normalized messages, deliveries, append-only delivery transitions, file
   touches, claims, gates, and events.
+- Derived logical-operation grouping plus request-ID-idempotent, evidence-backed
+  decision records with atomic supersession history and visible provenance gaps.
 - Capability-based runtime behavior independent of engine identity.
 - Durable app-server thread and turn identity, including live steering.
 - Managed local worktrees and isolated remote Git sessions over SSH.
