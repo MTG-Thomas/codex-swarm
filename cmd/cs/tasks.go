@@ -26,6 +26,8 @@ func (c cli) codexTasks(args []string) error {
 		return c.codexTaskList(args[1:])
 	case "ingest", "sync":
 		return c.codexTaskIngest(args[1:])
+	case "collect":
+		return c.codexTaskCollect(args[1:])
 	case "status":
 		return c.codexTaskStatus(args[1:])
 	default:
@@ -148,21 +150,28 @@ func (c cli) codexTaskIngest(args []string) error {
 	if request.ObservedAt.IsZero() {
 		request.ObservedAt = c.now().UTC()
 	}
-	var result protocol.CodexTaskIngestResponse
-	if baseURL := configuredDaemonURL(*daemonURL); baseURL != "" {
+	result, err := c.ingestCodexTasks(*statePath, *daemonURL, request)
+	if err != nil {
+		return err
+	}
+	return c.printCodexTaskIngestResult(result, *jsonOutput)
+}
+
+func (c cli) ingestCodexTasks(statePath, daemonURL string, request protocol.CodexTaskIngestRequest) (protocol.CodexTaskIngestResponse, error) {
+	if baseURL := configuredDaemonURL(daemonURL); baseURL != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		result, err = (daemon.Client{BaseURL: baseURL}).IngestCodexTasks(ctx, request)
+		result, err := (daemon.Client{BaseURL: baseURL}).IngestCodexTasks(ctx, request)
 		if err != nil {
-			return fmt.Errorf("daemon Codex task ingest: %w", err)
+			return protocol.CodexTaskIngestResponse{}, fmt.Errorf("daemon Codex task ingest: %w", err)
 		}
-	} else {
-		result, err = store.NewJSONStore(*statePath).IngestCodexTasks(request)
-		if err != nil {
-			return err
-		}
+		return result, nil
 	}
-	if *jsonOutput {
+	return store.NewJSONStore(statePath).IngestCodexTasks(request)
+}
+
+func (c cli) printCodexTaskIngestResult(result protocol.CodexTaskIngestResponse, jsonOutput bool) error {
+	if jsonOutput {
 		data, err := json.MarshalIndent(result, "", "  ")
 		if err != nil {
 			return err

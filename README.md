@@ -200,12 +200,82 @@ when a recorded pull-request state needs live readback.
 
 Codex hosts can submit each `list_threads` observation to a durable discovery
 index. This preserves task identity after a task falls outside a host's newest
-task window without attaching the task as a swarm worker:
+task window without attaching the task as a swarm worker. For recurring
+coordinator heartbeats, stage each host-owned page as it arrives and finish the
+observation without waiting on any task:
+
+```powershell
+cs tasks collect page --host desktop --observation heartbeat-20260722T1800Z `
+  --page 1 --next-cursor page-2 --file page-1.json
+cs tasks collect status --host desktop --observation heartbeat-20260722T1800Z
+cs tasks collect page --host desktop --observation heartbeat-20260722T1800Z `
+  --page 2 --cursor page-2 --file page-2.json
+cs tasks collect finish --host desktop --observation heartbeat-20260722T1800Z `
+  --coverage window
+cs tasks list --limit 100 --json
+cs tasks status --stale-for 24h
+```
+
+Each page file uses a deliberately narrow metadata-only shape:
+
+```json
+{
+  "tasks": [
+    {
+      "thread_id": "019f84c9-84e0-7b43-ab2f-a0de6287c627",
+      "title": "Coordinator",
+      "project": "codex-swarm",
+      "cwd": "C:\\Users\\ThomasBray\\src\\codex-swarm",
+      "status": "active",
+      "unread": false,
+      "wait_cursor": "opaque-host-cursor",
+      "coordinator": true
+    }
+  ]
+}
+```
+
+`--host` may come from `CODEX_HOST_ID`; connected hosts must use distinct,
+stable IDs. For example, a collector running on the connected remote
+workstation uses its own identity and loopback daemon:
+
+```powershell
+$env:CODEX_HOST_ID = "codex-remote-workstation-01"
+$env:CODEX_SWARM_DAEMON_URL = "http://127.0.0.1:8787"
+cs tasks collect page --observation remote-heartbeat-20260722T1800Z `
+  --page 1 --file remote-page-1.json
+cs tasks collect status --observation remote-heartbeat-20260722T1800Z
+```
+
+Do not expose `csd` beyond loopback to centralize collection. A connected host
+either submits to its own local daemon or passes the same metadata-only page to
+the coordinator, which records it under that host's stable ID.
+
+The first page fixes the observation timestamp. Page and finish
+retries are idempotent, while changed content under the same observation/page
+identity is rejected. `finish` validates contiguous pages, the opaque cursor
+chain, duplicate task IDs, and the 1,000-task bound before one atomic ingest.
+Use `coverage: window` whenever the owning host has only a bounded view. Use
+`complete` only after the final page returned no next cursor; only then can
+absence mark an older task missing. Explicit `tombstoned: true` remains the
+only deletion-like observation.
+
+The collector is a hook for the Codex host that already owns `list_threads`.
+It does not call Codex, scrape session files, launch app-server, or infer task
+lifecycle from swarm worker state. Existing `tasks list` and `tasks status`
+provide immediate nonblocking daemon readback after `finish`;
+`tasks collect status` returns the staged page count and exact next cursor after
+an interrupted heartbeat. Opaque listing and wait cursors are preserved
+byte-for-byte.
+Unfinished collections older than seven days are pruned when a new observation
+starts, and the daemon refuses to exceed 1,000 simultaneously open
+observations.
+
+For bootstrap, classification updates, or another trusted producer that
+already owns a complete envelope, direct ingestion remains available:
 
 ```powershell
 cs tasks ingest --file codex-task-snapshot.json
-cs tasks list --limit 100 --json
-cs tasks status --stale-for 24h
 ```
 
 ### Group related coordination as one operation
@@ -278,10 +348,13 @@ swarm worker lifecycle. A task may therefore remain `active` and resumable even
 when a synchronous launch request timed out and its worker record says failed.
 
 When `CODEX_SWARM_DAEMON_URL` or `--daemon` is set, the CLI uses the typed
-loopback API. Hosts may also post the same document to
-`POST /v1/codex-tasks/ingest` and read `GET /v1/codex-tasks` or
-`GET /v1/codex-tasks/status`. Ingestion requires an idempotency request ID.
-Replay records are bounded to the latest 5,000 ingests.
+loopback API. Collector pages and finish requests use
+`POST /v1/codex-tasks/collections/pages` and
+`POST /v1/codex-tasks/collections/finish`. Trusted producers may still post a
+full envelope to `POST /v1/codex-tasks/ingest`. Readback uses
+`GET /v1/codex-tasks` or `GET /v1/codex-tasks/status`. All mutation routes are
+loopback-only. Collector and direct-ingest replay records have bounded
+retention.
 
 ### Coordinate issue and pull-request work
 

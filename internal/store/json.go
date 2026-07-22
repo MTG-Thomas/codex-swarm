@@ -1036,6 +1036,33 @@ func openSQLite(path string) (*sql.DB, error) {
 			result BLOB NOT NULL,
 			created_at TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS codex_task_collections (
+			host_id TEXT NOT NULL,
+			observation_id TEXT NOT NULL,
+			observed_at TEXT NOT NULL,
+			page_count INTEGER NOT NULL DEFAULT 0,
+			task_count INTEGER NOT NULL DEFAULT 0,
+			coverage TEXT,
+			finish_fingerprint TEXT,
+			finish_result BLOB,
+			finalized_at TEXT,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY(host_id, observation_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS codex_task_collections_finalized ON codex_task_collections(finalized_at DESC)`,
+		`CREATE TABLE IF NOT EXISTS codex_task_collection_pages (
+			host_id TEXT NOT NULL,
+			observation_id TEXT NOT NULL,
+			page_number INTEGER NOT NULL,
+			cursor TEXT NOT NULL DEFAULT '',
+			next_cursor TEXT NOT NULL DEFAULT '',
+			fingerprint TEXT NOT NULL,
+			tasks BLOB NOT NULL,
+			task_count INTEGER NOT NULL,
+			created_at TEXT NOT NULL,
+			PRIMARY KEY(host_id, observation_id, page_number),
+			FOREIGN KEY(host_id, observation_id) REFERENCES codex_task_collections(host_id, observation_id) ON DELETE CASCADE
+		)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			_ = db.Close()

@@ -147,6 +147,25 @@ type codexTaskCursor struct {
 }
 
 func (s *JSONStore) IngestCodexTasks(request CodexTaskIngestRequest) (CodexTaskIngestResult, error) {
+	var result CodexTaskIngestResult
+	err := s.withStateLock(func() error {
+		var err error
+		result, err = s.ingestCodexTasksLocked(request)
+		return err
+	})
+	if err != nil {
+		return CodexTaskIngestResult{}, err
+	}
+	return result, nil
+}
+
+// ingestCodexTasksLocked applies one snapshot using the caller's active SQLite
+// transaction. Keeping this boundary private lets multi-page collection
+// finalization publish its task snapshot atomically with its replay record.
+func (s *JSONStore) ingestCodexTasksLocked(request CodexTaskIngestRequest) (CodexTaskIngestResult, error) {
+	if s.tx == nil {
+		return CodexTaskIngestResult{}, errors.New("ingest codex tasks outside SQLite transaction")
+	}
 	request = normalizeCodexTaskRequest(request)
 	if err := validateCodexTaskRequest(request); err != nil {
 		return CodexTaskIngestResult{}, err
@@ -159,101 +178,98 @@ func (s *JSONStore) IngestCodexTasks(request CodexTaskIngestRequest) (CodexTaskI
 		RequestID: request.RequestID, HostID: request.HostID, Source: request.Source,
 		ObservedAt: request.ObservedAt, Coverage: request.Coverage, Observed: len(request.Tasks),
 	}
-	err = s.withStateLock(func() error {
-		var storedFingerprint string
-		var storedResult []byte
-		err := s.tx.QueryRow(`SELECT fingerprint,result FROM codex_task_ingests WHERE request_id=?`, request.RequestID).Scan(&storedFingerprint, &storedResult)
-		switch {
-		case err == nil:
-			if storedFingerprint != fingerprint {
-				return fmt.Errorf("%w: %s", ErrCodexTaskReplayMismatch, request.RequestID)
-			}
-			if err := json.Unmarshal(storedResult, &result); err != nil {
-				return fmt.Errorf("decode codex task ingest replay %q: %w", request.RequestID, err)
-			}
-			result.Replayed = true
-			return nil
-		case !errors.Is(err, sql.ErrNoRows):
-			return fmt.Errorf("read codex task ingest replay %q: %w", request.RequestID, err)
+	var storedFingerprint string
+	var storedResult []byte
+	err = s.tx.QueryRow(`SELECT fingerprint,result FROM codex_task_ingests WHERE request_id=?`, request.RequestID).Scan(&storedFingerprint, &storedResult)
+	switch {
+	case err == nil:
+		if storedFingerprint != fingerprint {
+			return CodexTaskIngestResult{}, fmt.Errorf("%w: %s", ErrCodexTaskReplayMismatch, request.RequestID)
 		}
+		if err := json.Unmarshal(storedResult, &result); err != nil {
+			return CodexTaskIngestResult{}, fmt.Errorf("decode codex task ingest replay %q: %w", request.RequestID, err)
+		}
+		result.Replayed = true
+		return result, nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return CodexTaskIngestResult{}, fmt.Errorf("read codex task ingest replay %q: %w", request.RequestID, err)
+	}
 
-		seen := make(map[string]struct{}, len(request.Tasks))
-		for _, observation := range request.Tasks {
-			seen[observation.ThreadID] = struct{}{}
-			existing, found, err := getCodexTask(s.tx, request.HostID, observation.ThreadID)
-			if err != nil {
-				return err
-			}
-			if found && !snapshotWins(request.ObservedAt, request.RequestID, existing.StateObservedAt, existing.StateSnapshotID) {
-				result.StaleSkipped++
-				if mergeCodexTaskClassification(&existing, request, observation.Classification) {
-					if err := upsertCodexTask(s.tx, existing); err != nil {
-						return err
-					}
-					result.Updated++
+	seen := make(map[string]struct{}, len(request.Tasks))
+	for _, observation := range request.Tasks {
+		seen[observation.ThreadID] = struct{}{}
+		existing, found, err := getCodexTask(s.tx, request.HostID, observation.ThreadID)
+		if err != nil {
+			return CodexTaskIngestResult{}, err
+		}
+		if found && !snapshotWins(request.ObservedAt, request.RequestID, existing.StateObservedAt, existing.StateSnapshotID) {
+			result.StaleSkipped++
+			if mergeCodexTaskClassification(&existing, request, observation.Classification) {
+				if err := upsertCodexTask(s.tx, existing); err != nil {
+					return CodexTaskIngestResult{}, err
 				}
-				continue
-			}
-			task := mergeCodexTask(existing, found, request, observation)
-			if err := upsertCodexTask(s.tx, task); err != nil {
-				return err
-			}
-			if found {
 				result.Updated++
-			} else {
-				result.Inserted++
 			}
+			continue
 		}
-		if request.Coverage == CodexTaskCoverageComplete {
-			rows, err := s.tx.Query(`SELECT thread_id,state_observed_at,state_snapshot_id,missing_since FROM codex_tasks WHERE host_id=? AND discovery_source=? AND tombstoned_at IS NULL`, request.HostID, request.Source)
+		task := mergeCodexTask(existing, found, request, observation)
+		if err := upsertCodexTask(s.tx, task); err != nil {
+			return CodexTaskIngestResult{}, err
+		}
+		if found {
+			result.Updated++
+		} else {
+			result.Inserted++
+		}
+	}
+	if request.Coverage == CodexTaskCoverageComplete {
+		rows, err := s.tx.Query(`SELECT thread_id,state_observed_at,state_snapshot_id,missing_since FROM codex_tasks WHERE host_id=? AND discovery_source=? AND tombstoned_at IS NULL`, request.HostID, request.Source)
+		if err != nil {
+			return CodexTaskIngestResult{}, fmt.Errorf("list absent codex tasks: %w", err)
+		}
+		type absentTask struct {
+			threadID       string
+			alreadyMissing bool
+		}
+		var absent []absentTask
+		for rows.Next() {
+			var threadID, stateAtValue, stateSnapshotID string
+			var missing sql.NullString
+			if err := rows.Scan(&threadID, &stateAtValue, &stateSnapshotID, &missing); err != nil {
+				_ = rows.Close()
+				return CodexTaskIngestResult{}, err
+			}
+			stateAt, err := parseDBTime(stateAtValue)
 			if err != nil {
-				return fmt.Errorf("list absent codex tasks: %w", err)
+				_ = rows.Close()
+				return CodexTaskIngestResult{}, err
 			}
-			type absentTask struct {
-				threadID       string
-				alreadyMissing bool
-			}
-			var absent []absentTask
-			for rows.Next() {
-				var threadID, stateAtValue, stateSnapshotID string
-				var missing sql.NullString
-				if err := rows.Scan(&threadID, &stateAtValue, &stateSnapshotID, &missing); err != nil {
-					_ = rows.Close()
-					return err
-				}
-				stateAt, err := parseDBTime(stateAtValue)
-				if err != nil {
-					_ = rows.Close()
-					return err
-				}
-				if _, ok := seen[threadID]; !ok && snapshotWins(request.ObservedAt, request.RequestID, stateAt, stateSnapshotID) {
-					absent = append(absent, absentTask{threadID: threadID, alreadyMissing: missing.Valid})
-				}
-			}
-			if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-				return err
-			}
-			for _, task := range absent {
-				_, err := s.tx.Exec(`UPDATE codex_tasks SET missing_since=COALESCE(missing_since,?),state_observed_at=?,state_snapshot_id=? WHERE host_id=? AND thread_id=?`, formatDBTime(request.ObservedAt), formatDBTime(request.ObservedAt), request.RequestID, request.HostID, task.threadID)
-				if err != nil {
-					return err
-				}
-				if !task.alreadyMissing {
-					result.MissingMarked++
-				}
+			if _, ok := seen[threadID]; !ok && snapshotWins(request.ObservedAt, request.RequestID, stateAt, stateSnapshotID) {
+				absent = append(absent, absentTask{threadID: threadID, alreadyMissing: missing.Valid})
 			}
 		}
-		encoded, err := json.Marshal(result)
-		if err != nil {
-			return err
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			return CodexTaskIngestResult{}, err
 		}
-		_, err = s.tx.Exec(`INSERT INTO codex_task_ingests(request_id,fingerprint,result,created_at) VALUES(?,?,?,?)`, request.RequestID, fingerprint, encoded, formatDBTime(request.ObservedAt))
-		if err != nil {
-			return err
+		for _, task := range absent {
+			_, err := s.tx.Exec(`UPDATE codex_tasks SET missing_since=COALESCE(missing_since,?),state_observed_at=?,state_snapshot_id=? WHERE host_id=? AND thread_id=?`, formatDBTime(request.ObservedAt), formatDBTime(request.ObservedAt), request.RequestID, request.HostID, task.threadID)
+			if err != nil {
+				return CodexTaskIngestResult{}, err
+			}
+			if !task.alreadyMissing {
+				result.MissingMarked++
+			}
 		}
-		return pruneCodexTaskIngestReplays(s.tx, maxCodexTaskIngestReplays)
-	})
+	}
+	encoded, err := json.Marshal(result)
 	if err != nil {
+		return CodexTaskIngestResult{}, err
+	}
+	_, err = s.tx.Exec(`INSERT INTO codex_task_ingests(request_id,fingerprint,result,created_at) VALUES(?,?,?,?)`, request.RequestID, fingerprint, encoded, formatDBTime(request.ObservedAt))
+	if err != nil {
+		return CodexTaskIngestResult{}, err
+	}
+	if err := pruneCodexTaskIngestReplays(s.tx, maxCodexTaskIngestReplays); err != nil {
 		return CodexTaskIngestResult{}, err
 	}
 	return result, nil
@@ -414,7 +430,7 @@ func normalizeCodexTaskRequest(request CodexTaskIngestRequest) CodexTaskIngestRe
 		t.Project = strings.TrimSpace(t.Project)
 		t.Status = strings.TrimSpace(t.Status)
 		if t.WaitCursor != nil {
-			cursor := strings.TrimSpace(*t.WaitCursor)
+			cursor := *t.WaitCursor
 			t.WaitCursor = &cursor
 		}
 		if t.Classification != nil {

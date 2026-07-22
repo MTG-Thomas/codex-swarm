@@ -55,6 +55,18 @@ without copying task messages. A missing task is recorded only from a host-decla
 complete snapshot; absence from a bounded window is not completion, deletion,
 or even evidence that the task is unavailable.
 
+The preferred recurring-ingestion seam is a host-owned, two-phase page
+collector. The Codex host calls its own discovery tool and stages only the
+returned metadata; codex-swarm never opens a competing app-server connection
+or reads private session history. A durable observation manifest fixes host,
+source, and observation time. Independently replayable pages preserve opaque
+cursor continuity across coordinator interruptions. Finalization validates the
+page chain and atomically feeds the existing snapshot ingestion transaction.
+Only an exhausted collection explicitly finalized with complete coverage can
+mark unseen records missing. Task list and status endpoints remain immediate,
+nonblocking projections over the resulting index, while compact collection
+status exposes the next page and exact opaque cursor needed after a restart.
+
 Host-observed task status does not derive from an attached swarm worker. This
 keeps an active/resumable Codex task visible when a synchronous launch request
 times out and marks only its worker attempt failed.
@@ -111,6 +123,13 @@ without limit. Seen, missing, and tombstoned transitions share a durable
 observation-time/request-ID watermark, while coordinator classification has a
 separate classification-time/request-ID watermark; late snapshots cannot
 regress either state machine.
+
+Collector manifests and page fingerprints make host retries independently
+idempotent before and after finalization. Finalized page payloads are compacted
+and old finalized manifests are bounded with the same retention intent as
+ingest replays. An abandoned collection has no effect on indexed task state;
+open collections use server receipt time for seven-day cleanup and a hard cap
+of 1,000 so a loopback producer cannot grow staging without bound.
 
 Worker snapshots are deterministic handoff artifacts. Transcripts expose the
 durable event timeline. Work packets combine worker identity, repository,
