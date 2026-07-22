@@ -10,6 +10,9 @@ platform, and live-operations work. Git, GitHub, Codex, and the operated system
 remain authoritative for their own state; swarm makes ownership, communication,
 evidence, and closeout durable in one local SQLite ledger.
 
+Every angle-bracket token below is a placeholder. Replace it with the real value
+before running a PowerShell example.
+
 ## 1. Verify the installed surface
 
 Run before relying on coordination behavior:
@@ -104,11 +107,20 @@ cs message steering-failed --state "<state-path>" --worker "<worker-id>" `
 Never open a competing app-server process to steer an externally owned active
 turn.
 
-When JSON returns `native_followup`, use the owning host's native task-message
-tool to start the idle destination task's next turn with the exact prompt. Then
-record success with `cs message confirm-followup`, or record the tool error with
-`cs message followup-failed`. Do not finish while a returned native callback is
-unacknowledged or silently stranded.
+Before relying on native follow-up acknowledgement, verify that the installed
+CLI recognizes both commands:
+
+```powershell
+cs message confirm-followup --help
+cs message followup-failed --help
+```
+
+When supported JSON returns `native_followup`, use the owning host's native
+task-message tool to start the idle destination task's next turn with the exact
+prompt. Then record success with `cs message confirm-followup`, or record the
+tool error with `cs message followup-failed`. If either command is unsupported,
+report the version skew and upgrade before relying on this callback path. Do not
+finish while a returned native callback is unacknowledged or silently stranded.
 
 ## 5. Keep coordinators nonblocking
 
@@ -138,7 +150,15 @@ that must outlive the host's newest-task window:
 
 ```powershell
 cs tasks collect page --host "<stable-host-id>" --observation "<id>" `
-  --page 1 --file "<metadata-only-page.json>"
+  --page 1 --next-cursor "<cursor-for-page-2>" `
+  --file "<metadata-only-page-1.json>"
+cs tasks collect page --host "<stable-host-id>" --observation "<id>" `
+  --page 2 --cursor "<cursor-for-page-2>" `
+  --next-cursor "<cursor-for-page-3>" --file "<metadata-only-page-2.json>"
+# Repeat collect page for every host page. Omit --next-cursor on the last page.
+cs tasks collect page --host "<stable-host-id>" --observation "<id>" `
+  --page "<last-page-number>" --cursor "<cursor-for-last-page>" `
+  --file "<metadata-only-last-page.json>"
 cs tasks collect finish --host "<stable-host-id>" --observation "<id>" `
   --coverage window
 cs tasks list --json
@@ -193,11 +213,11 @@ and forwards completion to the parent. Use `--status failed` only for a real
 terminal failure. Use `report` only for a lifecycle update that must not release
 claims.
 
-Inspect the JSON response. Deliver every returned `native_steering` or
-`native_followup` through the owning Codex host and acknowledge it with the
-matching confirm command. If the native tool fails, record the matching failure
-command. Closeout is not durable until every callback is confirmed or has a
-recorded delivery error.
+Inspect the JSON response. After the capability checks in section 4, deliver
+every returned `native_steering` or `native_followup` through the owning Codex
+host and acknowledge it with the matching confirm command. If the native tool
+fails, record the matching failure command. Closeout is not durable until every
+callback is confirmed or has a recorded delivery error.
 
 ## Safety boundaries
 
