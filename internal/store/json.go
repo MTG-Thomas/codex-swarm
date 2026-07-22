@@ -998,6 +998,44 @@ func openSQLite(path string) (*sql.DB, error) {
 			created_at TEXT NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS file_touches_conflict_lookup ON file_touches(repo_key, path_key, operation, created_at)`,
+		`CREATE TABLE IF NOT EXISTS codex_tasks (
+			host_id TEXT NOT NULL,
+			thread_id TEXT NOT NULL,
+			title TEXT NOT NULL DEFAULT '',
+			description TEXT NOT NULL DEFAULT '',
+			cwd TEXT NOT NULL DEFAULT '',
+			project TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT '',
+			unread INTEGER NOT NULL DEFAULT 0,
+			coordinator INTEGER NOT NULL DEFAULT 0,
+			tier TEXT NOT NULL DEFAULT '',
+			last_meaningful_outcome TEXT NOT NULL DEFAULT '',
+			unresolved_loop TEXT NOT NULL DEFAULT '',
+			smallest_next_action TEXT NOT NULL DEFAULT '',
+			operator_decision TEXT NOT NULL DEFAULT '',
+			last_classified_at TEXT,
+			last_classification_snapshot_id TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL,
+			updated_at TEXT NOT NULL,
+			first_seen_at TEXT NOT NULL,
+			last_seen_at TEXT NOT NULL,
+			state_observed_at TEXT NOT NULL,
+			state_snapshot_id TEXT NOT NULL,
+			discovery_source TEXT NOT NULL,
+			wait_cursor TEXT NOT NULL DEFAULT '',
+			last_snapshot_id TEXT NOT NULL,
+			missing_since TEXT,
+			tombstoned_at TEXT,
+			PRIMARY KEY(host_id, thread_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS codex_tasks_seen_order ON codex_tasks(last_seen_at DESC, host_id, thread_id)`,
+		`CREATE INDEX IF NOT EXISTS codex_tasks_filters ON codex_tasks(host_id, status, unread, discovery_source)`,
+		`CREATE TABLE IF NOT EXISTS codex_task_ingests (
+			request_id TEXT PRIMARY KEY,
+			fingerprint TEXT NOT NULL,
+			result BLOB NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			_ = db.Close()
