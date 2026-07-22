@@ -69,7 +69,7 @@ func TestCodexTaskCollectionRoutesAndClientRoundTrip(t *testing.T) {
 	}
 }
 
-func TestCodexTaskCollectionMutationRequiresLoopbackAndStrictJSON(t *testing.T) {
+func TestCodexTaskCollectionRoutesRequireLoopbackAndStrictJSON(t *testing.T) {
 	server := NewServer("state.json", store.NewJSONStore(filepath.Join(t.TempDir(), "state.json")))
 	body, _ := json.Marshal(protocol.CodexTaskCollectionPageRequest{HostID: "desktop", ObservationID: "one", ObservedAt: time.Now().UTC(), Page: 1})
 	req := httptest.NewRequest(http.MethodPost, "/v1/codex-tasks/collections/pages", bytes.NewReader(body))
@@ -77,6 +77,12 @@ func TestCodexTaskCollectionMutationRequiresLoopbackAndStrictJSON(t *testing.T) 
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "loopback_required") {
 		t.Fatalf("non-loopback response = %d %s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodGet, "/v1/codex-tasks/collections/status?host=desktop&observation=one", nil)
+	rec = httptest.NewRecorder()
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "loopback_required") {
+		t.Fatalf("non-loopback status response = %d %s", rec.Code, rec.Body.String())
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/v1/codex-tasks/collections/pages", strings.NewReader(`{"host_id":"desktop","observation_id":"one","observed_at":"2026-07-22T21:00:00Z","page":1,"unknown":true}`))
