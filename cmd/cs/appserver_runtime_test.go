@@ -18,7 +18,11 @@ func TestConfigureDetachedRuntimeStarts(t *testing.T) {
 	cmd := exec.Command(os.Args[0], "-test.run=^TestConfigureDetachedRuntimeStarts$")
 	cmd.Env = append(os.Environ(), "CODEX_SWARM_DETACHED_HELPER=1")
 	configureDetachedRuntime(cmd)
+	verifyDetachedRuntimeConfiguration(t, cmd)
 	if err := cmd.Start(); err != nil {
+		if detachedRuntimeStartRestricted(err) {
+			t.Skipf("runner job forbids CREATE_BREAKAWAY_FROM_JOB: %v", err)
+		}
 		t.Fatalf("start detached runtime helper: %v", err)
 	}
 	if err := cmd.Wait(); err != nil {
