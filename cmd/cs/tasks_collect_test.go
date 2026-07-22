@@ -13,6 +13,14 @@ import (
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
 
+func TestCLICodexTaskCollectionRequiresSubcommand(t *testing.T) {
+	c := cli{out: &bytes.Buffer{}, err: &bytes.Buffer{}, now: time.Now}
+	err := c.run([]string{"tasks", "collect"})
+	if err == nil || err.Error() != "tasks collect requires <page|status|finish>" {
+		t.Fatalf("error = %v", err)
+	}
+}
+
 func TestCLICodexTaskCollectionPersistsPagesAndFinishes(t *testing.T) {
 	now := time.Date(2026, 7, 22, 20, 30, 0, 0, time.UTC)
 	state := filepath.Join(t.TempDir(), "state.json")

@@ -17,7 +17,7 @@ import (
 
 func (c cli) codexTaskCollect(args []string) error {
 	if len(args) == 0 {
-		return errors.New("tasks collect requires <page|finish>")
+		return errors.New("tasks collect requires <page|status|finish>")
 	}
 	switch args[0] {
 	case "page":

@@ -72,6 +72,10 @@ func (s *Server) handleCodexTaskCollectionStatus(w http.ResponseWriter, r *http.
 		writeMethodNotAllowed(w, r)
 		return
 	}
+	if !isLoopbackRemote(r.RemoteAddr) {
+		writeRouteError(w, r, http.StatusForbidden, "loopback_required", "Codex task collection requires loopback daemon access")
+		return
+	}
 	st, err := s.codexTasks()
 	if err != nil {
 		writeRouteError(w, r, http.StatusNotImplemented, "task_index_unavailable", err.Error())
