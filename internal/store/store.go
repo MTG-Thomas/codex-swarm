@@ -319,6 +319,16 @@ type CoordinationMetrics struct {
 	ConflictMessages           int    `json:"conflict_messages"`
 }
 
+// CoordinationSnapshot is one transactionally consistent read of the record
+// kinds used by broad derived projections such as logical operations.
+type CoordinationSnapshot struct {
+	Workers      []Worker
+	Claims       []Claim
+	Messages     []DeliveredMessage
+	GateEvidence []GateEvidence
+	CodexTasks   []CodexTask
+}
+
 // FileTouch is a recent worker read or write intent used for warning-only conflicts.
 type FileTouch struct {
 	ID        string    `json:"id"`

@@ -9,6 +9,10 @@ All notable changes to codex-swarm are documented here.
 - `cs attention` derives a scriptable human or JSON open-loop view from the
   authoritative SQLite records for queued messages, blocked claims, stale
   workers, validator rejections, failed gates, and pull-request next actions.
+- `cs operation list|show` derives stable issue-first or root-worker operation
+  keys across workers, claims, message deliveries, gate evidence, recorded pull
+  requests, and linked Codex tasks, with keyless degraded records for broken
+  ancestry or unsupported links.
 
 ## [0.6.1] - 2026-07-22
 

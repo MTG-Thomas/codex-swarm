@@ -71,6 +71,25 @@ func TestListAllQueuedMessagesIncludesEveryRecipient(t *testing.T) {
 	}
 }
 
+func TestListAllMessagesIncludesEveryDeliveryAndHistory(t *testing.T) {
+	st := NewJSONStore(filepath.Join(t.TempDir(), "state.db"))
+	now := time.Date(2026, 7, 22, 18, 0, 0, 0, time.UTC)
+	_, deliveries, _, err := st.CreateMessage(Message{ID: "m-all", RequestID: "r-all", Kind: MessageDirect, From: "w-one", Body: "hello", CreatedAt: now}, []string{"w-two", "w-three"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateDelivery(deliveries[0].ID, DeliveryDelivered, "", now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	all, err := st.ListAllMessages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 2 || len(all[0].Delivery.History) == 0 || len(all[1].Delivery.History) == 0 {
+		t.Fatalf("ListAllMessages() = %#v", all)
+	}
+}
+
 func TestUpdateDeliveryRecordsFailureAndRecoveryTransitions(t *testing.T) {
 	st := NewJSONStore(filepath.Join(t.TempDir(), "state.db"))
 	at := time.Date(2026, 7, 21, 14, 0, 0, 0, time.UTC)
