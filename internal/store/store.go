@@ -246,13 +246,24 @@ type Message struct {
 
 // Delivery is the per-recipient state for a message.
 type Delivery struct {
-	ID          string        `json:"id"`
-	MessageID   string        `json:"message_id"`
-	RecipientID string        `json:"recipient_id"`
-	State       DeliveryState `json:"state"`
-	LastError   string        `json:"last_error,omitempty"`
-	CreatedAt   time.Time     `json:"created_at"`
-	UpdatedAt   time.Time     `json:"updated_at"`
+	ID          string          `json:"id"`
+	MessageID   string          `json:"message_id"`
+	RecipientID string          `json:"recipient_id"`
+	State       DeliveryState   `json:"state"`
+	LastError   string          `json:"last_error,omitempty"`
+	CreatedAt   time.Time       `json:"created_at"`
+	UpdatedAt   time.Time       `json:"updated_at"`
+	History     []DeliveryEvent `json:"history,omitempty"`
+}
+
+// DeliveryEvent is one durable delivery-state observation. Repeated updates
+// with the same state and error are intentionally suppressed.
+type DeliveryEvent struct {
+	Sequence   int64         `json:"sequence"`
+	DeliveryID string        `json:"delivery_id"`
+	State      DeliveryState `json:"state"`
+	LastError  string        `json:"last_error,omitempty"`
+	CreatedAt  time.Time     `json:"created_at"`
 }
 
 // DeliveredMessage joins a message with its recipient delivery state.

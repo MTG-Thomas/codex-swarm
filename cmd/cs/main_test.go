@@ -18,9 +18,17 @@ import (
 	"github.com/MTG-Thomas/codex-swarm/internal/coordination"
 	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
 	"github.com/MTG-Thomas/codex-swarm/internal/lifecycle"
+	"github.com/MTG-Thomas/codex-swarm/internal/protocol"
 	"github.com/MTG-Thomas/codex-swarm/internal/remoteworkspace"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
+
+func TestMain(m *testing.M) {
+	// Tests that pass --state must never inherit the operator's installed daemon.
+	// Individual daemon tests opt in with t.Setenv and an httptest server.
+	_ = os.Setenv("CODEX_SWARM_DAEMON_URL", "")
+	os.Exit(m.Run())
+}
 
 func TestCLIWorkflow(t *testing.T) {
 	var out bytes.Buffer
@@ -442,14 +450,17 @@ func TestCLIMessageRequestIDIsIdempotentAndRecordsOneSwarmEvent(t *testing.T) {
 		t.Fatalf("message first error = %v", err)
 	}
 	firstOutput := out.String()
+	if !strings.Contains(firstOutput, "replayed=false") || !strings.Contains(firstOutput, "id=m-") {
+		t.Fatalf("message first output = %q", firstOutput)
+	}
 
 	now = now.Add(time.Minute)
 	out.Reset()
 	if err := c.run([]string{"message", "--state", state, "--request-id", "req-message-1", "w-from", "w-to", "please review"}); err != nil {
 		t.Fatalf("message replay error = %v", err)
 	}
-	if got := out.String(); got != firstOutput {
-		t.Fatalf("message replay output = %q, want original %q", got, firstOutput)
+	if got := out.String(); !strings.Contains(got, "replayed=true") {
+		t.Fatalf("message replay output = %q", got)
 	}
 
 	events, err := store.NewJSONStore(state).ListEvents()
@@ -471,6 +482,66 @@ func TestCLIMessageRequestIDIsIdempotentAndRecordsOneSwarmEvent(t *testing.T) {
 	to := mustGetWorker(t, state, "w-to")
 	if len(from.Events) != 1 || len(to.Events) != 1 {
 		t.Fatalf("worker events counts = from %d to %d, want one each", len(from.Events), len(to.Events))
+	}
+}
+
+func TestCLIMessageAndInboxJSONExposeDeliveryIdentityAndHistory(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 7, 22, 14, 0, 0, 0, time.UTC)
+	state := filepath.Join(t.TempDir(), "state.db")
+	savePairWorkers(t, state, now, "MTG-Thomas/codex-swarm#71")
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+
+	if err := c.run([]string{"message", "--json", "--state", state, "--request-id", "accept-json", "w-from", "w-to", "nonce-json"}); err != nil {
+		t.Fatal(err)
+	}
+	var sent protocol.MessageResponse
+	if err := json.Unmarshal(out.Bytes(), &sent); err != nil {
+		t.Fatalf("message JSON = %q: %v", out.String(), err)
+	}
+	if sent.Message.ID == "" || sent.Message.RequestID != "accept-json" || len(sent.Deliveries) != 1 || sent.Deliveries[0].ID == "" {
+		t.Fatalf("message response = %#v", sent)
+	}
+	if err := store.NewJSONStore(state).UpdateDelivery(sent.Deliveries[0].ID, store.DeliverySteered, "", now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+
+	out.Reset()
+	if err := c.run([]string{"inbox", "--json", "--state", state, "w-to"}); err != nil {
+		t.Fatal(err)
+	}
+	var inbox protocol.InboxResponse
+	if err := json.Unmarshal(out.Bytes(), &inbox); err != nil {
+		t.Fatalf("inbox JSON = %q: %v", out.String(), err)
+	}
+	if len(inbox.Messages) != 1 || inbox.Messages[0].Delivery.State != store.DeliverySteered || len(inbox.Messages[0].Delivery.History) != 2 {
+		t.Fatalf("inbox response = %#v", inbox)
+	}
+}
+
+func TestWaitForDeliveryReadbackObservesConcurrentSteering(t *testing.T) {
+	now := time.Date(2026, 7, 22, 14, 5, 0, 0, time.UTC)
+	state := filepath.Join(t.TempDir(), "state.db")
+	st := store.NewJSONStore(state)
+	_, deliveries, _, err := st.CreateMessage(store.Message{ID: "m-live", RequestID: "accept-live", Kind: store.MessageDirect, From: "w-from", Body: "nonce", CreatedAt: now}, []string{"w-to"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		errCh <- st.UpdateDelivery(deliveries[0].ID, store.DeliverySteered, "", now.Add(time.Second))
+	}()
+
+	got, err := waitForDeliveryReadback(state, "", "m-live", deliveries, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].State != store.DeliverySteered || len(got[0].History) != 2 {
+		t.Fatalf("delivery readback = %#v", got)
 	}
 }
 
@@ -906,7 +977,7 @@ func TestCLISpawnAppserverPrintsLifecycleDisplayStatus(t *testing.T) {
 		now: func() time.Time { return now },
 		appserverRunner: fakeAppserverRunner{
 			runTurn: func(context.Context, string, string) (appserver.RunResult, error) {
-				return appserver.RunResult{ThreadID: "thread-1", TurnID: "turn-1", Status: "inProgress"}, nil
+				return appserver.RunResult{ThreadID: "thread-1", TurnID: "turn-1", Status: "inProgress", FinalMessage: "nonce acknowledged"}, nil
 			},
 		},
 	}
@@ -917,6 +988,16 @@ func TestCLISpawnAppserverPrintsLifecycleDisplayStatus(t *testing.T) {
 	}
 	if got := out.String(); !strings.Contains(got, "status=working") {
 		t.Fatalf("spawn output = %q, want lifecycle display status", got)
+	}
+	worker := mustFindWorkerByPrompt(t, state, "continue")
+	found := false
+	for _, event := range worker.Events {
+		if event.Type == "appserver.agent.message" && event.Message == "nonce acknowledged" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("worker events = %#v, want durable final agent message", worker.Events)
 	}
 }
 

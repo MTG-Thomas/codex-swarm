@@ -537,19 +537,20 @@ func (c cli) spawn(args []string) error {
 			return nil
 		}, c.workerSteeringPolicy(*statePath, worker.ID))
 		if err != nil {
+			failedAt := c.now().UTC()
 			failure := "app-server spawn failed: " + err.Error()
 			var saveErr error
 			if activePersisted {
 				_, saveErr = store.NewJSONStore(*statePath).UpdateWorker(worker.ID, func(current *store.Worker) error {
-					current.ApplyStatusAt(store.WorkerFailed, now)
+					current.ApplyStatusAt(store.WorkerFailed, failedAt)
 					current.LastMessage = failure
-					current.Events = append(current.Events, store.Event{At: now, Type: "appserver.spawn.failed", Message: failure})
+					current.Events = append(current.Events, store.Event{At: failedAt, Type: "appserver.spawn.failed", Message: failure})
 					return nil
 				})
 			} else {
-				worker.ApplyStatusAt(store.WorkerFailed, now)
+				worker.ApplyStatusAt(store.WorkerFailed, failedAt)
 				worker.LastMessage = failure
-				worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.spawn.failed", Message: failure})
+				worker.Events = append(worker.Events, store.Event{At: failedAt, Type: "appserver.spawn.failed", Message: failure})
 				saveErr = store.NewJSONStore(*statePath).SaveWorker(worker)
 			}
 			if saveErr != nil {
@@ -557,16 +558,19 @@ func (c cli) spawn(args []string) error {
 			}
 			return fmt.Errorf("run app-server worker: %w", err)
 		}
+		completedAt := c.now().UTC()
 		threadID = result.ThreadID
 		turnID = result.TurnID
 		status = workerStatusFromTurn(result.Status)
 		lastMessage = fmt.Sprintf("app-server turn submitted: thread=%s turn=%s status=%s", result.ThreadID, result.TurnID, result.Status)
 		if !activePersisted {
-			worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.turn.started", Message: lastMessage})
+			worker.Events = append(worker.Events, store.Event{At: completedAt, Type: "appserver.turn.started", Message: lastMessage})
 		}
-		worker.Events = appendAppserverWarnings(worker.Events, now, result.Warnings)
-		worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.turn.completed", Message: lastMessage})
+		worker.Events = appendAppserverWarnings(worker.Events, completedAt, result.Warnings)
+		worker.Events = append(worker.Events, store.Event{At: completedAt, Type: "appserver.turn.completed", Message: lastMessage})
+		worker.Events = appendAppserverFinalMessage(worker.Events, completedAt, result.FinalMessage)
 		appserverResult = result
+		now = completedAt
 	} else {
 		worker.Events = append(worker.Events, store.Event{At: now, Type: "mock.turn.completed", Message: lastMessage})
 	}
@@ -585,6 +589,7 @@ func (c cli) spawn(args []string) error {
 			current.LastMessage = worker.LastMessage
 			current.Events = appendAppserverWarnings(current.Events, now, appserverResult.Warnings)
 			current.Events = append(current.Events, store.Event{At: now, Type: "appserver.turn.completed", Message: worker.LastMessage})
+			current.Events = appendAppserverFinalMessage(current.Events, now, appserverResult.FinalMessage)
 			return nil
 		})
 		if err != nil {
@@ -791,6 +796,8 @@ func (c cli) message(args []string) error {
 	requestIDFlag := fs.String("request-id", "", "idempotency key for this mutation")
 	daemonURL := fs.String("daemon", "", "daemon base URL")
 	subtree := fs.Bool("subtree", false, "deliver to the target worker and its descendants")
+	wait := fs.Duration("wait", 0, "wait up to this duration for delivery readback")
+	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -832,11 +839,65 @@ func (c cli) message(args []string) error {
 		}
 		return err
 	}
-	fmt.Fprintf(c.out, "message %s -> %s kind=%s request=%s deliveries=%d\n", fromID, toID, kind, requestID, len(response.Deliveries))
+	if *wait < 0 {
+		return errors.New("message --wait must not be negative")
+	}
+	if *wait > 0 && !response.Replayed {
+		response.Deliveries, err = waitForDeliveryReadback(*statePath, *daemonURL, response.Message.ID, response.Deliveries, *wait)
+		if err != nil {
+			return err
+		}
+	}
+	if *jsonOutput {
+		return json.NewEncoder(c.out).Encode(response)
+	}
+	fmt.Fprintf(c.out, "message %s -> %s id=%s kind=%s request=%s deliveries=%d replayed=%t\n", fromID, toID, response.Message.ID, kind, response.Message.RequestID, len(response.Deliveries), response.Replayed)
 	for _, delivery := range response.Deliveries {
-		fmt.Fprintf(c.out, "%s\t%s\t%s\n", delivery.RecipientID, delivery.State, emptyDash(delivery.LastError))
+		fmt.Fprintf(c.out, "delivery=%s\trecipient=%s\tstate=%s\tcreated=%s\tupdated=%s\terror=%s\n",
+			delivery.ID, delivery.RecipientID, delivery.State, delivery.CreatedAt.Format(time.RFC3339Nano), delivery.UpdatedAt.Format(time.RFC3339Nano), emptyDash(delivery.LastError))
+		for _, event := range delivery.History {
+			fmt.Fprintf(c.out, "  transition=%d\tstate=%s\tat=%s\terror=%s\n", event.Sequence, event.State, event.CreatedAt.Format(time.RFC3339Nano), emptyDash(event.LastError))
+		}
 	}
 	return nil
+}
+
+func waitForDeliveryReadback(statePath, daemonURL, messageID string, original []store.Delivery, wait time.Duration) ([]store.Delivery, error) {
+	deadline := time.Now().Add(wait)
+	latest := original
+	for {
+		settled := len(latest) > 0
+		for _, delivery := range latest {
+			if delivery.State == store.DeliveryQueued && delivery.LastError == "" {
+				settled = false
+				break
+			}
+		}
+		if settled || !time.Now().Before(deadline) {
+			return latest, nil
+		}
+		time.Sleep(min(100*time.Millisecond, time.Until(deadline)))
+		byID := make(map[string]store.Delivery, len(latest))
+		for _, delivery := range latest {
+			byID[delivery.ID] = delivery
+		}
+		for _, delivery := range latest {
+			messages, err := loadInbox(statePath, daemonURL, delivery.RecipientID)
+			if err != nil {
+				return nil, fmt.Errorf("read delivery %s: %w", delivery.ID, err)
+			}
+			for _, item := range messages {
+				if item.Message.ID == messageID && item.Delivery.ID == delivery.ID {
+					byID[delivery.ID] = item.Delivery
+					break
+				}
+			}
+		}
+		latest = latest[:0]
+		for _, delivery := range original {
+			latest = append(latest, byID[delivery.ID])
+		}
+	}
 }
 
 func (c cli) handoff(args []string) error {
@@ -956,6 +1017,7 @@ func (c cli) send(args []string) error {
 			worker.LastMessage = fmt.Sprintf("app-server turn submitted: thread=%s turn=%s status=%s", appserverResult.ThreadID, appserverResult.TurnID, appserverResult.Status)
 			worker.Events = append(worker.Events, store.Event{At: now, Type: "appserver.turn.completed", Message: worker.LastMessage})
 			worker.Events = appendAppserverWarnings(worker.Events, now, appserverResult.Warnings)
+			worker.Events = appendAppserverFinalMessage(worker.Events, now, appserverResult.FinalMessage)
 			return
 		}
 		worker.ApplyStatus(store.WorkerIdle)
@@ -1553,6 +1615,13 @@ func workerExecutionRoot(worker store.Worker) string {
 func appendAppserverWarnings(events []store.Event, at time.Time, warnings []string) []store.Event {
 	for _, warning := range warnings {
 		events = append(events, store.Event{At: at, Type: "appserver.warning", Message: warning})
+	}
+	return events
+}
+
+func appendAppserverFinalMessage(events []store.Event, at time.Time, message string) []store.Event {
+	if message = strings.TrimSpace(message); message != "" {
+		events = append(events, store.Event{At: at, Type: "appserver.agent.message", Message: message})
 	}
 	return events
 }

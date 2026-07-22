@@ -79,6 +79,16 @@ func (s *JSONStore) CreateMessage(message Message, recipients []string) (Message
 				delivery.ID, delivery.MessageID, delivery.RecipientID, delivery.State, "", createdAt.Format(time.RFC3339Nano), createdAt.Format(time.RFC3339Nano)); err != nil {
 				return fmt.Errorf("insert message delivery %s: %w", delivery.ID, err)
 			}
+			eventResult, err := s.tx.Exec(`INSERT INTO message_delivery_events(delivery_id,state,last_error,created_at) VALUES(?,?,?,?)`,
+				delivery.ID, delivery.State, "", createdAt.Format(time.RFC3339Nano))
+			if err != nil {
+				return fmt.Errorf("insert message delivery event %s: %w", delivery.ID, err)
+			}
+			sequence, err := eventResult.LastInsertId()
+			if err != nil {
+				return fmt.Errorf("read message delivery event sequence %s: %w", delivery.ID, err)
+			}
+			delivery.History = []DeliveryEvent{{Sequence: sequence, DeliveryID: delivery.ID, State: delivery.State, CreatedAt: createdAt}}
 			deliveries = append(deliveries, delivery)
 		}
 		saved = message
@@ -98,7 +108,6 @@ func (s *JSONStore) ListMessages(recipientID string) ([]DeliveredMessage, error)
 		if err != nil {
 			return fmt.Errorf("list messages for %s: %w", recipientID, err)
 		}
-		defer func() { err = errors.Join(err, rows.Close()) }()
 		for rows.Next() {
 			var item DeliveredMessage
 			var messageCreated, deliveryCreated, updated string
@@ -119,7 +128,20 @@ func (s *JSONStore) ListMessages(recipientID string) ([]DeliveredMessage, error)
 			}
 			messages = append(messages, item)
 		}
-		return rows.Err()
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for i := range messages {
+			messages[i].Delivery.History, err = listDeliveryEvents(s.tx, messages[i].Delivery.ID)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	return messages, err
 }
@@ -142,7 +164,22 @@ func (s *JSONStore) ListQueuedMessages(recipientID string) ([]DeliveredMessage, 
 
 // UpdateDelivery records a delivery attempt without deleting its durable message.
 func (s *JSONStore) UpdateDelivery(id string, state DeliveryState, lastError string, at time.Time) error {
+	if state != DeliveryQueued && state != DeliverySteered && state != DeliveryDelivered {
+		return fmt.Errorf("unsupported delivery state %q", state)
+	}
 	return s.withStateLock(func() error {
+		var currentState DeliveryState
+		var currentError string
+		if err := s.tx.QueryRow(`SELECT state,last_error FROM message_deliveries WHERE id=?`, id).Scan(&currentState, &currentError); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("delivery not found: %s", id)
+			}
+			return fmt.Errorf("read delivery %s: %w", id, err)
+		}
+		if currentState == state && currentError == lastError {
+			return nil
+		}
+		updatedAt := at.UTC()
 		result, err := s.tx.Exec(`UPDATE message_deliveries SET state=?,last_error=?,updated_at=? WHERE id=?`, state, lastError, at.UTC().Format(time.RFC3339Nano), id)
 		if err != nil {
 			return fmt.Errorf("update delivery %s: %w", id, err)
@@ -153,6 +190,10 @@ func (s *JSONStore) UpdateDelivery(id string, state DeliveryState, lastError str
 		}
 		if count == 0 {
 			return fmt.Errorf("delivery not found: %s", id)
+		}
+		if _, err := s.tx.Exec(`INSERT INTO message_delivery_events(delivery_id,state,last_error,created_at) VALUES(?,?,?,?)`,
+			id, state, lastError, updatedAt.Format(time.RFC3339Nano)); err != nil {
+			return fmt.Errorf("insert delivery event %s: %w", id, err)
 		}
 		return nil
 	})
@@ -247,7 +288,40 @@ func listMessageDeliveries(q sqlExecutor, messageID string) (deliveries []Delive
 		}
 		deliveries = append(deliveries, delivery)
 	}
-	return deliveries, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for i := range deliveries {
+		deliveries[i].History, err = listDeliveryEvents(q, deliveries[i].ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return deliveries, nil
+}
+
+func listDeliveryEvents(q sqlExecutor, deliveryID string) (events []DeliveryEvent, err error) {
+	rows, err := q.Query(`SELECT sequence,state,last_error,created_at FROM message_delivery_events WHERE delivery_id=? ORDER BY sequence`, deliveryID)
+	if err != nil {
+		return nil, fmt.Errorf("list delivery events for %s: %w", deliveryID, err)
+	}
+	defer func() { err = errors.Join(err, rows.Close()) }()
+	for rows.Next() {
+		var event DeliveryEvent
+		var created string
+		if err := rows.Scan(&event.Sequence, &event.State, &event.LastError, &created); err != nil {
+			return nil, err
+		}
+		event.DeliveryID = deliveryID
+		if event.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
 }
 
 func uniqueNonEmpty(values []string) []string {

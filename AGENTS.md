@@ -29,6 +29,22 @@ Do not install upstream skill packs globally for this repo. Use `docs/skills.md`
 - Treat `cs claim` records as warning-only coordination, not hard locks.
 - Do not copy broad architecture from mature projects. Borrow small release, CI, service, and operator UX patterns only when `codex-swarm` has reached that complexity.
 
+## Current Architecture Invariants
+
+- The machine-global local state is authoritative. Its compatibility filename may be `state.json`, but current stores are SQLite databases.
+- Keep worker engine identity for diagnostics, but make coordination decisions through stable runtime capabilities rather than engine-name checks.
+- Claims and conflict messages are warning-only. Git, GitHub, Bifrost, and other target systems retain authority for their own mutations and conflicts.
+- `close` is the preferred terminal lifecycle operation because it releases claims and preserves pull-request and completion evidence atomically.
+- Keep the daemon loopback-only by default. New mutation routes require narrow inputs, explicit request IDs, idempotent replay, and durable readback.
+
+## Documentation Discipline
+
+- Keep `README.md` as the concise operator entrypoint: purpose, guarantees, installation, core workflows, and safety boundaries.
+- Keep `docs/design.md` focused on current architecture and invariants, `docs/maturity.md` on the verified baseline, and `docs/roadmap.md` on unfinished work.
+- Treat `docs/superpowers/plans/` as historical implementation plans, not current operating instructions.
+- When behavior changes, update the smallest relevant current document and verify every documented command against the CLI or repository source.
+- Avoid chronological MVP language, exhaustive command dumps, sales framing, and examples that imply unimplemented behavior.
+
 ## Verification
 
 For routine Go edits, run:

@@ -18,15 +18,19 @@ Test behavior at the smallest boundary that proves the contract. Prefer determin
 
 ## Verification
 
-Use targeted tests first, then:
+Use the smallest targeted tests while iterating. Before pushing or calling a
+Go change complete, run:
 
 ```text
 go test ./...
-go test -race ./...
-govulncheck ./...
 ```
 
 Run `go test -race ./...` when changing worker lifecycle, daemon shutdown, JSON-RPC multiplexing, store access, or goroutine code.
+
+Run `govulncheck ./...` when dependencies, GitHub integration, daemon security
+boundaries, command execution, or path handling change. Do not make race and
+vulnerability sweeps unconditional for documentation-only or narrow,
+non-concurrent changes.
 
 ## Avoid
 
