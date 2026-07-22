@@ -1586,7 +1586,7 @@ func (c cli) callerRuntime() appserverUserRuntime {
 	if c.userRuntime != nil {
 		return c.userRuntime
 	}
-	return csdAppserverRuntime{stderr: c.err}
+	return csdAppserverRuntime{}
 }
 
 func (c cli) runnerFor(worker store.Worker) appserverRunner {

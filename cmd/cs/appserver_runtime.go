@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -20,7 +19,6 @@ import (
 // the app-server process.
 type csdAppserverRuntime struct {
 	binary string
-	stderr io.Writer
 }
 
 func (r csdAppserverRuntime) SpawnAppserver(ctx context.Context, statePath string, request protocol.AppserverSpawnRequest) (protocol.AppserverSpawnResponse, error) {
@@ -35,7 +33,7 @@ func (r csdAppserverRuntime) SpawnAppserver(ctx context.Context, statePath strin
 			return protocol.AppserverSpawnResponse{}, err
 		}
 	}
-	cmd := newCSDRuntimeCommand(binary, statePath, r.stderr)
+	cmd := newCSDRuntimeCommand(binary, statePath)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return protocol.AppserverSpawnResponse{}, fmt.Errorf("open csd runtime stdin: %w", err)
@@ -81,9 +79,12 @@ func (r csdAppserverRuntime) SpawnAppserver(ctx context.Context, statePath strin
 	}
 }
 
-func newCSDRuntimeCommand(binary, statePath string, stderr io.Writer) *exec.Cmd {
+func newCSDRuntimeCommand(binary, statePath string) *exec.Cmd {
 	cmd := exec.Command(binary, "appserver-runtime", "--state", statePath)
-	cmd.Stderr = stderr
+	// Do not attach the long-running runtime to the CLI's stderr. On Windows,
+	// PowerShell and other callers wait for every inherited pipe handle to
+	// close, which otherwise keeps `cs spawn` blocked until the first turn ends.
+	// Runtime failures are persisted on the worker for durable readback.
 	configureDetachedRuntime(cmd)
 	return cmd
 }

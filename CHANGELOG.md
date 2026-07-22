@@ -4,6 +4,15 @@ All notable changes to codex-swarm are documented here.
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-07-22
+
+### Fixed
+
+- Detached caller-owned app-server runtimes no longer inherit the spawning
+  CLI's stderr pipe. On Windows this allows `cs spawn --engine appserver` to
+  return after durable task identity is recorded instead of remaining blocked
+  until the first turn completes.
+
 ## [0.7.0] - 2026-07-22
 
 ### Added
