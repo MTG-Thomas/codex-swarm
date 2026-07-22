@@ -16,6 +16,20 @@ All notable changes to codex-swarm are documented here.
 - `cs decision record|list|show|supersede` preserves explicit rationale,
   evidence references, dissent, author identity, provenance gaps, and atomic
   supersession history against the derived logical-operation scope.
+- Daemon-owned app-server spawn: `cs spawn --engine appserver` now returns after
+  durable host, thread, turn, and worktree readback while `csd` continues the
+  first turn and reports completion asynchronously.
+- Privileged daemons refuse to launch Codex. When the installed daemon runs as
+  Windows LocalSystem or root, `cs` uses a detached, listener-free `csd`
+  runtime under the caller's identity and sends the prompt over stdin.
+
+### Fixed
+
+- A caller timeout no longer marks an already-created Codex task failed.
+  Worker-bound replay returns the original task identity and refuses prompt
+  changes instead of creating a duplicate task.
+- Daemon shutdown records an active app-server task as detached and resumable
+  rather than treating runtime cancellation as a terminal task failure.
 
 ## [0.6.1] - 2026-07-22
 

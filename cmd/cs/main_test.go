@@ -1619,8 +1619,8 @@ func TestCLISpawnAppserverIssueBundleFailurePersistsWorkerState(t *testing.T) {
 	for _, want := range []string{
 		"build app-server launch bundle",
 		"worker=w-20260627-183800-",
-		"thread=mock-thread-w-20260627-183800-",
 		"repo=" + repo,
+		"worktree=",
 		"issue=MTG-Thomas/codex-swarm#9",
 		"issue view unavailable",
 	} {

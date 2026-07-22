@@ -31,6 +31,8 @@ func run() error {
 			return serve(args[1:])
 		case "status":
 			return status()
+		case "appserver-runtime":
+			return appserverRuntime(args[1:])
 		case "version":
 			fmt.Println(version.String())
 			return nil
@@ -50,7 +52,7 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, stop := signal.NotifyContext(context.Background(), terminationSignals()...)
 	defer stop()
 	return runServer(ctx, addr, statePath, os.Stdout)
 }
