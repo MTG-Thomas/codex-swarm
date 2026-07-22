@@ -4,6 +4,8 @@ All notable changes to codex-swarm are documented here.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-22
+
 ### Added
 
 - `cs attention` derives a scriptable human or JSON open-loop view from the
@@ -16,6 +18,12 @@ All notable changes to codex-swarm are documented here.
 - `cs decision record|list|show|supersede` preserves explicit rationale,
   evidence references, dissent, author identity, provenance gaps, and atomic
   supersession history against the derived logical-operation scope.
+- `cs tasks ingest|list|status` maintains a durable, host-scoped Codex task
+  index with stable pagination, unread and lifecycle metadata, coordinator
+  classifications, and explicit missing or tombstone state.
+- `cs tasks collect page|status|finish` gives each Codex host a resumable,
+  idempotent way to contribute paged task snapshots without starting another
+  app-server process or inferring task lifecycle.
 - Daemon-owned app-server spawn: `cs spawn --engine appserver` now returns after
   durable host, thread, turn, and worktree readback while `csd` continues the
   first turn and reports completion asynchronously.
@@ -30,6 +38,13 @@ All notable changes to codex-swarm are documented here.
   changes instead of creating a duplicate task.
 - Daemon shutdown records an active app-server task as detached and resumable
   rather than treating runtime cancellation as a terminal task failure.
+- A closed parent response pipe no longer cancels a detached app-server first
+  turn after durable task identity has been recorded.
+
+### Security
+
+- GitHub Actions are pinned to canonical commit SHAs, with their tag targets
+  and upstream provenance documented and verified before this release.
 
 ## [0.6.1] - 2026-07-22
 
