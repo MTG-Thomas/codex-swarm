@@ -68,6 +68,9 @@ func newWorker(id, parentID, role, issue, repoRoot, engine, prompt string, now t
 			{At: now, Type: "mock.turn.completed", Message: MockSummary(prompt)},
 		},
 	}
+	if worker.Engine == "appserver" {
+		worker.RuntimeOwner = store.RuntimeOwnerCS
+	}
 	worker.ApplyStatusAt(store.WorkerIdle, now)
 	return worker
 }

@@ -44,10 +44,10 @@ func TestCLIAttachCreatesTruthfulTrackerAndCanBindActiveAppserverTurn(t *testing
 		t.Fatalf("attach appserver error = %v", err)
 	}
 	worker = mustGetWorker(t, state, worker.ID)
-	if worker.Engine != "appserver" || worker.TurnID != "turn-1" || displayWorkerStatus(worker) != "working" || worker.Worktree == "" || worker.Branch != "codex/managed" {
+	if worker.Engine != "appserver" || worker.RuntimeOwner != store.RuntimeOwnerExternal || worker.TurnID != "turn-1" || displayWorkerStatus(worker) != "working" || worker.Worktree == "" || worker.Branch != "codex/managed" {
 		t.Fatalf("attached appserver worker = %#v", worker)
 	}
-	if !strings.Contains(out.String(), "live_messages=steerable") {
+	if !strings.Contains(out.String(), "live_messages=native_bridge") {
 		t.Fatalf("appserver attach output = %q", out.String())
 	}
 }

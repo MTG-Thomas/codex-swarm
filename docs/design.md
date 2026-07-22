@@ -65,9 +65,12 @@ Coordination code should branch on capabilities. Engine identity remains
 available for diagnostics and engine-specific transport.
 
 Attaching an existing task creates a tracker record without inventing runtime
-ownership. App-server workers record thread and turn IDs and can receive live
-steering while a CLI-owned turn is active. Remote app-server workers retain the
-same coordination model while their checkout and Codex process live over SSH.
+ownership. App-server workers record host, thread, turn, and runtime owner. A
+`cs`-owned turn polls durable messages over its existing connection. An
+externally owned task exposes a native-steering request for its owning Codex
+host instead of opening a competing connection. Remote app-server workers
+retain the same coordination model while their checkout and Codex process live
+over SSH.
 
 ## State and events
 
@@ -86,10 +89,13 @@ every external object.
 
 ## Messaging and conflict detection
 
-Messages are durable before delivery is attempted. A recipient with an active
-app-server turn can receive `turn/steer` on the existing connection. Otherwise
-the delivery remains queued and is injected into the next turn. Every material
-delivery observation is retained with its state, error, and timestamp; repeated
+Messages are durable before delivery is attempted. A `cs`-owned active turn can
+receive `turn/steer` over the app-server connection that owns it. For an
+externally owned active task, the message response carries a native-steering
+request with the exact prompt and runtime identity. The owning Codex host
+injects it and confirms the delivery against the same worker, thread, and turn.
+No confirmation means the delivery remains queued. Every material delivery
+observation is retained with its state, error, and timestamp; repeated
 identical observations do not create duplicate transitions. Final app-server
 agent text is retained in the worker event timeline so a recipient's
 acknowledgement can be correlated with the message and delivery IDs.
@@ -132,6 +138,12 @@ without an explicit operator action.
 Broad daemon surfaces are read-only. Mutation routes remain loopback-only,
 small, typed, and idempotent. API contracts shared outside handlers live in
 `internal/protocol`; versioned mutation paths return typed JSON errors.
+
+The daemon's message route is queue-capable but intentionally does not launch
+Codex processes. Native steering of an external task belongs to the Codex host
+that owns its connection, preventing a SYSTEM or root service from inheriting
+agent credentials or turning a loopback mutation into privileged command
+execution.
 
 New daemon mutations must demonstrate:
 

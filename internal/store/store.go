@@ -47,7 +47,9 @@ type Worker struct {
 	Branch           string               `json:"branch"`
 	ThreadID         string               `json:"thread_id"`
 	TurnID           string               `json:"turn_id,omitempty"`
+	HostID           string               `json:"host_id,omitempty"`
 	Engine           string               `json:"engine"`
+	RuntimeOwner     RuntimeOwner         `json:"runtime_owner,omitempty"`
 	Remote           *RemoteExecution     `json:"remote,omitempty"`
 	Status           WorkerStatus         `json:"status"`
 	Lifecycle        *lifecycle.Lifecycle `json:"lifecycle,omitempty"`
@@ -59,6 +61,16 @@ type Worker struct {
 	UpdatedAt        time.Time            `json:"updated_at"`
 	Events           []Event              `json:"events,omitempty"`
 }
+
+// RuntimeOwner identifies which process owns a worker's live app-server
+// connection. An external owner requires Codex-hosted native steering; cs-owned
+// workers consume their durable queue over the connection cs already owns.
+type RuntimeOwner string
+
+const (
+	RuntimeOwnerCS       RuntimeOwner = "cs"
+	RuntimeOwnerExternal RuntimeOwner = "external"
+)
 
 // RemoteExecution identifies the SSH transport and isolated Git workspace for
 // an app-server worker. It contains no credentials.
@@ -270,6 +282,19 @@ type DeliveryEvent struct {
 type DeliveredMessage struct {
 	Message  Message  `json:"message"`
 	Delivery Delivery `json:"delivery"`
+}
+
+// NativeSteeringRequest is a durable delivery that must be injected by the
+// Codex host which owns the destination task's active connection.
+type NativeSteeringRequest struct {
+	DeliveryID  string `json:"delivery_id"`
+	MessageID   string `json:"message_id"`
+	RecipientID string `json:"recipient_id"`
+	StatePath   string `json:"state_path"`
+	HostID      string `json:"host_id,omitempty"`
+	ThreadID    string `json:"thread_id"`
+	TurnID      string `json:"turn_id"`
+	Prompt      string `json:"prompt"`
 }
 
 // CoordinationMetrics summarizes whether durable coordination is actually in use.

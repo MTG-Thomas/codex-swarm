@@ -133,6 +133,9 @@ func newValidationWorker(id, parentID, role, issue, repoRoot, engine, prompt str
 			{At: now, Type: "mock.turn.completed", Message: mockSummary(prompt)},
 		},
 	}
+	if worker.Engine == "appserver" {
+		worker.RuntimeOwner = store.RuntimeOwnerCS
+	}
 	worker.ApplyStatusAt(store.WorkerIdle, now)
 	return worker
 }

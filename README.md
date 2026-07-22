@@ -96,12 +96,13 @@ cs attach --repo . --thread <thread-id> --prompt "Refresh repository documentati
 ```
 
 The default tracker records identity and queued communication without claiming
-that swarm owns the runtime. When the active app-server turn is known, attach
-it explicitly to enable live steering:
+that swarm owns the runtime. When an existing Codex task has an active turn,
+attach its thread and turn IDs explicitly so `cs message` can use Codex-native
+same-turn steering:
 
 ```powershell
 cs attach --worker <worker-id> --engine appserver `
-  --thread <thread-id> --turn <turn-id>
+  --thread <thread-id> --turn <turn-id> --host-id <host-id>
 ```
 
 ### Start a worker
@@ -142,13 +143,25 @@ cs workpacket --worker <worker-id>
 cs transcript <worker-id>
 ```
 
-Messages are stored before delivery. An active app-server turn receives live
-steering on that turn's existing app-server connection; otherwise the message
-remains queued for the next turn. `--wait` performs bounded readback so the
-sender sees the resulting `queued`, `steered`, or `delivered` state. Inbox JSON
-includes the message ID, request ID, delivery ID, timestamps, and append-only
-state history. A completed app-server response is also retained in the worker
-transcript as acknowledgement evidence.
+Messages are stored before delivery. A worker owned by `cs` polls that durable
+queue over its existing app-server connection. An active task owned by Codex
+Desktop or another Codex host instead produces a `native_steering` request in
+`cs message --json`, containing the ledger path, host, thread, turn, exact
+prompt, and delivery ID. The owning Codex host injects that prompt with its native task
+message tool, then records verified readback:
+
+```powershell
+cs message confirm-steered --state <state-path> --worker <worker-id> `
+  --thread <thread-id> --turn <turn-id> <delivery-id>
+```
+
+Confirmation is refused if the worker, thread, or turn no longer matches and is
+idempotent after success. Until confirmation, the delivery remains queued and
+is returned again on an idempotent message replay. `--wait` performs bounded
+readback so the sender sees the resulting `queued`, `steered`, or `delivered`
+state. Inbox JSON includes the message ID, request ID, delivery ID, timestamps,
+and append-only state history. A completed app-server response is also retained
+in the worker transcript as acknowledgement evidence.
 
 ### Close the work
 
@@ -218,6 +231,11 @@ The daemon binds to loopback by default. Its broad status surfaces are
 read-only. Mutation routes are deliberately narrow and require idempotency
 keys. Service installation is explicit and uses the native Windows service,
 macOS LaunchAgent, or Linux systemd surface.
+
+The daemon persists messages but does not launch Codex on behalf of an HTTP
+caller. Externally owned turns are steered only by their owning Codex host; this
+avoids elevating agent execution into a SYSTEM or root service or opening a
+competing app-server connection that cannot see the in-flight turn.
 
 ### Use remote or platform-specific execution
 

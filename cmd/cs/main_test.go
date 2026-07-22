@@ -519,6 +519,83 @@ func TestCLIMessageAndInboxJSONExposeDeliveryIdentityAndHistory(t *testing.T) {
 	}
 }
 
+func TestCLIMessageNativeBridgeRequiresRuntimeMatchedConfirmation(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 7, 22, 14, 30, 0, 0, time.UTC)
+	state := filepath.Join(t.TempDir(), "state.db")
+	savePairWorkers(t, state, now, "MTG-Thomas/codex-swarm#68")
+	st := store.NewJSONStore(state)
+	if _, err := st.UpdateWorker("w-to", func(worker *store.Worker) error {
+		worker.Engine = "appserver"
+		worker.RuntimeOwner = store.RuntimeOwnerExternal
+		worker.ApplyStatusAt(store.WorkerRunning, now)
+		worker.HostID = "desktop-local"
+		worker.ThreadID = "thread-live"
+		worker.TurnID = "turn-live"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+	if err := c.run([]string{"message", "--json", "--state", state, "--request-id", "native-bridge", "w-from", "w-to", "ack and continue"}); err != nil {
+		t.Fatal(err)
+	}
+	var response protocol.MessageResponse
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+		t.Fatalf("message JSON = %q: %v", out.String(), err)
+	}
+	if len(response.Deliveries) != 1 || response.Deliveries[0].State != store.DeliveryQueued || len(response.NativeSteering) != 1 {
+		t.Fatalf("response = %#v", response)
+	}
+	bridge := response.NativeSteering[0]
+	if bridge.DeliveryID != response.Deliveries[0].ID || bridge.StatePath != state || bridge.HostID != "desktop-local" || bridge.ThreadID != "thread-live" || bridge.TurnID != "turn-live" || !strings.Contains(bridge.Prompt, "ack and continue") {
+		t.Fatalf("bridge = %#v", bridge)
+	}
+	if err := c.run([]string{"message", "confirm-steered", "--state", state, "--worker", "w-to", "--thread", "thread-live", "--turn", "wrong-turn", bridge.DeliveryID}); err == nil || !strings.Contains(err.Error(), "refuse native steering confirmation") {
+		t.Fatalf("wrong runtime confirmation error = %v", err)
+	}
+	queued, err := findWorkerDelivery(st, "w-to", bridge.DeliveryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.Delivery.State != store.DeliveryQueued || len(queued.Delivery.History) != 1 {
+		t.Fatalf("queued delivery = %#v", queued.Delivery)
+	}
+	out.Reset()
+	failed := []string{"message", "steering-failed", "--json", "--state", state, "--worker", "w-to", "--thread", "thread-live", "--turn", "turn-live", "--error", "native host unavailable", bridge.DeliveryID}
+	if err := c.run(failed); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(out.Bytes(), &queued); err != nil {
+		t.Fatalf("failure JSON = %q: %v", out.String(), err)
+	}
+	if queued.Delivery.State != store.DeliveryQueued || queued.Delivery.LastError != "native host unavailable" || len(queued.Delivery.History) != 2 {
+		t.Fatalf("failed delivery = %#v", queued.Delivery)
+	}
+	out.Reset()
+	confirm := []string{"message", "confirm-steered", "--json", "--state", state, "--worker", "w-to", "--thread", "thread-live", "--turn", "turn-live", bridge.DeliveryID}
+	if err := c.run(confirm); err != nil {
+		t.Fatal(err)
+	}
+	var confirmed store.DeliveredMessage
+	if err := json.Unmarshal(out.Bytes(), &confirmed); err != nil {
+		t.Fatalf("confirmation JSON = %q: %v", out.String(), err)
+	}
+	if confirmed.Delivery.State != store.DeliverySteered || len(confirmed.Delivery.History) != 3 {
+		t.Fatalf("confirmed delivery = %#v", confirmed.Delivery)
+	}
+	out.Reset()
+	if err := c.run(confirm); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(out.Bytes(), &confirmed); err != nil {
+		t.Fatal(err)
+	}
+	if len(confirmed.Delivery.History) != 3 {
+		t.Fatalf("idempotent confirmation history = %#v", confirmed.Delivery.History)
+	}
+}
+
 func TestWaitForDeliveryReadbackObservesConcurrentSteering(t *testing.T) {
 	now := time.Date(2026, 7, 22, 14, 5, 0, 0, time.UTC)
 	state := filepath.Join(t.TempDir(), "state.db")

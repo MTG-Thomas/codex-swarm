@@ -4,6 +4,23 @@ All notable changes to codex-swarm are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Daemon worker summaries now preserve active turn, host, and runtime-owner
+  identity instead of dropping the turn ID needed for native delivery.
+- Message timeline mutations explicitly preserve attached worker thread, turn,
+  execution-root, branch, remote, engine, and lifecycle identity.
+
+### Changed
+
+- `cs message` now returns a first-class native-steering request for an active
+  externally owned Codex task. The owning Codex host injects the prompt and
+  then uses guarded, idempotent `cs message confirm-steered` readback; `cs`
+  never claims that a competing app-server connection delivered the message.
+- Attached and `cs`-owned app-server workers now record runtime ownership
+  explicitly. The daemon remains queue-capable without launching agent
+  processes as a SYSTEM or root service.
+
 ## [0.6.0] - 2026-07-22
 
 ### Added

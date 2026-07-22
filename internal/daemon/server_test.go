@@ -185,16 +185,19 @@ func TestServerWorkers(t *testing.T) {
 	staleLifecycle.Runtime.State = lifecycle.RuntimeDead
 	staleLifecycle.Runtime.Reason = lifecycle.ReasonRuntimeLost
 	server := NewServer("state.json", &memoryStore{workers: []store.Worker{{
-		ID:        "w-1",
-		Status:    store.WorkerRunning,
-		Lifecycle: &staleLifecycle,
-		Engine:    "mock",
-		Issue:     "MTG-Thomas/codex-swarm#42",
-		Worktree:  "C:/repo/.codex-swarm/worktrees/w-1",
-		ThreadID:  "thread-1",
-		CreatedAt: time.Date(2026, 6, 25, 1, 0, 0, 0, time.UTC),
-		UpdatedAt: time.Date(2026, 6, 25, 1, 0, 0, 0, time.UTC),
-		Events:    []store.Event{{At: time.Date(2026, 6, 25, 1, 0, 0, 0, time.UTC), Type: "worktree.created", WorkerID: "w-1"}},
+		ID:           "w-1",
+		Status:       store.WorkerRunning,
+		Lifecycle:    &staleLifecycle,
+		Engine:       "mock",
+		Issue:        "MTG-Thomas/codex-swarm#42",
+		Worktree:     "C:/repo/.codex-swarm/worktrees/w-1",
+		HostID:       "host-1",
+		ThreadID:     "thread-1",
+		TurnID:       "turn-1",
+		RuntimeOwner: store.RuntimeOwnerExternal,
+		CreatedAt:    time.Date(2026, 6, 25, 1, 0, 0, 0, time.UTC),
+		UpdatedAt:    time.Date(2026, 6, 25, 1, 0, 0, 0, time.UTC),
+		Events:       []store.Event{{At: time.Date(2026, 6, 25, 1, 0, 0, 0, time.UTC), Type: "worktree.created", WorkerID: "w-1"}},
 	}}})
 
 	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/workers", nil)
@@ -212,7 +215,7 @@ func TestServerWorkers(t *testing.T) {
 		t.Fatalf("workers = %#v", response.Workers)
 	}
 	worker := response.Workers[0]
-	if worker.ID != "w-1" || worker.Status != "stale" || worker.Issue != "MTG-Thomas/codex-swarm#42" || worker.Worktree != "C:/repo/.codex-swarm/worktrees/w-1" || worker.ThreadID != "thread-1" {
+	if worker.ID != "w-1" || worker.Status != "stale" || worker.Issue != "MTG-Thomas/codex-swarm#42" || worker.Worktree != "C:/repo/.codex-swarm/worktrees/w-1" || worker.HostID != "host-1" || worker.ThreadID != "thread-1" || worker.TurnID != "turn-1" || worker.RuntimeOwner != "external" {
 		t.Fatalf("worker response = %#v", worker)
 	}
 }
@@ -637,6 +640,37 @@ func TestMessagesEndpointSteersActiveWorkerAndListsInbox(t *testing.T) {
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "check main.go") {
 		t.Fatalf("inbox status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMessagesEndpointReturnsNativeBridgeForExternallyOwnedTurn(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	st := store.NewJSONStore(statePath)
+	at := time.Date(2026, 7, 22, 14, 45, 0, 0, time.UTC)
+	if err := st.SaveWorkers(
+		store.Worker{ID: "w-from", Engine: "tracker", Status: store.WorkerIdle, CreatedAt: at, UpdatedAt: at},
+		store.Worker{ID: "w-to", Engine: "appserver", RuntimeOwner: store.RuntimeOwnerExternal, Status: store.WorkerRunning, HostID: "host-1", ThreadID: "thread-1", TurnID: "turn-1", ProjectRoot: t.TempDir(), CreatedAt: at, UpdatedAt: at},
+	); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"request_id":"native-bridge","kind":"dm","from":"w-from","to":"w-to","body":"ack and continue"}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/messages", strings.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	NewServer(statePath, st).Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("message status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response protocol.MessageResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Deliveries) != 1 || response.Deliveries[0].State != store.DeliveryQueued || len(response.NativeSteering) != 1 {
+		t.Fatalf("response = %#v", response)
+	}
+	bridge := response.NativeSteering[0]
+	if bridge.DeliveryID != response.Deliveries[0].ID || bridge.StatePath != statePath || bridge.HostID != "host-1" || bridge.ThreadID != "thread-1" || bridge.TurnID != "turn-1" || !strings.Contains(bridge.Prompt, "ack and continue") {
+		t.Fatalf("native bridge = %#v", bridge)
 	}
 }
 

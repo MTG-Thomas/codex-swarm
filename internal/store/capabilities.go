@@ -6,11 +6,12 @@ import "strings"
 type RuntimeCapability string
 
 const (
-	CapabilityLiveMessage         RuntimeCapability = "live_message"
-	CapabilityResume              RuntimeCapability = "resume"
-	CapabilityManagedWorktree     RuntimeCapability = "managed_worktree"
-	CapabilityAutomaticCompletion RuntimeCapability = "automatic_completion"
-	CapabilityExternalTracker     RuntimeCapability = "external_tracker"
+	CapabilityLiveMessage          RuntimeCapability = "live_message"
+	CapabilityResume               RuntimeCapability = "resume"
+	CapabilityManagedWorktree      RuntimeCapability = "managed_worktree"
+	CapabilityAutomaticCompletion  RuntimeCapability = "automatic_completion"
+	CapabilityExternalTracker      RuntimeCapability = "external_tracker"
+	CapabilityNativeSteeringBridge RuntimeCapability = "native_steering_bridge"
 )
 
 // RuntimeCapabilities is a deterministic capability set for operator and protocol output.
@@ -55,10 +56,26 @@ func EngineCapabilities(engine string) RuntimeCapabilities {
 // profile plus durable worker evidence.
 func CapabilitiesForWorker(worker Worker) RuntimeCapabilities {
 	capabilities := append(RuntimeCapabilities(nil), EngineCapabilities(worker.Engine)...)
+	if capabilities.Has(CapabilityLiveMessage) && externallyOwnedRuntime(worker) {
+		capabilities = append(capabilities, CapabilityNativeSteeringBridge)
+	}
 	if truthfulManagedWorktree(worker) {
 		capabilities = append(capabilities, CapabilityManagedWorktree)
 	}
 	return capabilities
+}
+
+func externallyOwnedRuntime(worker Worker) bool {
+	if worker.RuntimeOwner == RuntimeOwnerExternal {
+		return true
+	}
+	// Compatibility for workers attached before runtime ownership was durable.
+	for i := len(worker.Events) - 1; i >= 0; i-- {
+		if worker.Events[i].Type == "worker.attached" {
+			return true
+		}
+	}
+	return false
 }
 
 func truthfulManagedWorktree(worker Worker) bool {

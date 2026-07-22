@@ -24,10 +24,11 @@ obvious loss of context or safety.
 
 ## 2. Strengthen daemon-owned delivery and recovery
 
-- Move app-server process ownership into `csd` where it improves live delivery
-  and restart recovery.
-- Recover active turn and delivery state after daemon restart without opening a
-  competing app-server connection.
+- Move ownership of long-lived, `cs`-spawned app-server processes into `csd`
+  where it improves restart recovery; keep attached-task steering in the
+  owning Codex host.
+- Recover active turn and delivery state after daemon restart without
+  duplicating messages or confusing native CLI steering with runtime ownership.
 - Stream bounded tool-intent and intermediate completion events into the
   durable event model; final agent responses are already retained.
 - Improve health reporting for stalled delivery, dead turns, and inconsistent
