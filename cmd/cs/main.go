@@ -86,6 +86,8 @@ func (c cli) run(args []string) error {
 		return c.doctor(args[1:])
 	case "status":
 		return c.status(args[1:])
+	case "attention":
+		return c.attention(args[1:])
 	case "spawn":
 		return c.spawn(args[1:])
 	case "attach":
@@ -1623,6 +1625,7 @@ Usage:
   cs status [--since 24h] [--repo .] [--status working,idle] [--limit 50]
   cs status --all
   cs status --issues
+  cs attention [--repo .] [--kind queued_message,blocked_claim] [--json]
   cs spawn --repo . --prompt "inspect this repo"
   cs spawn --engine appserver --repo . --prompt "summarize this repo in one sentence"
   cs spawn --engine appserver --repo . --worktree --remote-host user@host --prompt "work remotely"

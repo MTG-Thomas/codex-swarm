@@ -162,6 +162,55 @@ func (s *JSONStore) ListQueuedMessages(recipientID string) ([]DeliveredMessage, 
 	return queued, nil
 }
 
+// ListAllQueuedMessages returns every delivery waiting for a worker's next
+// turn. It is intended for read-only operator projections such as attention.
+func (s *JSONStore) ListAllQueuedMessages() ([]DeliveredMessage, error) {
+	var messages []DeliveredMessage
+	err := s.withStateLock(func() (err error) {
+		rows, err := s.tx.Query(`SELECT m.id,m.request_id,m.kind,m.sender,m.body,m.created_at,
+			d.id,d.recipient_id,d.state,d.last_error,d.created_at,d.updated_at
+			FROM message_deliveries d JOIN messages m ON m.id=d.message_id
+			WHERE d.state=? ORDER BY m.created_at`, DeliveryQueued)
+		if err != nil {
+			return fmt.Errorf("list all queued messages: %w", err)
+		}
+		for rows.Next() {
+			var item DeliveredMessage
+			var messageCreated, deliveryCreated, updated string
+			if err := rows.Scan(&item.Message.ID, &item.Message.RequestID, &item.Message.Kind, &item.Message.From, &item.Message.Body, &messageCreated,
+				&item.Delivery.ID, &item.Delivery.RecipientID, &item.Delivery.State, &item.Delivery.LastError, &deliveryCreated, &updated); err != nil {
+				return err
+			}
+			item.Delivery.MessageID = item.Message.ID
+			if item.Message.CreatedAt, err = time.Parse(time.RFC3339Nano, messageCreated); err != nil {
+				return err
+			}
+			if item.Delivery.CreatedAt, err = time.Parse(time.RFC3339Nano, deliveryCreated); err != nil {
+				return err
+			}
+			if item.Delivery.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated); err != nil {
+				return err
+			}
+			messages = append(messages, item)
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for i := range messages {
+			messages[i].Delivery.History, err = listDeliveryEvents(s.tx, messages[i].Delivery.ID)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	return messages, err
+}
+
 // UpdateDelivery records a delivery attempt without deleting its durable message.
 func (s *JSONStore) UpdateDelivery(id string, state DeliveryState, lastError string, at time.Time) error {
 	if state != DeliveryQueued && state != DeliverySteered && state != DeliveryDelivered {

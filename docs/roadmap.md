@@ -13,8 +13,8 @@ file contains unfinished work only.
   ledger without manual archaeology.
 - Surface relevant claims, queued messages, file touches, and recent conflicts
   automatically at task start and resume.
-- Add clearer attention views for workers that are blocked, stale, conflicted,
-  waiting on review, or carrying undelivered messages.
+- Feed the derived attention view into task start and resume without turning it
+  into another source of truth.
 - Turn operator closeout into a routine invariant across Codex entrypoints.
 - Measure coverage: active tasks attached, claims released, messages delivered,
   conflicts warned before Git, and workers closed with usable evidence.

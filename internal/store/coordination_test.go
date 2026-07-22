@@ -49,6 +49,28 @@ func TestCreateMessageIsIdempotentAndListsQueuedDelivery(t *testing.T) {
 	}
 }
 
+func TestListAllQueuedMessagesIncludesEveryRecipient(t *testing.T) {
+	st := NewJSONStore(filepath.Join(t.TempDir(), "state.db"))
+	at := time.Date(2026, 7, 22, 15, 0, 0, 0, time.UTC)
+	_, deliveries, _, err := st.CreateMessage(Message{ID: "m-all", RequestID: "request-all", Kind: MessageSubtree, From: "w-parent", Body: "continue", CreatedAt: at}, []string{"w-one", "w-two"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateDelivery(deliveries[0].ID, DeliveryDelivered, "", at.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := st.ListAllQueuedMessages()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 1 || queued[0].Delivery.RecipientID != "w-two" || queued[0].Message.ID != "m-all" {
+		t.Fatalf("ListAllQueuedMessages() = %#v, want only w-two delivery", queued)
+	}
+	if len(queued[0].Delivery.History) != 1 || queued[0].Delivery.History[0].State != DeliveryQueued {
+		t.Fatalf("queued history = %#v", queued[0].Delivery.History)
+	}
+}
+
 func TestUpdateDeliveryRecordsFailureAndRecoveryTransitions(t *testing.T) {
 	st := NewJSONStore(filepath.Join(t.TempDir(), "state.db"))
 	at := time.Date(2026, 7, 21, 14, 0, 0, 0, time.UTC)
