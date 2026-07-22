@@ -53,7 +53,10 @@ type WorkerStatus struct {
 	Repo             string    `json:"repo,omitempty"`
 	Engine           string    `json:"engine,omitempty"`
 	Capabilities     []string  `json:"capabilities,omitempty"`
+	HostID           string    `json:"host_id,omitempty"`
 	ThreadID         string    `json:"thread_id,omitempty"`
+	TurnID           string    `json:"turn_id,omitempty"`
+	RuntimeOwner     string    `json:"runtime_owner,omitempty"`
 	Prompt           string    `json:"prompt,omitempty"`
 	UpdatedAt        time.Time `json:"updated_at,omitempty"`
 }

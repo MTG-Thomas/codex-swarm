@@ -432,6 +432,9 @@ func (c cli) spawn(args []string) error {
 		UpdatedAt:   now,
 		Events:      events,
 	}
+	if worker.Engine == "appserver" {
+		worker.RuntimeOwner = store.RuntimeOwnerCS
+	}
 
 	worktreeReady := false
 	if *createWorktree {
@@ -791,6 +794,14 @@ func (c cli) scheduleList(args []string) error {
 }
 
 func (c cli) message(args []string) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "confirm-steered":
+			return c.updateNativeSteering(args[1:], true)
+		case "steering-failed":
+			return c.updateNativeSteering(args[1:], false)
+		}
+	}
 	fs := c.flagSet("message")
 	statePath := fs.String("state", defaultStatePath(), "state file path")
 	requestIDFlag := fs.String("request-id", "", "idempotency key for this mutation")
@@ -825,13 +836,26 @@ func (c cli) message(args []string) error {
 	if baseURL := configuredDaemonURL(*daemonURL); baseURL != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		response, err = (daemon.Client{BaseURL: baseURL}).Message(ctx, request)
+		client := daemon.Client{BaseURL: baseURL}
+		response, err = client.Message(ctx, request)
+		if err == nil && len(response.NativeSteering) > 0 && strings.TrimSpace(response.NativeSteering[0].StatePath) == "" {
+			var status daemon.Status
+			status, err = client.Status(ctx)
+			if err == nil {
+				for i := range response.NativeSteering {
+					response.NativeSteering[i].StatePath = status.StatePath
+				}
+			}
+		}
 	} else {
 		result, sendErr := (coordination.Service{Store: store.NewJSONStore(*statePath), Now: c.now}).Send(context.Background(), coordination.SendRequest{
 			RequestID: request.RequestID, Kind: request.Kind, From: request.From, To: request.To, Body: request.Body,
 		})
 		err = sendErr
-		response = protocol.MessageResponse{Message: result.Message, Deliveries: result.Deliveries, Replayed: result.Replayed}
+		response = protocol.MessageResponse{Message: result.Message, Deliveries: result.Deliveries, NativeSteering: result.NativeSteering, Replayed: result.Replayed}
+		for i := range response.NativeSteering {
+			response.NativeSteering[i].StatePath = *statePath
+		}
 	}
 	if err != nil {
 		if errors.Is(err, store.ErrWorkerNotFound) {
@@ -859,7 +883,95 @@ func (c cli) message(args []string) error {
 			fmt.Fprintf(c.out, "  transition=%d\tstate=%s\tat=%s\terror=%s\n", event.Sequence, event.State, event.CreatedAt.Format(time.RFC3339Nano), emptyDash(event.LastError))
 		}
 	}
+	for _, request := range response.NativeSteering {
+		fmt.Fprintf(c.out, "native_steering_required delivery=%s recipient=%s host=%s thread=%s turn=%s\n",
+			request.DeliveryID, request.RecipientID, emptyDash(request.HostID), request.ThreadID, request.TurnID)
+		prompt, _ := json.Marshal(request.Prompt)
+		fmt.Fprintf(c.out, "  prompt=%s\n", prompt)
+		fmt.Fprintf(c.out, "  after_success=cs message confirm-steered --state %q --worker %s --thread %s --turn %s %s\n",
+			request.StatePath, request.RecipientID, request.ThreadID, request.TurnID, request.DeliveryID)
+		fmt.Fprintf(c.out, "  after_failure=cs message steering-failed --state %q --worker %s --thread %s --turn %s --error <error> %s\n",
+			request.StatePath, request.RecipientID, request.ThreadID, request.TurnID, request.DeliveryID)
+	}
 	return nil
+}
+
+func (c cli) updateNativeSteering(args []string, succeeded bool) error {
+	command := "confirm-steered"
+	if !succeeded {
+		command = "steering-failed"
+	}
+	fs := c.flagSet("message " + command)
+	statePath := fs.String("state", defaultStatePath(), "state file path")
+	workerID := fs.String("worker", "", "recipient worker id")
+	threadID := fs.String("thread", "", "thread id used for native steering")
+	turnID := fs.String("turn", "", "turn id used for native steering")
+	steeringError := fs.String("error", "", "native steering error; required for steering-failed")
+	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 || strings.TrimSpace(*workerID) == "" || strings.TrimSpace(*threadID) == "" || strings.TrimSpace(*turnID) == "" {
+		return fmt.Errorf("message %s requires --worker, --thread, --turn, and <delivery-id>", command)
+	}
+	if !succeeded && strings.TrimSpace(*steeringError) == "" {
+		return errors.New("message steering-failed requires --error")
+	}
+	deliveryID := fs.Arg(0)
+	st := store.NewJSONStore(*statePath)
+	worker, err := st.GetWorker(*workerID)
+	if err != nil {
+		return fmt.Errorf("confirm native steering worker %s: %w", *workerID, err)
+	}
+	if worker.ThreadID != *threadID || worker.TurnID != *turnID {
+		return fmt.Errorf("refuse native steering confirmation for %s: worker runtime is thread=%s turn=%s, confirmation expected thread=%s turn=%s",
+			deliveryID, emptyDash(worker.ThreadID), emptyDash(worker.TurnID), *threadID, *turnID)
+	}
+	item, err := findWorkerDelivery(st, worker.ID, deliveryID)
+	if err != nil {
+		return err
+	}
+	if !succeeded && item.Delivery.State != store.DeliveryQueued {
+		return fmt.Errorf("refuse native steering failure for %s: delivery state is %s", deliveryID, item.Delivery.State)
+	}
+	if item.Delivery.State == store.DeliveryQueued {
+		state := store.DeliverySteered
+		lastError := ""
+		if !succeeded {
+			state = store.DeliveryQueued
+			lastError = strings.TrimSpace(*steeringError)
+		}
+		if err := st.UpdateDelivery(deliveryID, state, lastError, c.now().UTC()); err != nil {
+			return err
+		}
+		item, err = findWorkerDelivery(st, worker.ID, deliveryID)
+		if err != nil {
+			return err
+		}
+	}
+	if *jsonOutput {
+		return json.NewEncoder(c.out).Encode(item)
+	}
+	verb := "confirmed"
+	if !succeeded {
+		verb = "recorded failure for"
+	}
+	fmt.Fprintf(c.out, "%s native steering delivery=%s recipient=%s thread=%s turn=%s state=%s error=%s\n",
+		verb, item.Delivery.ID, worker.ID, worker.ThreadID, worker.TurnID, item.Delivery.State, emptyDash(item.Delivery.LastError))
+	return nil
+}
+
+func findWorkerDelivery(st *store.JSONStore, workerID, deliveryID string) (store.DeliveredMessage, error) {
+	items, err := st.ListMessages(workerID)
+	if err != nil {
+		return store.DeliveredMessage{}, err
+	}
+	for _, item := range items {
+		if item.Delivery.ID == deliveryID {
+			return item, nil
+		}
+	}
+	return store.DeliveredMessage{}, fmt.Errorf("delivery %s not found for worker %s", deliveryID, workerID)
 }
 
 func waitForDeliveryReadback(statePath, daemonURL, messageID string, original []store.Delivery, wait time.Duration) ([]store.Delivery, error) {
@@ -1221,6 +1333,12 @@ func (c cli) show(args []string) error {
 		return nil
 	}
 	fmt.Fprintf(c.out, "id=%s\nstatus=%s\nengine=%s\nthread=%s\n", worker.ID, displayWorkerStatus(worker), worker.Engine, worker.ThreadID)
+	if worker.RuntimeOwner != "" {
+		fmt.Fprintf(c.out, "runtime_owner=%s\n", worker.RuntimeOwner)
+	}
+	if worker.HostID != "" {
+		fmt.Fprintf(c.out, "host=%s\n", worker.HostID)
+	}
 	if worker.Role != "" {
 		fmt.Fprintf(c.out, "role=%s\n", worker.Role)
 	}
@@ -1515,6 +1633,8 @@ Usage:
   cs send <worker> "continue with tests"
   cs message --request-id <id> <from-worker> <to-worker> "note"
   cs message --subtree <from-worker> <root-worker> "note"
+  cs message confirm-steered --worker <worker> --thread <thread> --turn <turn> <delivery>
+  cs message steering-failed --worker <worker> --thread <thread> --turn <turn> --error <error> <delivery>
   cs inbox --queued <worker>
   cs touch --worker <worker> --repo . --path internal/store/store.go --intent "edit store"
   cs handoff --request-id <id> <from-worker> <to-worker> "summary"

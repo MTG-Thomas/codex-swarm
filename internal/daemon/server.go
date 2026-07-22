@@ -155,7 +155,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		writeRouteError(w, r, coordinationStatus(err), coordinationCode(err), err.Error())
 		return
 	}
-	writeJSON(w, protocol.MessageResponse{Message: result.Message, Deliveries: result.Deliveries, Replayed: result.Replayed})
+	writeJSON(w, s.messageResponse(result))
 }
 
 func (s *Server) handleTouches(w http.ResponseWriter, r *http.Request) {
@@ -188,7 +188,7 @@ func (s *Server) handleTouches(w http.ResponseWriter, r *http.Request) {
 	}
 	warnings := make([]protocol.MessageResponse, 0, len(result.Warnings))
 	for _, warning := range result.Warnings {
-		warnings = append(warnings, protocol.MessageResponse{Message: warning.Message, Deliveries: warning.Deliveries, Replayed: warning.Replayed})
+		warnings = append(warnings, s.messageResponse(warning))
 	}
 	writeJSON(w, protocol.TouchResponse{Touch: result.Touch, Conflicts: result.Conflicts, Warnings: warnings})
 }
@@ -220,9 +220,18 @@ func (s *Server) handleCompletions(w http.ResponseWriter, r *http.Request) {
 	}
 	response := protocol.CompletionResponse{Forwarded: forwarded}
 	if forwarded {
-		response.Message = &protocol.MessageResponse{Message: result.Message, Deliveries: result.Deliveries, Replayed: result.Replayed}
+		message := s.messageResponse(result)
+		response.Message = &message
 	}
 	writeJSON(w, response)
+}
+
+func (s *Server) messageResponse(result coordination.SendResult) protocol.MessageResponse {
+	native := append([]store.NativeSteeringRequest(nil), result.NativeSteering...)
+	for i := range native {
+		native[i].StatePath = s.statePath
+	}
+	return protocol.MessageResponse{Message: result.Message, Deliveries: result.Deliveries, NativeSteering: native, Replayed: result.Replayed}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -746,7 +755,10 @@ func summarizeWorkers(workers []store.Worker) []WorkerStatus {
 			Repo:             worker.ProjectRoot,
 			Engine:           worker.Engine,
 			Capabilities:     store.CapabilitiesForWorker(worker).Strings(),
+			HostID:           worker.HostID,
 			ThreadID:         worker.ThreadID,
+			TurnID:           worker.TurnID,
+			RuntimeOwner:     string(worker.RuntimeOwner),
 			Prompt:           worker.Prompt,
 			UpdatedAt:        worker.UpdatedAt,
 		})

@@ -41,8 +41,8 @@ in [roadmap.md](roadmap.md).
 - Warning-only ownership claims, file-touch conflicts, and worker checks.
 - Durable direct and subtree messages with JSON/readback evidence, handoffs,
   and parent completion.
-- Product-visible live steering over the destination turn's existing
-  app-server connection, queued next-turn injection, and durable final-agent
+- Product-visible live steering for `cs`-owned turns plus a guarded native-host
+  bridge for attached Codex tasks, queue fallback, and durable final-agent
   acknowledgement capture.
 - Atomic `close` with claim release and pull-request refresh.
 - Repository hints and commit-bound validation evidence.
@@ -52,7 +52,9 @@ in [roadmap.md](roadmap.md).
 ## Maturity constraints
 
 - Scheduling records are persisted but do not yet execute workers.
-- Daemon ownership of app-server runtime and restart recovery is incomplete.
+- Daemon ownership of `cs`-spawned app-server runtime and restart recovery is
+  incomplete; externally owned turns require their Codex host to execute the
+  native-steering request and confirm it.
 - Exact pre-edit intent depends on runtime hooks; file-change evidence is more
   complete than pre-write evidence.
 - GitHub synchronization remains explicit and local state remains authoritative.

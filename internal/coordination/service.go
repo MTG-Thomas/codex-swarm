@@ -51,9 +51,10 @@ type SendRequest struct {
 }
 
 type SendResult struct {
-	Message    store.Message
-	Deliveries []store.Delivery
-	Replayed   bool
+	Message        store.Message
+	Deliveries     []store.Delivery
+	NativeSteering []store.NativeSteeringRequest
+	Replayed       bool
 }
 
 type TouchRequest struct {
@@ -208,37 +209,61 @@ func (s Service) createAndDeliver(ctx context.Context, requestID string, kind st
 			return SendResult{}, err
 		}
 	}
-	if replayed || s.Steerer == nil {
-		return result, nil
+	if !replayed && s.Steerer != nil {
+		for i := range result.Deliveries {
+			delivery := &result.Deliveries[i]
+			worker, err := s.Store.GetWorker(delivery.RecipientID)
+			if err != nil {
+				return SendResult{}, err
+			}
+			if store.CapabilitiesForWorker(worker).Has(store.CapabilityNativeSteeringBridge) {
+				continue
+			}
+			if !store.CapabilitiesForWorker(worker).Has(store.CapabilityLiveMessage) || worker.Status != store.WorkerRunning || worker.ThreadID == "" || worker.TurnID == "" {
+				continue
+			}
+			root := worker.Worktree
+			if info, statErr := os.Stat(root); strings.TrimSpace(root) == "" || statErr != nil || !info.IsDir() {
+				root = worker.ProjectRoot
+			}
+			err = s.Steerer.SteerTurn(ctx, root, worker.ThreadID, worker.TurnID, formatForWorker(message))
+			if err != nil {
+				delivery.LastError = err.Error()
+				if updateErr := s.Store.UpdateDelivery(delivery.ID, store.DeliveryQueued, delivery.LastError, s.now()); updateErr != nil {
+					return SendResult{}, errors.Join(err, updateErr)
+				}
+				continue
+			}
+			delivery.State = store.DeliverySteered
+			delivery.LastError = ""
+			if err := s.Store.UpdateDelivery(delivery.ID, store.DeliverySteered, "", s.now()); err != nil {
+				return SendResult{}, err
+			}
+		}
 	}
-	for i := range result.Deliveries {
-		delivery := &result.Deliveries[i]
+	for _, delivery := range result.Deliveries {
+		if delivery.State != store.DeliveryQueued {
+			continue
+		}
 		worker, err := s.Store.GetWorker(delivery.RecipientID)
 		if err != nil {
 			return SendResult{}, err
 		}
-		if !store.CapabilitiesForWorker(worker).Has(store.CapabilityLiveMessage) || worker.Status != store.WorkerRunning || worker.ThreadID == "" || worker.TurnID == "" {
+		if !needsNativeSteeringBridge(worker) {
 			continue
 		}
-		root := worker.Worktree
-		if info, statErr := os.Stat(root); strings.TrimSpace(root) == "" || statErr != nil || !info.IsDir() {
-			root = worker.ProjectRoot
-		}
-		err = s.Steerer.SteerTurn(ctx, root, worker.ThreadID, worker.TurnID, formatForWorker(saved))
-		if err != nil {
-			delivery.LastError = err.Error()
-			if updateErr := s.Store.UpdateDelivery(delivery.ID, store.DeliveryQueued, delivery.LastError, s.now()); updateErr != nil {
-				return SendResult{}, errors.Join(err, updateErr)
-			}
-			continue
-		}
-		delivery.State = store.DeliverySteered
-		delivery.LastError = ""
-		if err := s.Store.UpdateDelivery(delivery.ID, store.DeliverySteered, "", s.now()); err != nil {
-			return SendResult{}, err
-		}
+		result.NativeSteering = append(result.NativeSteering, store.NativeSteeringRequest{
+			DeliveryID: delivery.ID, MessageID: saved.ID, RecipientID: worker.ID,
+			HostID: worker.HostID, ThreadID: worker.ThreadID, TurnID: worker.TurnID,
+			Prompt: formatForWorker(saved),
+		})
 	}
 	return result, nil
+}
+
+func needsNativeSteeringBridge(worker store.Worker) bool {
+	return store.CapabilitiesForWorker(worker).Has(store.CapabilityNativeSteeringBridge) &&
+		worker.Status == store.WorkerRunning && strings.TrimSpace(worker.ThreadID) != "" && strings.TrimSpace(worker.TurnID) != ""
 }
 
 func (s Service) recordTimeline(message store.Message, recipients []string) error {

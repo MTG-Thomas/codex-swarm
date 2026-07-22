@@ -11,9 +11,10 @@ type MessageRequest struct {
 }
 
 type MessageResponse struct {
-	Message    store.Message    `json:"message"`
-	Deliveries []store.Delivery `json:"deliveries"`
-	Replayed   bool             `json:"replayed"`
+	Message        store.Message                 `json:"message"`
+	Deliveries     []store.Delivery              `json:"deliveries"`
+	NativeSteering []store.NativeSteeringRequest `json:"native_steering,omitempty"`
+	Replayed       bool                          `json:"replayed"`
 }
 
 type InboxResponse struct {

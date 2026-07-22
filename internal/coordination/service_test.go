@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,6 +77,82 @@ func TestSendSubtreeSteersActiveWorkerAndQueuesIdleDescendant(t *testing.T) {
 	}
 	if states["active"] != store.DeliverySteered || states["idle"] != store.DeliveryQueued || states["future"] != store.DeliveryQueued {
 		t.Fatalf("delivery states = %#v", states)
+	}
+}
+
+func TestSendPreservesAttachedWorkerRuntimeIdentity(t *testing.T) {
+	st := testStore(t)
+	at := time.Date(2026, 7, 22, 14, 15, 0, 0, time.UTC)
+	root := t.TempDir()
+	worktree := t.TempDir()
+	saveWorkers(t, st,
+		store.Worker{ID: "sender", Engine: "tracker", Status: store.WorkerIdle, ProjectRoot: root, CreatedAt: at, UpdatedAt: at},
+		store.Worker{
+			ID: "recipient", Role: "operator", Engine: "appserver", Status: store.WorkerRunning,
+			ThreadID: "thread-live", TurnID: "turn-live", ProjectRoot: root, Worktree: worktree, Branch: "codex/live",
+			Remote:    &store.RemoteExecution{Host: "agent@example", JumpHost: "jump@example", CodexBinary: "/opt/codex", RepoURL: "git@example/repo", BaseRef: "main"},
+			CreatedAt: at, UpdatedAt: at,
+		},
+	)
+	steerer := &recordingSteerer{}
+	result, err := (Service{Store: st, Steerer: steerer, Now: func() time.Time { return at.Add(time.Second) }}).Send(context.Background(), SendRequest{
+		RequestID: "preserve-runtime", Kind: store.MessageDirect, From: "sender", To: "recipient", Body: "continue",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Deliveries) != 1 || result.Deliveries[0].State != store.DeliverySteered || len(steerer.calls) != 1 {
+		t.Fatalf("result=%#v calls=%#v", result, steerer.calls)
+	}
+	got, err := st.GetWorker("recipient")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ThreadID != "thread-live" || got.TurnID != "turn-live" || got.Engine != "appserver" || got.Status != store.WorkerRunning {
+		t.Fatalf("runtime identity changed: %#v", got)
+	}
+	if got.ProjectRoot != root || got.Worktree != worktree || got.Branch != "codex/live" || got.Remote == nil || got.Remote.Host != "agent@example" {
+		t.Fatalf("execution identity changed: %#v", got)
+	}
+	if call := steerer.calls[0]; call.cwd != worktree || call.thread != "thread-live" || call.turn != "turn-live" {
+		t.Fatalf("steer call = %#v", call)
+	}
+}
+
+func TestSendReturnsNativeSteeringBridgeForExternalActiveTurnAndReplay(t *testing.T) {
+	st := testStore(t)
+	at := time.Date(2026, 7, 22, 14, 20, 0, 0, time.UTC)
+	root := t.TempDir()
+	saveWorkers(t, st,
+		store.Worker{ID: "sender", Engine: "tracker", Status: store.WorkerIdle, ProjectRoot: root, CreatedAt: at, UpdatedAt: at},
+		store.Worker{ID: "recipient", Engine: "appserver", RuntimeOwner: store.RuntimeOwnerExternal, Status: store.WorkerRunning, HostID: "host-local", ThreadID: "thread-live", TurnID: "turn-live", ProjectRoot: root, CreatedAt: at, UpdatedAt: at},
+	)
+	steerer := &recordingSteerer{}
+	service := Service{Store: st, Steerer: steerer, Now: func() time.Time { return at }}
+	queued, err := service.Send(context.Background(), SendRequest{
+		RequestID: "queue-first", Kind: store.MessageDirect, From: "sender", To: "recipient", Body: "continue",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued.Deliveries) != 1 || queued.Deliveries[0].State != store.DeliveryQueued || len(queued.NativeSteering) != 1 || len(steerer.calls) != 0 {
+		t.Fatalf("queued result = %#v", queued)
+	}
+	bridge := queued.NativeSteering[0]
+	if bridge.DeliveryID != queued.Deliveries[0].ID || bridge.MessageID != queued.Message.ID || bridge.RecipientID != "recipient" || bridge.HostID != "host-local" || bridge.ThreadID != "thread-live" || bridge.TurnID != "turn-live" {
+		t.Fatalf("native steering = %#v", bridge)
+	}
+	if !strings.Contains(bridge.Prompt, "SWARM_DM from=sender message_id="+queued.Message.ID) || !strings.Contains(bridge.Prompt, "continue") {
+		t.Fatalf("native prompt = %q", bridge.Prompt)
+	}
+	replayed, err := service.Send(context.Background(), SendRequest{
+		RequestID: "queue-first", Kind: store.MessageDirect, From: "sender", To: "recipient", Body: "continue",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replayed.Replayed || len(replayed.NativeSteering) != 1 || replayed.NativeSteering[0].DeliveryID != bridge.DeliveryID {
+		t.Fatalf("replayed result = %#v", replayed)
 	}
 }
 

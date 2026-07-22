@@ -19,6 +19,7 @@ func (c cli) attach(args []string) error {
 	workerID := fs.String("worker", "", "existing worker id; omit to create one")
 	threadID := fs.String("thread", os.Getenv("CODEX_THREAD_ID"), "Codex or app-server thread id")
 	turnID := fs.String("turn", os.Getenv("CODEX_TURN_ID"), "active app-server turn id")
+	hostID := fs.String("host-id", os.Getenv("CODEX_HOST_ID"), "optional Codex host id for native steering")
 	engine := fs.String("engine", "tracker", "attachment engine: tracker or appserver")
 	role := fs.String("role", "", "worker role")
 	prompt := fs.String("prompt", "", "short task summary")
@@ -46,8 +47,11 @@ func (c cli) attach(args []string) error {
 		}
 		worker := store.Worker{
 			ID: id, ParentID: strings.TrimSpace(*parentID), Role: strings.TrimSpace(*role), ProjectRoot: repoRoot,
-			ThreadID: strings.TrimSpace(*threadID), TurnID: strings.TrimSpace(*turnID), Engine: *engine,
+			ThreadID: strings.TrimSpace(*threadID), TurnID: strings.TrimSpace(*turnID), HostID: strings.TrimSpace(*hostID), Engine: *engine,
 			Prompt: strings.TrimSpace(*prompt), CreatedAt: now, UpdatedAt: now,
+		}
+		if worker.Engine == "appserver" {
+			worker.RuntimeOwner = store.RuntimeOwnerExternal
 		}
 		applyAttachedStatus(&worker, now)
 		worker.LastMessage = attachmentMessage(worker)
@@ -65,6 +69,12 @@ func (c cli) attach(args []string) error {
 		worker.Engine = *engine
 		worker.ThreadID = strings.TrimSpace(*threadID)
 		worker.TurnID = strings.TrimSpace(*turnID)
+		worker.HostID = strings.TrimSpace(*hostID)
+		if worker.Engine == "appserver" {
+			worker.RuntimeOwner = store.RuntimeOwnerExternal
+		} else {
+			worker.RuntimeOwner = ""
+		}
 		if strings.TrimSpace(*role) != "" {
 			worker.Role = strings.TrimSpace(*role)
 		}
@@ -99,15 +109,15 @@ func applyAttachedStatus(worker *store.Worker, now time.Time) {
 }
 
 func attachmentMessage(worker store.Worker) string {
-	return fmt.Sprintf("thread attached: engine=%s thread=%s turn=%s", worker.Engine, worker.ThreadID, emptyDash(worker.TurnID))
+	return fmt.Sprintf("thread attached: engine=%s owner=%s host=%s thread=%s turn=%s", worker.Engine, emptyDash(string(worker.RuntimeOwner)), emptyDash(worker.HostID), worker.ThreadID, emptyDash(worker.TurnID))
 }
 
 func printAttachment(out interface{ Write([]byte) (int, error) }, worker store.Worker) {
 	liveMessages := "queued"
 	capabilities := store.CapabilitiesForWorker(worker)
 	if capabilities.Has(store.CapabilityLiveMessage) && worker.Status == store.WorkerRunning && worker.TurnID != "" {
-		liveMessages = "steerable"
+		liveMessages = "native_bridge"
 	}
-	fmt.Fprintf(out, "attached worker=%s engine=%s capabilities=%s thread=%s turn=%s status=%s live_messages=%s\n",
-		worker.ID, worker.Engine, strings.Join(capabilities.Strings(), ","), worker.ThreadID, emptyDash(worker.TurnID), displayWorkerStatus(worker), liveMessages)
+	fmt.Fprintf(out, "attached worker=%s engine=%s owner=%s capabilities=%s host=%s thread=%s turn=%s status=%s live_messages=%s\n",
+		worker.ID, worker.Engine, emptyDash(string(worker.RuntimeOwner)), strings.Join(capabilities.Strings(), ","), emptyDash(worker.HostID), worker.ThreadID, emptyDash(worker.TurnID), displayWorkerStatus(worker), liveMessages)
 }

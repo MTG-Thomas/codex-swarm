@@ -6,21 +6,41 @@ release-candidate `cs` and `csd` binaries against the machine-global state.
 
 ## Live path
 
-1. Start real app-server worker A and worker B. Give B a harmless task that
-   keeps its turn active long enough to receive steering.
-2. Record both worker IDs plus B's thread and turn IDs from `cs show`.
-3. Send a unique nonce and explicit request ID:
+1. Start or identify real Codex task B. Give B a harmless task that keeps its
+   turn active long enough to receive steering.
+2. Attach B's real host, thread, and active turn IDs to an app-server worker.
+   Create or attach worker A as the sender:
 
    ```powershell
-   cs message --wait 10s --request-id accept-live-<nonce> `
+   cs attach --worker <worker-b> --engine appserver `
+     --repo <repo-b> --host-id <host-b> --thread <thread-b> --turn <turn-b>
+   ```
+
+3. Record both worker IDs plus B's thread and turn IDs from `cs show`.
+4. Send a unique nonce and explicit request ID:
+
+   ```powershell
+   cs message --json --request-id accept-live-<nonce> `
      <worker-a> <worker-b> "Acknowledge <nonce> and report the sender ID."
    ```
 
-4. Confirm the command reports one message ID, one delivery ID, and `steered`.
-5. Inspect B's Codex task. The injected user message must visibly contain the
+5. Confirm the response reports one queued delivery and one `native_steering`
+   request with matching state path, host, thread, turn, message, and delivery
+   IDs.
+6. From the Codex host that owns B, send the returned prompt to the returned
+   task with Codex's native task-message tool. Only after that call succeeds,
+   record readback with the exact runtime identity:
+
+   ```powershell
+   cs message confirm-steered --state <state-path> --worker <worker-b> `
+     --thread <thread-b> --turn <turn-b> <delivery-id>
+   ```
+
+7. Inspect B's existing Codex task. The injected user message must appear in the
+   same in-progress turn and visibly contain the
    nonce, sender worker ID, and message ID; B must acknowledge the nonce and
    perform only the harmless instruction.
-6. Compare `cs inbox --json <worker-b>`, `cs transcript <worker-b>`, and the
+8. Compare `cs inbox --json <worker-b>`, `cs transcript <worker-b>`, and the
    Codex task. Message/request/delivery IDs and timestamps must agree, and the
    transcript must retain B's final response.
 
@@ -37,7 +57,8 @@ release-candidate `cs` and `csd` binaries against the machine-global state.
 
 ## Failure evidence
 
-For stale turns, disconnects, or steering errors, the delivery remains queued
-with `last_error` and a timestamped transition. A later successful turn may
-recover it without replacing its identity. Restarting `csd` must not remove the
-message, its delivery, or its transition history.
+For stale turns, disconnects, or steering errors, record the failed native call
+with `cs message steering-failed` and the same worker/thread/turn identity. The
+delivery remains queued with `last_error` and a timestamped transition. A later
+successful replay may recover it without replacing its identity. Restarting
+`csd` must not remove the message, its delivery, or its transition history.

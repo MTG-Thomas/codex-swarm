@@ -9,6 +9,7 @@ func TestCapabilitiesForWorkerAreStableAcrossEngineIdentity(t *testing.T) {
 		want   RuntimeCapabilities
 	}{
 		{name: "appserver", worker: Worker{Engine: "appserver"}, want: RuntimeCapabilities{CapabilityLiveMessage, CapabilityResume, CapabilityAutomaticCompletion}},
+		{name: "external appserver", worker: Worker{Engine: "appserver", RuntimeOwner: RuntimeOwnerExternal}, want: RuntimeCapabilities{CapabilityLiveMessage, CapabilityResume, CapabilityAutomaticCompletion, CapabilityNativeSteeringBridge}},
 		{name: "tracker", worker: Worker{Engine: "tracker"}, want: RuntimeCapabilities{CapabilityExternalTracker}},
 		{name: "mock", worker: Worker{Engine: "mock"}, want: RuntimeCapabilities{CapabilityAutomaticCompletion}},
 		{name: "new engine remains protocol compatible", worker: Worker{Engine: "future-engine"}, want: RuntimeCapabilities{}},
