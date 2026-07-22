@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,11 +32,18 @@ func TestConfigureDetachedRuntimeStarts(t *testing.T) {
 func TestCallerRuntimeKeepsPromptOffCommandLine(t *testing.T) {
 	secretPrompt := "operator prompt must stay on stdin"
 	request := protocol.AppserverSpawnRequest{RequestID: "appserver-spawn-worker", WorkerID: "worker", Prompt: secretPrompt}
-	cmd := newCSDRuntimeCommand("csd", `C:\state\state.json`, &bytes.Buffer{})
+	cmd := newCSDRuntimeCommand("csd", `C:\state\state.json`)
 	for _, arg := range cmd.Args {
 		if arg == request.Prompt {
 			t.Fatalf("prompt leaked into runtime argument %q", arg)
 		}
+	}
+}
+
+func TestCallerRuntimeDoesNotInheritParentStderr(t *testing.T) {
+	cmd := newCSDRuntimeCommand("csd", `C:\state\state.json`)
+	if cmd.Stderr != nil {
+		t.Fatal("detached runtime must not inherit the caller's stderr pipe")
 	}
 }
 
