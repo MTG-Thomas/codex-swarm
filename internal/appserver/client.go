@@ -228,6 +228,7 @@ func (c *Client) WaitTurnCompletedWithSteering(ctx context.Context, threadID, tu
 	}
 	signaled := false
 	var finalMessage strings.Builder
+	separateNextAgentMessage := false
 	fileChanges := []FileChange(nil)
 	steeringWarning := ""
 	var steerTicker *time.Ticker
@@ -296,6 +297,10 @@ func (c *Client) WaitTurnCompletedWithSteering(ctx context.Context, threadID, tu
 			}
 			if msg.response.Method == "item/agentMessage/delta" {
 				if delta := notificationText(msg.response.Params, threadID); delta != "" {
+					if separateNextAgentMessage && finalMessage.Len() > 0 {
+						finalMessage.WriteByte('\n')
+					}
+					separateNextAgentMessage = false
 					finalMessage.WriteString(delta)
 				}
 			}
@@ -303,6 +308,9 @@ func (c *Client) WaitTurnCompletedWithSteering(ctx context.Context, threadID, tu
 				text, changes := completedItem(msg.response.Params, threadID)
 				if text != "" && finalMessage.Len() == 0 {
 					finalMessage.WriteString(text)
+				}
+				if text != "" {
+					separateNextAgentMessage = true
 				}
 				fileChanges = append(fileChanges, changes...)
 			}

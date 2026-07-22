@@ -976,6 +976,14 @@ func openSQLite(path string) (*sql.DB, error) {
 			UNIQUE(message_id, recipient_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS message_deliveries_recipient_state ON message_deliveries(recipient_id, state, created_at)`,
+		`CREATE TABLE IF NOT EXISTS message_delivery_events (
+			sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+			delivery_id TEXT NOT NULL REFERENCES message_deliveries(id) ON DELETE CASCADE,
+			state TEXT NOT NULL,
+			last_error TEXT NOT NULL DEFAULT '',
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS message_delivery_events_delivery_sequence ON message_delivery_events(delivery_id, sequence)`,
 		`CREATE TABLE IF NOT EXISTS file_touches (
 			id TEXT PRIMARY KEY,
 			worker_id TEXT NOT NULL,

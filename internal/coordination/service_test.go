@@ -2,6 +2,7 @@ package coordination
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -12,6 +13,33 @@ import (
 type recordingSteerer struct {
 	calls []steerCall
 	err   error
+}
+
+func TestSendSteeringFailureRemainsQueuedWithDurableErrorHistory(t *testing.T) {
+	st := testStore(t)
+	at := time.Date(2026, 7, 22, 14, 0, 0, 0, time.UTC)
+	saveWorkers(t, st,
+		store.Worker{ID: "sender", Engine: "mock", Status: store.WorkerIdle, CreatedAt: at, UpdatedAt: at},
+		store.Worker{ID: "recipient", Engine: "appserver", Status: store.WorkerRunning, ThreadID: "thread-1", TurnID: "turn-stale", ProjectRoot: t.TempDir(), CreatedAt: at, UpdatedAt: at},
+	)
+	steerer := &recordingSteerer{err: errors.New("stale turn")}
+	result, err := (Service{Store: st, Steerer: steerer, Now: func() time.Time { return at }}).Send(context.Background(), SendRequest{
+		RequestID: "stale-1", Kind: store.MessageDirect, From: "sender", To: "recipient", Body: "nonce",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Deliveries) != 1 || result.Deliveries[0].State != store.DeliveryQueued || result.Deliveries[0].LastError != "stale turn" {
+		t.Fatalf("send result = %#v", result)
+	}
+	inbox, err := st.ListMessages("recipient")
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := inbox[0].Delivery.History
+	if len(history) != 2 || history[0].State != store.DeliveryQueued || history[1].State != store.DeliveryQueued || history[1].LastError != "stale turn" {
+		t.Fatalf("delivery history = %#v", history)
+	}
 }
 
 type steerCall struct {

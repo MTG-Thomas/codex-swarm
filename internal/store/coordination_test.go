@@ -19,6 +19,9 @@ func TestCreateMessageIsIdempotentAndListsQueuedDelivery(t *testing.T) {
 	if replayed || saved.ID != "m-1" || len(deliveries) != 1 || deliveries[0].State != DeliveryQueued {
 		t.Fatalf("CreateMessage() = %#v %#v replayed=%t", saved, deliveries, replayed)
 	}
+	if len(deliveries[0].History) != 1 || deliveries[0].History[0].State != DeliveryQueued {
+		t.Fatalf("CreateMessage() response history = %#v, want queued transition", deliveries[0].History)
+	}
 	_, replayDeliveries, replayed, err := st.CreateMessage(Message{ID: "different-id", RequestID: "request-1", Kind: MessageDirect, From: "w-1", Body: "review this", CreatedAt: at.Add(time.Minute)}, []string{"w-2"})
 	if err != nil || !replayed || replayDeliveries[0].ID != deliveries[0].ID {
 		t.Fatalf("replay = %#v replayed=%t err=%v", replayDeliveries, replayed, err)
@@ -30,9 +33,42 @@ func TestCreateMessageIsIdempotentAndListsQueuedDelivery(t *testing.T) {
 	if err := st.UpdateDelivery(deliveries[0].ID, DeliveryDelivered, "", at.Add(time.Minute)); err != nil {
 		t.Fatalf("UpdateDelivery() error = %v", err)
 	}
+	if err := st.UpdateDelivery(deliveries[0].ID, DeliveryDelivered, "", at.Add(2*time.Minute)); err != nil {
+		t.Fatalf("idempotent UpdateDelivery() error = %v", err)
+	}
 	queued, err = st.ListQueuedMessages("w-2")
 	if err != nil || len(queued) != 0 {
 		t.Fatalf("queued after delivery = %#v err=%v", queued, err)
+	}
+	all, err := st.ListMessages("w-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := all[0].Delivery.History; len(got) != 2 || got[0].State != DeliveryQueued || got[1].State != DeliveryDelivered {
+		t.Fatalf("delivery history = %#v, want queued then delivered exactly once", got)
+	}
+}
+
+func TestUpdateDeliveryRecordsFailureAndRecoveryTransitions(t *testing.T) {
+	st := NewJSONStore(filepath.Join(t.TempDir(), "state.db"))
+	at := time.Date(2026, 7, 21, 14, 0, 0, 0, time.UTC)
+	_, deliveries, _, err := st.CreateMessage(Message{ID: "m-1", RequestID: "request-1", Kind: MessageDirect, From: "w-1", Body: "review", CreatedAt: at}, []string{"w-2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateDelivery(deliveries[0].ID, DeliveryQueued, "stale turn", at.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateDelivery(deliveries[0].ID, DeliverySteered, "", at.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	all, err := st.ListMessages("w-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	history := all[0].Delivery.History
+	if len(history) != 3 || history[1].LastError != "stale turn" || history[2].State != DeliverySteered {
+		t.Fatalf("delivery history = %#v", history)
 	}
 }
 

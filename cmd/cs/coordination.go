@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -20,6 +21,7 @@ func (c cli) inbox(args []string) error {
 	statePath := fs.String("state", defaultStatePath(), "state file path")
 	daemonURL := fs.String("daemon", "", "daemon base URL")
 	queuedOnly := fs.Bool("queued", false, "show only queued deliveries")
+	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -28,16 +30,7 @@ func (c cli) inbox(args []string) error {
 		return errors.New("inbox requires <worker>")
 	}
 	workerID := rest[0]
-	var messages []store.DeliveredMessage
-	var err error
-	if baseURL := configuredDaemonURL(*daemonURL); baseURL != "" {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		response, inboxErr := (daemon.Client{BaseURL: baseURL}).Inbox(ctx, workerID)
-		messages, err = response.Messages, inboxErr
-	} else {
-		messages, err = store.NewJSONStore(*statePath).ListMessages(workerID)
-	}
+	messages, err := loadInbox(*statePath, *daemonURL, workerID)
 	if err != nil {
 		return err
 	}
@@ -48,11 +41,29 @@ func (c cli) inbox(args []string) error {
 		}
 		visible = append(visible, item)
 	}
+	if *jsonOutput {
+		return json.NewEncoder(c.out).Encode(protocol.InboxResponse{Messages: visible})
+	}
 	fmt.Fprintf(c.out, "worker=%s messages=%d\n", workerID, len(visible))
 	for _, item := range visible {
-		fmt.Fprintf(c.out, "%s\t%s\t%s\tfrom=%s\t%s\n", item.Message.ID, item.Message.Kind, item.Delivery.State, item.Message.From, short(item.Message.Body, 120))
+		fmt.Fprintf(c.out, "%s\t%s\t%s\tfrom=%s\trequest=%s\tdelivery=%s\tcreated=%s\tupdated=%s\t%s\n",
+			item.Message.ID, item.Message.Kind, item.Delivery.State, item.Message.From, item.Message.RequestID, item.Delivery.ID,
+			item.Delivery.CreatedAt.Format(time.RFC3339Nano), item.Delivery.UpdatedAt.Format(time.RFC3339Nano), short(item.Message.Body, 120))
+		for _, event := range item.Delivery.History {
+			fmt.Fprintf(c.out, "  transition=%d\tstate=%s\tat=%s\terror=%s\n", event.Sequence, event.State, event.CreatedAt.Format(time.RFC3339Nano), emptyDash(event.LastError))
+		}
 	}
 	return nil
+}
+
+func loadInbox(statePath, daemonURL, workerID string) ([]store.DeliveredMessage, error) {
+	if baseURL := configuredDaemonURL(daemonURL); baseURL != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		response, err := (daemon.Client{BaseURL: baseURL}).Inbox(ctx, workerID)
+		return response.Messages, err
+	}
+	return store.NewJSONStore(statePath).ListMessages(workerID)
 }
 
 func (c cli) touch(args []string) error {

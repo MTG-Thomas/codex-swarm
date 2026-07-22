@@ -1,125 +1,150 @@
-# codex-swarm design sketch
+# codex-swarm architecture
 
-## Goal
+## Purpose
 
-Build a small local daemon and CLI that use Codex's app-server JSON-RPC API as the agent execution primitive. The project should make Codex workers easier to run, resume, schedule, and connect to GitHub issues without carrying a full dashboard/plugin/runtime framework.
+`codex-swarm` supplies durable local coordination around Codex and adjacent
+worker runtimes. It records who owns a task, where it is executing, what it can
+do, what it touched, how messages were delivered, which evidence was produced,
+and how the work closed.
 
-## Non-goals
+It is not an agent runtime, a source-control system, or a replacement control
+plane for GitHub, Bifrost, or another target platform.
 
-- replacing Codex CLI or Codex app-server
-- implementing a terminal multiplexer
-- building a general agent marketplace
-- requiring MCP for routine worker communication
-
-## Shape
-
-```text
-cs CLI
-  -> csd local daemon
-      -> codex app-server child process
-      -> local state store
-      -> git worktrees
-      -> optional GitHub integration
-```
-
-## Core records
-
-- project: repository root, default branch, config path
-- worker: local ID, project, worktree, branch, status
-- codex thread: app-server thread ID, model, last event timestamp
-- task: prompt, issue/PR links, lifecycle status, report summary
-
-## Operating model
-
-Local state is authoritative. The machine-global `codex-swarm` state file is
-the source of truth for workers, lifecycle, events, claims, issue links, and
-reports. GitHub issue markers are a synchronization and audit surface only:
-they can exchange claim snapshots across machines and leave an operator-visible
-trail, but they do not replace local state or make GitHub the coordination
-database.
-
-Codex session identity and workspace isolation are separate concerns. Forking or
-resuming a Codex app-server thread gives a worker a distinct conversation
-lineage, but it does not make filesystem writes safe. Parallel mutation still
-requires explicit branch and worktree isolation, and the CLI must keep warning
-when a worker has a session without a distinct worktree.
-
-The daemon keeps broad operational surfaces read-only, while a narrow set of
-loopback-only mutations use explicit request IDs and idempotent replay:
-dispatch, messages, file touches, and completion forwarding. These routes do
-not expose arbitrary commands, Git mutations, or filesystem writes. Messages
-are durable before delivery is attempted, and conflict records are warnings,
-not locks.
-
-Daemon API contracts that are intended to be consumed outside the handler live
-in `internal/protocol`. Versioned `/v1/*` mutation paths return typed JSON
-errors, and new daemon write APIs should use explicit request IDs with stable
-replay behavior before they are exposed. The read-only `/v1/events` endpoint
-returns worker event envelopes for dashboards and autonomous workers without
-changing local state.
-
-Worker handoff context has two surfaces. `cs transcript <worker>` renders the
-durable event timeline for human or JSON consumers. `cs workpacket --worker
-<worker>` emits a structured startup packet with repo, worktree, branch, issue,
-thread, claims, recent events, report, and next action. `cs worker check` is a
-warning-only ownership readback for repo, issue, worktree, thread, and active
-claim risks; it does not turn claims into locks.
-
-Event stream snapshot example:
-
-```powershell
-Invoke-WebRequest http://127.0.0.1:8787/v1/events?worker=w-123
-Invoke-WebRequest http://127.0.0.1:8787/v1/events?format=ndjson
-```
-
-## Initial commands
+## System shape
 
 ```text
-cs status
-cs spawn --repo . --prompt "..."
-cs send <worker> "..."
-cs resume <worker>
-cs report <worker> done
+cs operator CLI
+  |-- direct SQLite transactions
+  |-- optional loopback calls to csd
+  |-- explicit Git, gh, SSH, and Bifrost adapters
+  `-- Codex app-server sessions
+
+csd local daemon
+  |-- read-only status and event APIs
+  |-- idempotent message, touch, completion, readiness, and dispatch APIs
+  `-- the same machine-global SQLite store
 ```
 
-## MVP slice
+The CLI remains useful without the daemon. The daemon adds a long-lived local
+delivery and inspection surface; it does not become an arbitrary remote shell.
 
-The first demoable slice supports both a deterministic mock worker and a real `codex app-server` engine behind the same operator commands:
+## Authority boundaries
 
-- `spawn --engine appserver` initializes `codex app-server`, starts a thread, sends the first turn, waits for `turn/completed`, and stores the real thread and turn IDs.
-- `send` resumes the stored app-server thread, starts another turn, waits for completion, and appends the event.
-- `resume` verifies that the stored app-server thread can be reattached.
-- `show` prints worker details and the event timeline.
-- `report` records done/failed/idle state and a human-readable report.
-- `status` lists current workers from local durable state.
-- `--engine mock` uses the same state model without live Codex calls.
+The machine-global SQLite store is authoritative for workers, capabilities,
+claims, messages, events, gates, issue and PR links, and lifecycle state. The
+historical default filename remains `state.json` for compatibility. Migration
+retains a legacy JSON copy with a `.legacy.json` suffix.
 
-SQLite stores compatibility records plus normalized messages, per-recipient
-deliveries, and recent file touches. An active CLI-owned app-server turn is
-persisted immediately after `turn/start`; the existing connection polls queued
-deliveries and uses `turn/steer`. This provides live delivery without requiring
-the daemon to open a second app-server process. Non-steerable deliveries remain
-queued for the next turn.
+Other systems keep their own authority:
 
-Next real-worker slice:
+- Git owns commits, branches, worktrees, merges, and source conflicts.
+- GitHub owns issues, pull requests, checks, and reviews.
+- Bifrost owns workspace revisions, changesets, validation, activation, and
+  compare-and-swap decisions.
+- Remote SSH hosts own their Git and Codex credentials.
+- Codex app-server owns its threads, turns, and runtime events.
 
-1. Move remaining spawn/send/report control into the daemon where it improves recovery.
-2. Stream more assistant deltas and tool intents into the worker event model.
-3. Add precise pre-edit read intents when Codex exposes a stable hook.
-4. Keep the DM/subtree/conflict/completion vocabulary small.
+Swarm records identity, warnings, links, and returned evidence. It does not
+silently override a target system's decision.
+
+## Worker model
+
+A worker records its repository, role, parent, prompt, lifecycle state, engine,
+thread and turn identity, issue and pull-request links, optional worktree, and
+operator report.
+
+Engine names describe implementation. Capabilities describe behavior:
+
+- `live_message`
+- `resume`
+- `managed_worktree`
+- `automatic_completion`
+- `external_tracker`
+
+Coordination code should branch on capabilities. Engine identity remains
+available for diagnostics and engine-specific transport.
+
+Attaching an existing task creates a tracker record without inventing runtime
+ownership. App-server workers record thread and turn IDs and can receive live
+steering while a CLI-owned turn is active. Remote app-server workers retain the
+same coordination model while their checkout and Codex process live over SSH.
+
+## State and events
+
+SQLite transactions preserve worker lifecycle, normalized messages and
+deliveries, append-only delivery transitions, claims, recent file touches,
+gates, and event envelopes. Store
+mutations must be atomic and safe under concurrent CLI and daemon access.
+
+Worker snapshots are deterministic handoff artifacts. Transcripts expose the
+durable event timeline. Work packets combine worker identity, repository,
+worktree, issue, claims, recent events, report, and next action for resumption.
+
+State schema changes should remain narrow. Add a table or index when a proven
+query, transaction, retention, or migration boundary needs it—not to mirror
+every external object.
+
+## Messaging and conflict detection
+
+Messages are durable before delivery is attempted. A recipient with an active
+app-server turn can receive `turn/steer` on the existing connection. Otherwise
+the delivery remains queued and is injected into the next turn. Every material
+delivery observation is retained with its state, error, and timestamp; repeated
+identical observations do not create duplicate transitions. Final app-server
+agent text is retained in the worker event timeline so a recipient's
+acknowledgement can be correlated with the message and delivery IDs.
+
+The communication vocabulary stays small:
+
+- direct and subtree messages
+- handoffs
+- child completion reports
+- bilateral conflict warnings
+
+File touches record read or write intent. Overlapping writes create conflict
+messages for both workers. Claims cover path, task, or live-resource scopes.
+Neither mechanism is a lock, and neither rejects the underlying operation.
+
+## Lifecycle and closeout
+
+`close` is the normal terminal transaction. It marks a worker done or failed,
+releases all active claims, refreshes attached pull requests, clears blocker
+fields, and forwards completion to the parent. Request IDs make retries
+idempotent.
+
+`report` remains a lower-level lifecycle update for cases where claims must stay
+active. Janitor commands identify stale workers and releasable claims; applying
+cleanup is always explicit.
+
+## Git and workspace isolation
+
+Codex thread separation is conversation isolation, not filesystem isolation.
+Parallel writers need distinct branches and worktrees. Managed worktrees use
+repo-local branch locks only while swarm creates or reuses the checkout. Dirty
+worktrees are preserved and reported rather than reset.
+
+Remote Git sessions create an isolated remote checkout and branch per worker.
+They do not push, open a pull request, merge, or delete the remote workspace
+without an explicit operator action.
+
+## Daemon contract
+
+Broad daemon surfaces are read-only. Mutation routes remain loopback-only,
+small, typed, and idempotent. API contracts shared outside handlers live in
+`internal/protocol`; versioned mutation paths return typed JSON errors.
+
+New daemon mutations must demonstrate:
+
+1. a real long-lived delivery or recovery need;
+2. an explicit request ID and stable replay result;
+3. durable state readback before success;
+4. bounded inputs without arbitrary command execution; and
+5. tests for cancellation, concurrent access, and error identity.
 
 ## Dependency policy
 
-Start with the Go standard library. Add dependencies only when they reduce operational risk, testing cost, or cross-platform edge cases enough to justify the extra moving part.
-
-Expected future triggers:
-
-- SQLite schema: extend only when a normalized query or transactional boundary
-  is proven by an operator workflow.
-- GitHub client library: adopt when fake-`gh` coverage becomes harder to
-  maintain than typed API tests, or when issue sync needs API features the `gh`
-  boundary cannot express cleanly.
-- Service manager/helper package: adopt when `csd install` becomes a real
-  Windows service, launchd, and systemd surface instead of explicit stubs.
-- CLI framework: adopt only when stdlib `flag` makes help text, subcommand
-  routing, or shell completion measurably harder to maintain.
+Prefer the Go standard library. Dependencies are justified where they reduce
+cross-platform or persistence risk at a durable boundary. Current examples are
+SQLite and native Windows service integration. A CLI framework, GitHub SDK, or
+service abstraction should be added only when the existing boundary becomes
+measurably less safe or maintainable.

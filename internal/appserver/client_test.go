@@ -129,6 +129,24 @@ func TestWaitTurnCompletedCapturesAgentMessageAndFileChanges(t *testing.T) {
 	}
 }
 
+func TestWaitTurnCompletedSeparatesAgentMessageItems(t *testing.T) {
+	var written bytes.Buffer
+	server := strings.NewReader(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thread-1","delta":"waiting"}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thread-1","item":{"type":"agentMessage","text":"waiting"}}}
+{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thread-1","delta":"acknowledged"}}
+{"jsonrpc":"2.0","method":"item/completed","params":{"threadId":"thread-1","item":{"type":"agentMessage","text":"acknowledged"}}}
+{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}}
+`)
+	client := NewClient(&written, server)
+	result, err := client.WaitTurnCompletedWithPolicy(context.Background(), "thread-1", "turn-1", CompletionPolicy{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FinalMessage != "waiting\nacknowledged" {
+		t.Fatalf("FinalMessage = %q", result.FinalMessage)
+	}
+}
+
 func TestWaitTurnCompletedSteersQueuedDeliveryOnExistingConnection(t *testing.T) {
 	requestReader, requestWriter := io.Pipe()
 	responseReader, responseWriter := io.Pipe()

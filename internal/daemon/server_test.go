@@ -640,6 +640,42 @@ func TestMessagesEndpointSteersActiveWorkerAndListsInbox(t *testing.T) {
 	}
 }
 
+func TestQueuedMessageSurvivesDaemonRecreation(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	at := time.Date(2026, 7, 22, 14, 0, 0, 0, time.UTC)
+	st := store.NewJSONStore(statePath)
+	if err := st.SaveWorkers(
+		store.Worker{ID: "w-from", Engine: "mock", Status: store.WorkerIdle, CreatedAt: at, UpdatedAt: at},
+		store.Worker{ID: "w-to", Engine: "appserver", Status: store.WorkerIdle, CreatedAt: at, UpdatedAt: at},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	first := NewServer(statePath, st)
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/messages", strings.NewReader(`{"request_id":"restart-1","kind":"dm","from":"w-from","to":"w-to","body":"survive restart"}`))
+	req.RemoteAddr = "127.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	first.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("message status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	second := NewServer(statePath, store.NewJSONStore(statePath))
+	req = httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/v1/messages?worker=w-to", nil)
+	rec = httptest.NewRecorder()
+	second.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("inbox status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var inbox protocol.InboxResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &inbox); err != nil {
+		t.Fatal(err)
+	}
+	if len(inbox.Messages) != 1 || inbox.Messages[0].Delivery.State != store.DeliveryQueued || len(inbox.Messages[0].Delivery.History) != 1 {
+		t.Fatalf("inbox after daemon recreation = %#v", inbox)
+	}
+}
+
 func TestTouchesEndpointReturnsBilateralWarningOnlyConflict(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.db")
 	st := store.NewJSONStore(statePath)

@@ -4,6 +4,35 @@ All notable changes to codex-swarm are documented here.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-22
+
+### Added
+
+- Append-only SQLite delivery transitions with state, error, and timestamp
+  readback for every coordination message.
+- `cs message --wait` for bounded delivery observation and `--json` output for
+  both `cs message` and `cs inbox`.
+- Durable final app-server agent responses in worker transcripts, allowing a
+  recipient acknowledgement to be correlated with its message, request, and
+  delivery identity.
+- A repeatable live/queued messaging acceptance runbook for real Codex
+  app-server sessions.
+
+### Changed
+
+- Human-readable message and inbox output now includes message/request/delivery
+  IDs, delivery timestamps, replay status, and transition history.
+- CLI tests explicitly ignore an operator's installed daemon unless the test
+  opts into an isolated daemon, preventing machine-global state from slowing or
+  contaminating local-state tests.
+
+### Verified
+
+- A unique DM was visibly injected into a real destination Codex task over the
+  active turn's existing app-server connection and acknowledged by the agent.
+- Queued next-turn delivery, idempotent request replay, and exact-once delivery
+  history were verified against the SQLite ledger and CLI readback.
+
 ## [0.5.0] - 2026-07-21
 
 ### Added
