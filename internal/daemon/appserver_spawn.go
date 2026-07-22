@@ -345,7 +345,18 @@ func runAppserverRuntime(ctx context.Context, statePath string, request protocol
 		return err
 	}
 	if err := json.NewEncoder(started).Encode(response); err != nil {
-		return fmt.Errorf("write durable app-server start response worker=%s thread=%s turn=%s: %w", response.WorkerID, response.ThreadID, response.TurnID, err)
+		// The parent CLI may reach its deadline and close stdout after the
+		// runtime has durably persisted task identity. Losing that response
+		// channel must not cancel the detached first turn.
+		if st, storeErr := server.appserverStore(); storeErr == nil {
+			at := time.Now().UTC()
+			_, _ = st.UpdateWorker(response.WorkerID, func(current *store.Worker) error {
+				current.UpdatedAt = at
+				message := fmt.Sprintf("parent response channel unavailable; app-server turn continues asynchronously: %v", err)
+				current.Events = append(current.Events, store.Event{At: at, Type: "appserver.start_response.write.failed", Message: message, WorkerID: current.ID, Issue: current.Issue, RequestID: request.RequestID})
+				return nil
+			})
+		}
 	}
 	server.launchMu.Lock()
 	launch := server.launches[request.WorkerID]

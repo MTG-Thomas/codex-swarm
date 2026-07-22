@@ -335,6 +335,52 @@ func TestCallerOwnedRuntimeCancellationPersistsResumableState(t *testing.T) {
 	}
 }
 
+func TestCallerOwnedRuntimeParentDisconnectStillCompletesTurn(t *testing.T) {
+	statePath := t.TempDir() + "/state.json"
+	st := store.NewJSONStore(statePath)
+	worker := testAppserverWorker(t, st, "", 0)
+	release := make(chan struct{})
+	runner := &blockingAppserverRunner{release: release, started: make(chan string, 1), returned: make(chan string, 1)}
+	done := make(chan error, 1)
+	go func() {
+		done <- runAppserverRuntime(context.Background(), statePath, protocol.AppserverSpawnRequest{RequestID: appserverSpawnRequestID(worker.ID), WorkerID: worker.ID, Prompt: "parent-disconnected"}, failingResponseWriter{}, runner)
+	}()
+
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("caller-owned runtime did not persist durable task identity")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("runtime returned after parent response failure: %v", err)
+	default:
+	}
+
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("runtime completion error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("caller-owned runtime did not finish after turn completion")
+	}
+	completed, err := st.GetWorker(worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Status != store.WorkerDone || completed.ThreadID != "thread-parent-disconnected" || completed.TurnID != "turn-parent-disconnected" || !workerHasEvent(completed, "appserver.start_response.write.failed") || !workerHasEvent(completed, "appserver.turn.completed") {
+		t.Fatalf("completed worker = %#v", completed)
+	}
+}
+
+type failingResponseWriter struct{}
+
+func (failingResponseWriter) Write([]byte) (int, error) {
+	return 0, errors.New("response pipe closed")
+}
+
 type blockingAppserverRunner struct {
 	allowStart <-chan struct{}
 	release    <-chan struct{}
