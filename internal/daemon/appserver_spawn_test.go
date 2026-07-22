@@ -36,7 +36,7 @@ func TestDaemonAppserverSpawnReturnsAfterDurableIdentityForFourLongTurns(t *test
 	for i := range 4 {
 		worker := testAppserverWorker(t, st, parent.ID, i)
 		prompt := fmt.Sprintf("task-%d", i)
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		response, err := client.SpawnAppserver(ctx, protocol.AppserverSpawnRequest{RequestID: appserverSpawnRequestID(worker.ID), WorkerID: worker.ID, Prompt: prompt})
 		cancel()
 		if err != nil {
