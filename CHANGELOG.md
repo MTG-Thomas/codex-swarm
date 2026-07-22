@@ -4,6 +4,8 @@ All notable changes to codex-swarm are documented here.
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-07-22
+
 ### Fixed
 
 - Daemon worker summaries now preserve active turn, host, and runtime-owner
