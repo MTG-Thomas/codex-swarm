@@ -41,6 +41,9 @@ in [roadmap.md](roadmap.md).
 - Scriptable human and JSON attention views derived from queued messages,
   blocked claims, stale workers, validator rejections, failed gates, and
   recorded pull-request next actions.
+- Scriptable derived operation views that group issue-backed or root-worker
+  coordination across workers, claims, messages, gates, recorded pull requests,
+  and linked Codex tasks while exposing broken links as unscoped records.
 - Warning-only ownership claims, file-touch conflicts, and worker checks.
 - Durable direct and subtree messages with JSON/readback evidence, handoffs,
   and parent completion.

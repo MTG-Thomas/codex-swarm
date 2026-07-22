@@ -208,6 +208,25 @@ cs tasks list --limit 100 --json
 cs tasks status --stale-for 24h
 ```
 
+### Group related coordination as one operation
+
+`cs operation` derives one logical view across existing worker ancestry, issue
+links, claims, message deliveries, gate evidence, recorded pull requests, and
+indexed Codex tasks:
+
+```powershell
+cs operation list
+cs operation list --issue MTG-Thomas/codex-swarm#75 --json
+cs operation show issue:mtg-thomas/codex-swarm#75
+```
+
+Issue-backed work uses a case-normalized `issue:owner/repo#number` key. Other
+worker trees use `worker:<root-worker-id>`. Missing parents, parent cycles,
+invalid issue references, and unlinked records remain visible and keyless; the
+projection never guesses an operation from a repository path or task title.
+It is read-only and does not create an operation ledger or change claim
+warning semantics.
+
 The metadata-only snapshot contract is:
 
 ```json

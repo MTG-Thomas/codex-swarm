@@ -59,6 +59,14 @@ Host-observed task status does not derive from an attached swarm worker. This
 keeps an active/resumable Codex task visible when a synchronous launch request
 times out and marks only its worker attempt failed.
 
+Logical operations are also derived rather than persisted. A normalized GitHub
+issue reference is the strongest key; otherwise workers inherit the root
+parent worker key. Claims can use their own explicit issue link, while
+messages, gates, pull-request state, and indexed Codex tasks join only through
+their existing worker or exact runtime identity. Broken ancestry and unlinked
+records stay visible without receiving a fabricated key. This projection is a
+protocol seam for operation-level evidence and decisions, not a new authority.
+
 Swarm records identity, warnings, links, and returned evidence. It does not
 silently override a target system's decision.
 
