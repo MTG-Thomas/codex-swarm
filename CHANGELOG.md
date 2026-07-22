@@ -45,6 +45,8 @@ All notable changes to codex-swarm are documented here.
 
 - GitHub Actions are pinned to canonical commit SHAs, with their tag targets
   and upstream provenance documented and verified before this release.
+- Task-collection status readback now enforces the same loopback-only boundary
+  as collection page and finish mutations.
 
 ## [0.6.1] - 2026-07-22
 
