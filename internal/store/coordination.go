@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -459,11 +460,72 @@ func messageFingerprint(message Message, recipients []string) string {
 }
 
 func pathKey(value string) string {
-	key := filepath.ToSlash(filepath.Clean(strings.TrimSpace(value)))
-	if runtime.GOOS == "windows" {
-		return strings.ToLower(key)
+	value = strings.TrimSpace(value)
+	windowsPath := runtime.GOOS == "windows" || looksLikeWindowsPath(value)
+	if windowsPath {
+		// State can be read on a different host than the one that produced it.
+		// Clean the path beneath its Windows volume so drive and UNC roots
+		// remain distinct and .. cannot traverse above the volume boundary.
+		return strings.ToLower(cleanWindowsPath(value))
 	}
+	key := filepath.ToSlash(filepath.Clean(value))
 	return key
+}
+
+func cleanWindowsPath(value string) string {
+	value = strings.ReplaceAll(value, `\`, "/")
+	if len(value) >= 2 && value[1] == ':' {
+		volume, rest := value[:2], value[2:]
+		if rest == "" {
+			return volume + "."
+		}
+		return volume + path.Clean(rest)
+	}
+	if volume, rest, ok := splitUNCVolume(value); ok {
+		if rest == "" {
+			return volume
+		}
+		return volume + path.Clean(rest)
+	}
+	return path.Clean(value)
+}
+
+func splitUNCVolume(value string) (string, string, bool) {
+	if len(value) >= 8 && (strings.EqualFold(value[:8], "//?/UNC/") || strings.EqualFold(value[:8], "//./UNC/")) {
+		return splitUNCShare(value[:8], value[8:])
+	}
+	if !strings.HasPrefix(value, "//") {
+		return "", "", false
+	}
+	return splitUNCShare("//", value[2:])
+}
+
+func splitUNCShare(prefix, tail string) (string, string, bool) {
+	hostEnd := strings.IndexByte(tail, '/')
+	if hostEnd <= 0 {
+		return "", "", false
+	}
+	host, afterHost := tail[:hostEnd], tail[hostEnd+1:]
+	shareEnd := strings.IndexByte(afterHost, '/')
+	if shareEnd < 0 {
+		if afterHost == "" {
+			return "", "", false
+		}
+		return prefix + host + "/" + afterHost, "", true
+	}
+	share := afterHost[:shareEnd]
+	if share == "" {
+		return "", "", false
+	}
+	return prefix + host + "/" + share, afterHost[shareEnd:], true
+}
+
+func looksLikeWindowsPath(value string) bool {
+	if len(value) >= 2 && value[1] == ':' {
+		letter := value[0]
+		return letter >= 'A' && letter <= 'Z' || letter >= 'a' && letter <= 'z'
+	}
+	return strings.HasPrefix(value, `\\`) || strings.HasPrefix(value, "//")
 }
 
 func lineRangesOverlap(left, right FileTouch) bool {

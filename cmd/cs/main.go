@@ -92,6 +92,8 @@ func (c cli) run(args []string) error {
 		return c.operation(args[1:])
 	case "tasks":
 		return c.codexTasks(args[1:])
+	case "decision":
+		return c.decision(args[1:])
 	case "spawn":
 		return c.spawn(args[1:])
 	case "attach":
@@ -1638,6 +1640,10 @@ Usage:
   cs tasks collect status --host local --observation <id> [--json]
   cs tasks ingest --file snapshot.json [--request-id <id>] [--daemon http://127.0.0.1:8787]
   cs tasks status [--stale-for 24h] [--json]
+  cs decision record --author <worker> --summary "decision" --rationale "why" [--operation <key>] [--repo .] [--issue owner/repo#123] [--evidence <ref>]
+  cs decision list [--operation <key>] [--repo .] [--issue owner/repo#123] [--current] [--json]
+  cs decision show [--json] <decision-id>
+  cs decision supersede <decision-id> --request-id <id> --summary "replacement" --rationale "why"
   cs spawn --repo . --prompt "inspect this repo"
   cs spawn --engine appserver --repo . --prompt "summarize this repo in one sentence"
   cs spawn --engine appserver --repo . --worktree --remote-host user@host --prompt "work remotely"

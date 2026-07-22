@@ -17,6 +17,9 @@ var (
 	ErrMessageNotFound          = errors.New("message not found")
 	ErrMessageReplayMismatch    = errors.New("message request replay mismatch")
 	ErrCodexTaskReplayMismatch  = errors.New("codex task snapshot request replay mismatch")
+	ErrDecisionNotFound         = errors.New("decision not found")
+	ErrDecisionReplayMismatch   = errors.New("decision request replay mismatch")
+	ErrDecisionSuperseded       = errors.New("decision already superseded")
 )
 
 const (
@@ -386,6 +389,53 @@ type GateEvidence struct {
 	Output    string    `json:"output,omitempty"`
 	Commit    string    `json:"commit,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// DecisionEvidence is a bounded reference to evidence used by a decision.
+// State records whether the reference resolved in the local coordination
+// ledger when the decision was written; external references are not fetched.
+type DecisionEvidence struct {
+	Ref    string `json:"ref"`
+	State  string `json:"state"`
+	Detail string `json:"detail,omitempty"`
+}
+
+const (
+	DecisionEvidenceAvailable = "available"
+	DecisionEvidenceMissing   = "missing"
+	DecisionEvidenceExternal  = "external"
+)
+
+// Decision is one immutable operator decision plus supersession metadata.
+// Operation is the stable derived key from internal/operation when known.
+type Decision struct {
+	ID                 string             `json:"id"`
+	RequestID          string             `json:"request_id"`
+	Operation          string             `json:"operation,omitempty"`
+	Repo               string             `json:"repo,omitempty"`
+	Issue              string             `json:"issue,omitempty"`
+	Summary            string             `json:"summary"`
+	Rationale          string             `json:"rationale"`
+	Evidence           []DecisionEvidence `json:"evidence,omitempty"`
+	Dissent            string             `json:"dissent,omitempty"`
+	AuthorWorker       string             `json:"author_worker"`
+	ProvenanceGaps     []string           `json:"provenance_gaps,omitempty"`
+	SupersedesID       string             `json:"supersedes_id,omitempty"`
+	SupersededByID     string             `json:"superseded_by_id,omitempty"`
+	CreatedAt          time.Time          `json:"created_at"`
+	SupersededAt       *time.Time         `json:"superseded_at,omitempty"`
+	RequestFingerprint string             `json:"-"`
+}
+
+// Current reports whether the decision has not been superseded.
+func (d Decision) Current() bool { return d.SupersededByID == "" }
+
+// DecisionListFilter selects decision history without changing it.
+type DecisionListFilter struct {
+	Operation   string
+	Repo        string
+	Issue       string
+	CurrentOnly bool
 }
 
 // PullRequestState records explicit PR stewardship state attached to a worker.

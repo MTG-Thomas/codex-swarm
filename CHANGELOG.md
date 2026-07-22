@@ -13,6 +13,9 @@ All notable changes to codex-swarm are documented here.
   keys across workers, claims, message deliveries, gate evidence, recorded pull
   requests, and linked Codex tasks, with keyless degraded records for broken
   ancestry or unsupported links.
+- `cs decision record|list|show|supersede` preserves explicit rationale,
+  evidence references, dissent, author identity, provenance gaps, and atomic
+  supersession history against the derived logical-operation scope.
 
 ## [0.6.1] - 2026-07-22
 
