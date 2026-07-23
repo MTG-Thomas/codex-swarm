@@ -4,6 +4,8 @@ All notable changes to codex-swarm are documented here.
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-07-23
+
 ### Added
 
 - A per-user NSIS installer for Windows amd64 and arm64 releases,
