@@ -32,8 +32,11 @@ delivery and inspection surface; it does not become an arbitrary remote shell.
 
 The machine-global SQLite store is authoritative for workers, capabilities,
 claims, messages, events, gates, issue and PR links, and lifecycle state. The
-historical default filename remains `state.json` for compatibility. Migration
-retains a legacy JSON copy with a `.legacy.json` suffix.
+default filename is `state.db`. Existing installations continue to select a
+legacy `state.json` database when `state.db` is absent, avoiding an unsafe
+rename of an open SQLite/WAL database. If both paths exist, `state.db` is
+authoritative. The older JSON-to-SQLite content migration retains a legacy JSON
+copy with a `.legacy.json` suffix.
 
 Other systems keep their own authority:
 
