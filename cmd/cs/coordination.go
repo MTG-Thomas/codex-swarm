@@ -128,9 +128,33 @@ func (c cli) forwardCompletion(statePath, daemonURL, requestID, workerID, report
 	if baseURL := configuredDaemonURL(daemonURL); baseURL != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		response, err := (daemon.Client{BaseURL: baseURL}).Completion(ctx, protocol.CompletionRequest{RequestID: requestID, WorkerID: workerID, Report: report})
+		client := daemon.Client{BaseURL: baseURL}
+		response, err := client.Completion(ctx, protocol.CompletionRequest{RequestID: requestID, WorkerID: workerID, Report: report})
 		if err != nil {
 			return protocol.CompletionResponse{}, err
+		}
+		if response.Message != nil {
+			missingStatePath := false
+			for _, request := range response.Message.NativeSteering {
+				missingStatePath = missingStatePath || strings.TrimSpace(request.StatePath) == ""
+			}
+			for _, request := range response.Message.NativeFollowup {
+				missingStatePath = missingStatePath || strings.TrimSpace(request.StatePath) == ""
+			}
+			if missingStatePath {
+				if status, statusErr := client.Status(ctx); statusErr == nil {
+					for i := range response.Message.NativeSteering {
+						if strings.TrimSpace(response.Message.NativeSteering[i].StatePath) == "" {
+							response.Message.NativeSteering[i].StatePath = status.StatePath
+						}
+					}
+					for i := range response.Message.NativeFollowup {
+						if strings.TrimSpace(response.Message.NativeFollowup[i].StatePath) == "" {
+							response.Message.NativeFollowup[i].StatePath = status.StatePath
+						}
+					}
+				}
+			}
 		}
 		return response, nil
 	}

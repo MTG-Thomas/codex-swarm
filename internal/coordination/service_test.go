@@ -200,21 +200,25 @@ func TestForwardCompletionReturnsNativeFollowupForIdleAttachedParentAndReplay(t 
 	}
 }
 
-func TestSendDoesNotReturnNativeFollowupForTerminalAttachedTask(t *testing.T) {
-	st := testStore(t)
-	at := time.Date(2026, 7, 22, 16, 50, 0, 0, time.UTC)
-	saveWorkers(t, st,
-		store.Worker{ID: "sender", Engine: "tracker", Status: store.WorkerIdle, CreatedAt: at, UpdatedAt: at},
-		store.Worker{ID: "recipient", Engine: "tracker", Status: store.WorkerDone, ThreadID: "thread-done", CreatedAt: at, UpdatedAt: at},
-	)
-	result, err := (Service{Store: st, Now: func() time.Time { return at }}).Send(context.Background(), SendRequest{
-		RequestID: "terminal-recipient", Kind: store.MessageDirect, From: "sender", To: "recipient", Body: "late note",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.NativeFollowup) != 0 || len(result.Deliveries) != 1 || result.Deliveries[0].State != store.DeliveryQueued {
-		t.Fatalf("terminal recipient result = %#v", result)
+func TestSendReturnsNativeFollowupOnlyForIdleAttachedTask(t *testing.T) {
+	for _, status := range []store.WorkerStatus{store.WorkerPending, store.WorkerRunning, store.WorkerDone, store.WorkerFailed} {
+		t.Run(string(status), func(t *testing.T) {
+			st := testStore(t)
+			at := time.Date(2026, 7, 22, 16, 50, 0, 0, time.UTC)
+			saveWorkers(t, st,
+				store.Worker{ID: "sender", Engine: "tracker", Status: store.WorkerIdle, CreatedAt: at, UpdatedAt: at},
+				store.Worker{ID: "recipient", Engine: "tracker", Status: status, ThreadID: "thread-recipient", CreatedAt: at, UpdatedAt: at},
+			)
+			result, err := (Service{Store: st, Now: func() time.Time { return at }}).Send(context.Background(), SendRequest{
+				RequestID: "non-idle-recipient-" + string(status), Kind: store.MessageDirect, From: "sender", To: "recipient", Body: "late note",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.NativeFollowup) != 0 || len(result.Deliveries) != 1 || result.Deliveries[0].State != store.DeliveryQueued {
+				t.Fatalf("%s recipient result = %#v", status, result)
+			}
+		})
 	}
 }
 

@@ -270,7 +270,7 @@ func (s Service) createAndDeliver(ctx context.Context, requestID string, kind st
 
 func needsNativeFollowupBridge(worker store.Worker) bool {
 	return store.CapabilitiesForWorker(worker).Has(store.CapabilityNativeFollowupBridge) &&
-		worker.Status != store.WorkerRunning && worker.Status != store.WorkerDone && worker.Status != store.WorkerFailed &&
+		worker.Status == store.WorkerIdle &&
 		strings.TrimSpace(worker.ThreadID) != ""
 }
 

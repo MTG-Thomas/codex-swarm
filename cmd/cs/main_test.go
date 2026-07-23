@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -244,6 +245,44 @@ func TestCLIReportFailedSetsTerminatedAt(t *testing.T) {
 	}
 	if worker.Lifecycle.Session.CompletedAt != nil {
 		t.Fatalf("CompletedAt = %v, want nil", worker.Lifecycle.Session.CompletedAt)
+	}
+}
+
+func TestForwardCompletionBackfillsNativeCallbackStatePathFromDaemonStatus(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	var calls []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/completions":
+			_ = json.NewEncoder(w).Encode(protocol.CompletionResponse{
+				Forwarded: true,
+				Message: &protocol.MessageResponse{
+					Message: store.Message{ID: "message-1"},
+					NativeFollowup: []store.NativeFollowupRequest{{
+						DeliveryID: "delivery-1", MessageID: "message-1", RecipientID: "parent",
+						HostID: "desktop-local", ThreadID: "thread-parent", Prompt: "completion",
+					}},
+				},
+			})
+		case "/status":
+			_ = json.NewEncoder(w).Encode(daemon.Status{StatePath: statePath})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	response, err := (cli{out: &bytes.Buffer{}, err: &bytes.Buffer{}}).forwardCompletion("", server.URL, "request-1", "child", "done")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Message == nil || len(response.Message.NativeFollowup) != 1 || response.Message.NativeFollowup[0].StatePath != statePath {
+		t.Fatalf("completion response = %#v", response)
+	}
+	if got, want := strings.Join(calls, ","), "POST /v1/completions,GET /status"; got != want {
+		t.Fatalf("daemon calls = %q, want %q", got, want)
 	}
 }
 
