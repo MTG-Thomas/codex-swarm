@@ -6,7 +6,7 @@ All notable changes to codex-swarm are documented here.
 
 ### Added
 
-- A per-user Inno Setup installer for Windows amd64 and arm64 releases,
+- A per-user NSIS installer for Windows amd64 and arm64 releases,
   including Installed Apps registration, optional user PATH integration,
   in-place upgrades, and clean uninstall behavior.
 

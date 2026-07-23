@@ -171,23 +171,21 @@ jobs:
       - name: Windows installer smoke
         if: runner.os == 'Windows'
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $iscc = ./scripts/bootstrap-inno-setup.ps1 -InstallDir (Join-Path $env:RUNNER_TEMP 'inno-setup')
+          $makensis = ./scripts/bootstrap-nsis.ps1 -InstallDir (Join-Path $env:RUNNER_TEMP 'nsis')
           $outputDir = Join-Path $env:RUNNER_TEMP 'installer-output'
           New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
-          & $iscc `
-            '/DAppVersion=0.0.0-ci' `
-            '/DAppVersionNumeric=0.0.0' `
-            '/DAppArch=amd64' `
-            "/DSourceDir=$env:GITHUB_WORKSPACE" `
-            "/DOutputDir=$outputDir" `
-            '/DAppIdSuffix=.ci' `
-            installer/codex-swarm.iss
+          & $makensis `
+            '/DAPP_VERSION=0.0.0-ci' `
+            '/DAPP_VERSION_NUMERIC=0.0.0.0' `
+            '/DAPP_ARCH=amd64' `
+            "/DSOURCE_DIR=$env:GITHUB_WORKSPACE" `
+            "/DOUTPUT_DIR=$outputDir" `
+            '/DAPP_ID_SUFFIX=.ci' `
+            installer/codex-swarm.nsi
           if ($LASTEXITCODE -ne 0) {
-            throw "ISCC failed with exit code $LASTEXITCODE"
+            throw "makensis failed with exit code $LASTEXITCODE"
           }
           ./scripts/test-windows-installer.ps1 `
             -InstallerPath (Join-Path $outputDir 'codex-swarm-v0.0.0-ci-windows-amd64-setup.exe')
