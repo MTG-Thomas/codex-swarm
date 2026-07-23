@@ -60,6 +60,8 @@ Engine names describe implementation. Capabilities describe behavior:
 - `managed_worktree`
 - `automatic_completion`
 - `external_tracker`
+- `native_steering_bridge`
+- `native_followup_bridge`
 
 Coordination code should branch on capabilities. Engine identity remains
 available for diagnostics and engine-specific transport.
@@ -94,6 +96,11 @@ receive `turn/steer` over the app-server connection that owns it. For an
 externally owned active task, the message response carries a native-steering
 request with the exact prompt and runtime identity. The owning Codex host
 injects it and confirms the delivery against the same worker, thread, and turn.
+For an idle attached task, the response instead carries a native-followup
+request against the stable host and thread identity. The host starts the next
+turn and confirms against that worker and thread. This lets completion reports
+wake an idle coordinator without codex-swarm opening a competing app-server
+connection or owning the task runtime.
 No confirmation means the delivery remains queued. Every material delivery
 observation is retained with its state, error, and timestamp; repeated
 identical observations do not create duplicate transitions. Final app-server
@@ -115,8 +122,9 @@ Neither mechanism is a lock, and neither rejects the underlying operation.
 
 `close` is the normal terminal transaction. It marks a worker done or failed,
 releases all active claims, refreshes attached pull requests, clears blocker
-fields, and forwards completion to the parent. Request IDs make retries
-idempotent.
+fields, and forwards completion to the parent. Its JSON response exposes any
+native callback still required by the owning Codex host. Request IDs make
+retries idempotent.
 
 `report` remains a lower-level lifecycle update for cases where claims must stay
 active. Janitor commands identify stale workers and releasable claims; applying

@@ -802,6 +802,10 @@ func (c cli) message(args []string) error {
 			return c.updateNativeSteering(args[1:], true)
 		case "steering-failed":
 			return c.updateNativeSteering(args[1:], false)
+		case "confirm-followup":
+			return c.updateNativeFollowup(args[1:], true)
+		case "followup-failed":
+			return c.updateNativeFollowup(args[1:], false)
 		}
 	}
 	fs := c.flagSet("message")
@@ -840,12 +844,17 @@ func (c cli) message(args []string) error {
 		defer cancel()
 		client := daemon.Client{BaseURL: baseURL}
 		response, err = client.Message(ctx, request)
-		if err == nil && len(response.NativeSteering) > 0 && strings.TrimSpace(response.NativeSteering[0].StatePath) == "" {
+		missingStatePath := len(response.NativeSteering) > 0 && strings.TrimSpace(response.NativeSteering[0].StatePath) == ""
+		missingStatePath = missingStatePath || len(response.NativeFollowup) > 0 && strings.TrimSpace(response.NativeFollowup[0].StatePath) == ""
+		if err == nil && missingStatePath {
 			var status daemon.Status
 			status, err = client.Status(ctx)
 			if err == nil {
 				for i := range response.NativeSteering {
 					response.NativeSteering[i].StatePath = status.StatePath
+				}
+				for i := range response.NativeFollowup {
+					response.NativeFollowup[i].StatePath = status.StatePath
 				}
 			}
 		}
@@ -854,9 +863,12 @@ func (c cli) message(args []string) error {
 			RequestID: request.RequestID, Kind: request.Kind, From: request.From, To: request.To, Body: request.Body,
 		})
 		err = sendErr
-		response = protocol.MessageResponse{Message: result.Message, Deliveries: result.Deliveries, NativeSteering: result.NativeSteering, Replayed: result.Replayed}
+		response = protocol.MessageResponse{Message: result.Message, Deliveries: result.Deliveries, NativeSteering: result.NativeSteering, NativeFollowup: result.NativeFollowup, Replayed: result.Replayed}
 		for i := range response.NativeSteering {
 			response.NativeSteering[i].StatePath = *statePath
+		}
+		for i := range response.NativeFollowup {
+			response.NativeFollowup[i].StatePath = *statePath
 		}
 	}
 	if err != nil {
@@ -885,16 +897,7 @@ func (c cli) message(args []string) error {
 			fmt.Fprintf(c.out, "  transition=%d\tstate=%s\tat=%s\terror=%s\n", event.Sequence, event.State, event.CreatedAt.Format(time.RFC3339Nano), emptyDash(event.LastError))
 		}
 	}
-	for _, request := range response.NativeSteering {
-		fmt.Fprintf(c.out, "native_steering_required delivery=%s recipient=%s host=%s thread=%s turn=%s\n",
-			request.DeliveryID, request.RecipientID, emptyDash(request.HostID), request.ThreadID, request.TurnID)
-		prompt, _ := json.Marshal(request.Prompt)
-		fmt.Fprintf(c.out, "  prompt=%s\n", prompt)
-		fmt.Fprintf(c.out, "  after_success=cs message confirm-steered --state %q --worker %s --thread %s --turn %s %s\n",
-			request.StatePath, request.RecipientID, request.ThreadID, request.TurnID, request.DeliveryID)
-		fmt.Fprintf(c.out, "  after_failure=cs message steering-failed --state %q --worker %s --thread %s --turn %s --error <error> %s\n",
-			request.StatePath, request.RecipientID, request.ThreadID, request.TurnID, request.DeliveryID)
-	}
+	c.printNativeCallbacks(response)
 	return nil
 }
 
@@ -960,6 +963,70 @@ func (c cli) updateNativeSteering(args []string, succeeded bool) error {
 	}
 	fmt.Fprintf(c.out, "%s native steering delivery=%s recipient=%s thread=%s turn=%s state=%s error=%s\n",
 		verb, item.Delivery.ID, worker.ID, worker.ThreadID, worker.TurnID, item.Delivery.State, emptyDash(item.Delivery.LastError))
+	return nil
+}
+
+func (c cli) updateNativeFollowup(args []string, succeeded bool) error {
+	command := "confirm-followup"
+	if !succeeded {
+		command = "followup-failed"
+	}
+	fs := c.flagSet("message " + command)
+	statePath := fs.String("state", defaultStatePath(), "state file path")
+	workerID := fs.String("worker", "", "recipient worker id")
+	threadID := fs.String("thread", "", "thread id used for native follow-up")
+	followupError := fs.String("error", "", "native follow-up error; required for followup-failed")
+	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 || strings.TrimSpace(*workerID) == "" || strings.TrimSpace(*threadID) == "" {
+		return fmt.Errorf("message %s requires --worker, --thread, and <delivery-id>", command)
+	}
+	if !succeeded && strings.TrimSpace(*followupError) == "" {
+		return errors.New("message followup-failed requires --error")
+	}
+	deliveryID := fs.Arg(0)
+	st := store.NewJSONStore(*statePath)
+	worker, err := st.GetWorker(*workerID)
+	if err != nil {
+		return fmt.Errorf("confirm native follow-up worker %s: %w", *workerID, err)
+	}
+	if worker.ThreadID != *threadID {
+		return fmt.Errorf("refuse native follow-up confirmation for %s: worker runtime is thread=%s, confirmation expected thread=%s",
+			deliveryID, emptyDash(worker.ThreadID), *threadID)
+	}
+	item, err := findWorkerDelivery(st, worker.ID, deliveryID)
+	if err != nil {
+		return err
+	}
+	if !succeeded && item.Delivery.State != store.DeliveryQueued {
+		return fmt.Errorf("refuse native follow-up failure for %s: delivery state is %s", deliveryID, item.Delivery.State)
+	}
+	if item.Delivery.State == store.DeliveryQueued {
+		state := store.DeliverySteered
+		lastError := ""
+		if !succeeded {
+			state = store.DeliveryQueued
+			lastError = strings.TrimSpace(*followupError)
+		}
+		if err := st.UpdateDelivery(deliveryID, state, lastError, c.now().UTC()); err != nil {
+			return err
+		}
+		item, err = findWorkerDelivery(st, worker.ID, deliveryID)
+		if err != nil {
+			return err
+		}
+	}
+	if *jsonOutput {
+		return json.NewEncoder(c.out).Encode(item)
+	}
+	verb := "confirmed"
+	if !succeeded {
+		verb = "recorded failure for"
+	}
+	fmt.Fprintf(c.out, "%s native follow-up delivery=%s recipient=%s thread=%s state=%s error=%s\n",
+		verb, item.Delivery.ID, worker.ID, worker.ThreadID, item.Delivery.State, emptyDash(item.Delivery.LastError))
 	return nil
 }
 
@@ -1213,7 +1280,12 @@ func (c cli) report(args []string) error {
 	if err != nil {
 		return err
 	}
-	return c.forwardCompletion(*statePath, *daemonURL, requestID, id, report)
+	response, err := c.forwardCompletion(*statePath, *daemonURL, requestID, id, report)
+	if err != nil {
+		return err
+	}
+	c.printCompletionResponse(id, response)
+	return nil
 }
 
 func (c cli) resume(args []string) error {
@@ -1638,6 +1710,8 @@ Usage:
   cs message --subtree <from-worker> <root-worker> "note"
   cs message confirm-steered --worker <worker> --thread <thread> --turn <turn> <delivery>
   cs message steering-failed --worker <worker> --thread <thread> --turn <turn> --error <error> <delivery>
+  cs message confirm-followup --worker <worker> --thread <thread> <delivery>
+  cs message followup-failed --worker <worker> --thread <thread> --error <error> <delivery>
   cs inbox --queued <worker>
   cs touch --worker <worker> --repo . --path internal/store/store.go --intent "edit store"
   cs handoff --request-id <id> <from-worker> <to-worker> "summary"
@@ -1678,7 +1752,7 @@ Usage:
   cs schedule list
   cs repo hints --repo .
   cs report --note "summary" <worker> done
-  cs close --note "summary" <worker>`)
+  cs close --json --note "summary" <worker>`)
 }
 
 func emptyDash(value string) string {

@@ -15,7 +15,8 @@ file contains unfinished work only.
   automatically at task start and resume.
 - Feed the derived attention view into task start and resume without turning it
   into another source of truth.
-- Turn operator closeout into a routine invariant across Codex entrypoints.
+- Consume and acknowledge native closeout callbacks automatically in Codex host
+  entrypoints that expose a task-message tool.
 - Measure coverage: active tasks attached, claims released, messages delivered,
   conflicts warned before Git, and workers closed with usable evidence.
 

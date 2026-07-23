@@ -231,7 +231,11 @@ func (s *Server) messageResponse(result coordination.SendResult) protocol.Messag
 	for i := range native {
 		native[i].StatePath = s.statePath
 	}
-	return protocol.MessageResponse{Message: result.Message, Deliveries: result.Deliveries, NativeSteering: native, Replayed: result.Replayed}
+	followup := append([]store.NativeFollowupRequest(nil), result.NativeFollowup...)
+	for i := range followup {
+		followup[i].StatePath = s.statePath
+	}
+	return protocol.MessageResponse{Message: result.Message, Deliveries: result.Deliveries, NativeSteering: native, NativeFollowup: followup, Replayed: result.Replayed}
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {

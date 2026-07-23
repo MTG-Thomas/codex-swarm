@@ -4,12 +4,14 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
+	"github.com/MTG-Thomas/codex-swarm/internal/protocol"
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
 
@@ -22,6 +24,7 @@ func (c cli) closeWorker(args []string) error {
 	refreshPR := fs.Bool("refresh-pr", true, "refresh attached pull requests before closeout")
 	timeout := fs.Duration("timeout", 30*time.Second, "pull request refresh timeout")
 	requestIDFlag := fs.String("request-id", "", "idempotency key")
+	jsonOutput := fs.Bool("json", false, "emit machine-readable JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -71,8 +74,19 @@ func (c cli) closeWorker(args []string) error {
 	if err != nil {
 		return err
 	}
+	completion, err := c.forwardCompletion(*statePath, *daemonURL, requestID+"-completion", workerID, result.Worker.Report)
+	if err != nil {
+		return fmt.Errorf("worker %s closed but completion forwarding failed: %w", workerID, err)
+	}
+	response := protocol.CloseResponse{
+		Worker: result.Worker, ReleasedClaims: result.ReleasedClaims, Replayed: result.Replayed, Completion: completion,
+	}
+	if *jsonOutput {
+		return json.NewEncoder(c.out).Encode(response)
+	}
 	fmt.Fprintf(c.out, "closed worker=%s status=%s released_claims=%d prs=%d replayed=%t\n", result.Worker.ID, displayWorkerStatus(result.Worker), len(result.ReleasedClaims), len(result.Worker.PullRequests), result.Replayed)
-	return c.forwardCompletion(*statePath, *daemonURL, requestID+"-completion", workerID, result.Worker.Report)
+	c.printCompletionResponse(workerID, completion)
+	return nil
 }
 
 func closeFingerprint(workerID string, status store.WorkerStatus, report string, pullRequests []store.PullRequestState) string {

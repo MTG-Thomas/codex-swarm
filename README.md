@@ -58,6 +58,8 @@ by stable capabilities:
 - `managed_worktree`: swarm owns an isolated Git worktree for the worker
 - `automatic_completion`: completion can be recorded by the runtime
 - `external_tracker`: execution is owned by another system
+- `native_steering_bridge`: an active externally owned turn can be injected by its Codex host
+- `native_followup_bridge`: an idle attached task can be resumed by its owning Codex host
 
 This keeps coordination logic independent of any one agent runtime.
 
@@ -163,16 +165,31 @@ state. Inbox JSON includes the message ID, request ID, delivery ID, timestamps,
 and append-only state history. A completed app-server response is also retained
 in the worker transcript as acknowledgement evidence.
 
+An idle attached task produces `native_followup` instead. That envelope carries
+the owning host and task thread, but no turn ID, because the host must start the
+task's next turn. After the native task-message call succeeds, acknowledge it:
+
+```powershell
+cs message confirm-followup --state <state-path> --worker <worker-id> `
+  --thread <thread-id> <delivery-id>
+```
+
+Use `cs message followup-failed ... --error <error>` when the host call fails.
+The delivery remains queued with the error and continues to appear in inbox and
+attention readback.
+
 ### Close the work
 
 ```powershell
-cs close --note "Merged, released, and verified" <worker-id>
+cs close --json --note "Merged, released, and verified" <worker-id>
 ```
 
 `close` is the normal terminal operation. It atomically marks the worker done
 or failed, releases active claims, refreshes attached pull-request state,
 clears blocker fields, and forwards completion to the parent worker. Use
-`report` only when a lifecycle update is needed without releasing claims.
+`report` only when a lifecycle update is needed without releasing claims. The
+JSON close response includes any `native_steering` or `native_followup` callback
+that the owning Codex host must inject and acknowledge.
 
 ## Common workflows
 

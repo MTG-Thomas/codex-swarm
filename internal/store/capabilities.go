@@ -12,6 +12,7 @@ const (
 	CapabilityAutomaticCompletion  RuntimeCapability = "automatic_completion"
 	CapabilityExternalTracker      RuntimeCapability = "external_tracker"
 	CapabilityNativeSteeringBridge RuntimeCapability = "native_steering_bridge"
+	CapabilityNativeFollowupBridge RuntimeCapability = "native_followup_bridge"
 )
 
 // RuntimeCapabilities is a deterministic capability set for operator and protocol output.
@@ -58,6 +59,9 @@ func CapabilitiesForWorker(worker Worker) RuntimeCapabilities {
 	capabilities := append(RuntimeCapabilities(nil), EngineCapabilities(worker.Engine)...)
 	if capabilities.Has(CapabilityLiveMessage) && externallyOwnedRuntime(worker) {
 		capabilities = append(capabilities, CapabilityNativeSteeringBridge)
+	}
+	if strings.TrimSpace(worker.ThreadID) != "" && (capabilities.Has(CapabilityExternalTracker) || externallyOwnedRuntime(worker)) {
+		capabilities = append(capabilities, CapabilityNativeFollowupBridge)
 	}
 	if truthfulManagedWorktree(worker) {
 		capabilities = append(capabilities, CapabilityManagedWorktree)
