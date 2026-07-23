@@ -124,27 +124,90 @@ func (c cli) touch(args []string) error {
 	return nil
 }
 
-func (c cli) forwardCompletion(statePath, daemonURL, requestID, workerID, report string) error {
+func (c cli) forwardCompletion(statePath, daemonURL, requestID, workerID, report string) (protocol.CompletionResponse, error) {
 	if baseURL := configuredDaemonURL(daemonURL); baseURL != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		response, err := (daemon.Client{BaseURL: baseURL}).Completion(ctx, protocol.CompletionRequest{RequestID: requestID, WorkerID: workerID, Report: report})
+		client := daemon.Client{BaseURL: baseURL}
+		response, err := client.Completion(ctx, protocol.CompletionRequest{RequestID: requestID, WorkerID: workerID, Report: report})
 		if err != nil {
-			return err
+			return protocol.CompletionResponse{}, err
 		}
-		if response.Forwarded && response.Message != nil {
-			fmt.Fprintf(c.out, "completion forwarded worker=%s message=%s deliveries=%d\n", workerID, response.Message.Message.ID, len(response.Message.Deliveries))
+		if response.Message != nil {
+			missingStatePath := false
+			for _, request := range response.Message.NativeSteering {
+				missingStatePath = missingStatePath || strings.TrimSpace(request.StatePath) == ""
+			}
+			for _, request := range response.Message.NativeFollowup {
+				missingStatePath = missingStatePath || strings.TrimSpace(request.StatePath) == ""
+			}
+			if missingStatePath {
+				if status, statusErr := client.Status(ctx); statusErr == nil {
+					for i := range response.Message.NativeSteering {
+						if strings.TrimSpace(response.Message.NativeSteering[i].StatePath) == "" {
+							response.Message.NativeSteering[i].StatePath = status.StatePath
+						}
+					}
+					for i := range response.Message.NativeFollowup {
+						if strings.TrimSpace(response.Message.NativeFollowup[i].StatePath) == "" {
+							response.Message.NativeFollowup[i].StatePath = status.StatePath
+						}
+					}
+				}
+			}
 		}
-		return nil
+		return response, nil
 	}
 	result, forwarded, err := (coordination.Service{Store: store.NewJSONStore(statePath), Now: c.now}).ForwardCompletion(context.Background(), requestID, workerID, report)
 	if err != nil {
-		return err
+		return protocol.CompletionResponse{}, err
 	}
+	response := protocol.CompletionResponse{Forwarded: forwarded}
 	if forwarded {
-		fmt.Fprintf(c.out, "completion forwarded worker=%s message=%s deliveries=%d\n", workerID, result.Message.ID, len(result.Deliveries))
+		message := protocol.MessageResponse{
+			Message: result.Message, Deliveries: result.Deliveries, NativeSteering: result.NativeSteering,
+			NativeFollowup: result.NativeFollowup, Replayed: result.Replayed,
+		}
+		for i := range message.NativeSteering {
+			message.NativeSteering[i].StatePath = statePath
+		}
+		for i := range message.NativeFollowup {
+			message.NativeFollowup[i].StatePath = statePath
+		}
+		response.Message = &message
 	}
-	return nil
+	return response, nil
+}
+
+func (c cli) printCompletionResponse(workerID string, response protocol.CompletionResponse) {
+	if !response.Forwarded || response.Message == nil {
+		return
+	}
+	fmt.Fprintf(c.out, "completion forwarded worker=%s message=%s deliveries=%d\n", workerID, response.Message.Message.ID, len(response.Message.Deliveries))
+	c.printNativeCallbacks(*response.Message)
+}
+
+func (c cli) printNativeCallbacks(response protocol.MessageResponse) {
+	for _, request := range response.NativeSteering {
+		fmt.Fprintf(c.out, "native_steering_required delivery=%s recipient=%s host=%s thread=%s turn=%s\n",
+			request.DeliveryID, request.RecipientID, emptyDash(request.HostID), request.ThreadID, request.TurnID)
+		prompt, _ := json.Marshal(request.Prompt)
+		fmt.Fprintf(c.out, "  prompt=%s\n", prompt)
+		fmt.Fprintf(c.out, "  after_success=cs message confirm-steered --state %q --worker %s --thread %s --turn %s %s\n",
+			request.StatePath, request.RecipientID, request.ThreadID, request.TurnID, request.DeliveryID)
+		fmt.Fprintf(c.out, "  after_failure=cs message steering-failed --state %q --worker %s --thread %s --turn %s --error <error> %s\n",
+			request.StatePath, request.RecipientID, request.ThreadID, request.TurnID, request.DeliveryID)
+	}
+	for _, request := range response.NativeFollowup {
+		fmt.Fprintf(c.out, "native_followup_required delivery=%s recipient=%s host=%s thread=%s\n",
+			request.DeliveryID, request.RecipientID, emptyDash(request.HostID), request.ThreadID)
+		prompt, _ := json.Marshal(request.Prompt)
+		fmt.Fprintf(c.out, "  prompt=%s\n", prompt)
+		fmt.Fprintf(c.out, "  after_success=cs message confirm-followup --state %q --worker %s --thread %s %s\n",
+			request.StatePath, request.RecipientID, request.ThreadID, request.DeliveryID)
+		fmt.Fprintf(c.out, "  after_failure=cs message followup-failed --state %q --worker %s --thread %s --error <error> %s\n",
+			request.StatePath, request.RecipientID, request.ThreadID, request.DeliveryID)
+	}
 }
 
 func queuedMessagePrompt(items []store.DeliveredMessage) string {

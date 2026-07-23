@@ -10,7 +10,9 @@ func TestCapabilitiesForWorkerAreStableAcrossEngineIdentity(t *testing.T) {
 	}{
 		{name: "appserver", worker: Worker{Engine: "appserver"}, want: RuntimeCapabilities{CapabilityLiveMessage, CapabilityResume, CapabilityAutomaticCompletion}},
 		{name: "external appserver", worker: Worker{Engine: "appserver", RuntimeOwner: RuntimeOwnerExternal}, want: RuntimeCapabilities{CapabilityLiveMessage, CapabilityResume, CapabilityAutomaticCompletion, CapabilityNativeSteeringBridge}},
+		{name: "external appserver task", worker: Worker{Engine: "appserver", RuntimeOwner: RuntimeOwnerExternal, ThreadID: "thread-1"}, want: RuntimeCapabilities{CapabilityLiveMessage, CapabilityResume, CapabilityAutomaticCompletion, CapabilityNativeSteeringBridge, CapabilityNativeFollowupBridge}},
 		{name: "tracker", worker: Worker{Engine: "tracker"}, want: RuntimeCapabilities{CapabilityExternalTracker}},
+		{name: "attached tracker", worker: Worker{Engine: "tracker", ThreadID: "thread-1"}, want: RuntimeCapabilities{CapabilityExternalTracker, CapabilityNativeFollowupBridge}},
 		{name: "mock", worker: Worker{Engine: "mock"}, want: RuntimeCapabilities{CapabilityAutomaticCompletion}},
 		{name: "new engine remains protocol compatible", worker: Worker{Engine: "future-engine"}, want: RuntimeCapabilities{}},
 		{name: "managed worktree requires evidence", worker: Worker{Engine: "future-engine", Worktree: "/repo/worktree", Events: []Event{{Type: "worktree.created"}}}, want: RuntimeCapabilities{CapabilityManagedWorktree}},

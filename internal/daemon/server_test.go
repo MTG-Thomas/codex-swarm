@@ -708,6 +708,37 @@ func TestMessagesEndpointReturnsNativeBridgeForExternallyOwnedTurn(t *testing.T)
 	}
 }
 
+func TestCompletionsEndpointReturnsNativeFollowupForIdleAttachedParent(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	st := store.NewJSONStore(statePath)
+	at := time.Date(2026, 7, 22, 16, 55, 0, 0, time.UTC)
+	if err := st.SaveWorkers(
+		store.Worker{ID: "parent", Engine: "tracker", Status: store.WorkerIdle, HostID: "host-1", ThreadID: "thread-parent", CreatedAt: at, UpdatedAt: at},
+		store.Worker{ID: "child", ParentID: "parent", Engine: "tracker", Status: store.WorkerDone, Report: "tests green", CreatedAt: at, UpdatedAt: at},
+	); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"request_id":"complete-child","worker_id":"child","report":"tests green"}`
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/v1/completions", strings.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:1234"
+	rec := httptest.NewRecorder()
+	NewServer(statePath, st).Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("completion status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response protocol.CompletionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.Forwarded || response.Message == nil || len(response.Message.NativeFollowup) != 1 || len(response.Message.NativeSteering) != 0 {
+		t.Fatalf("completion response = %#v", response)
+	}
+	callback := response.Message.NativeFollowup[0]
+	if callback.StatePath != statePath || callback.HostID != "host-1" || callback.ThreadID != "thread-parent" || callback.RecipientID != "parent" || !strings.Contains(callback.Prompt, "SWARM_COMPLETION") {
+		t.Fatalf("native follow-up = %#v", callback)
+	}
+}
+
 func TestQueuedMessageSurvivesDaemonRecreation(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "state.db")
 	at := time.Date(2026, 7, 22, 14, 0, 0, 0, time.UTC)

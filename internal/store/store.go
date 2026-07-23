@@ -301,6 +301,18 @@ type NativeSteeringRequest struct {
 	Prompt      string `json:"prompt"`
 }
 
+// NativeFollowupRequest is a durable delivery that must start a new turn in
+// the destination task through the Codex host which owns that task.
+type NativeFollowupRequest struct {
+	DeliveryID  string `json:"delivery_id"`
+	MessageID   string `json:"message_id"`
+	RecipientID string `json:"recipient_id"`
+	StatePath   string `json:"state_path"`
+	HostID      string `json:"host_id,omitempty"`
+	ThreadID    string `json:"thread_id"`
+	Prompt      string `json:"prompt"`
+}
+
 // CoordinationMetrics summarizes whether durable coordination is actually in use.
 type CoordinationMetrics struct {
 	Backend                    string `json:"backend"`

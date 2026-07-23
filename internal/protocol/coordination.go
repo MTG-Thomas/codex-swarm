@@ -14,6 +14,7 @@ type MessageResponse struct {
 	Message        store.Message                 `json:"message"`
 	Deliveries     []store.Delivery              `json:"deliveries"`
 	NativeSteering []store.NativeSteeringRequest `json:"native_steering,omitempty"`
+	NativeFollowup []store.NativeFollowupRequest `json:"native_followup,omitempty"`
 	Replayed       bool                          `json:"replayed"`
 }
 
@@ -47,4 +48,11 @@ type CompletionRequest struct {
 type CompletionResponse struct {
 	Forwarded bool             `json:"forwarded"`
 	Message   *MessageResponse `json:"message,omitempty"`
+}
+
+type CloseResponse struct {
+	Worker         store.Worker       `json:"worker"`
+	ReleasedClaims []store.Claim      `json:"released_claims"`
+	Replayed       bool               `json:"replayed"`
+	Completion     CompletionResponse `json:"completion"`
 }

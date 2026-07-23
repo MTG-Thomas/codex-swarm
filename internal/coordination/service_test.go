@@ -172,6 +172,56 @@ func TestForwardCompletionCreatesParentDelivery(t *testing.T) {
 	}
 }
 
+func TestForwardCompletionReturnsNativeFollowupForIdleAttachedParentAndReplay(t *testing.T) {
+	st := testStore(t)
+	at := time.Date(2026, 7, 22, 16, 45, 0, 0, time.UTC)
+	saveWorkers(t, st,
+		store.Worker{ID: "parent", Engine: "tracker", Status: store.WorkerIdle, HostID: "desktop-local", ThreadID: "thread-parent", CreatedAt: at, UpdatedAt: at},
+		store.Worker{ID: "child", ParentID: "parent", Engine: "tracker", Status: store.WorkerDone, CreatedAt: at, UpdatedAt: at},
+	)
+	service := Service{Store: st, Now: func() time.Time { return at }}
+	result, forwarded, err := service.ForwardCompletion(context.Background(), "complete-idle-parent", "child", "tests green")
+	if err != nil || !forwarded {
+		t.Fatalf("ForwardCompletion() forwarded=%t err=%v", forwarded, err)
+	}
+	if len(result.NativeSteering) != 0 || len(result.NativeFollowup) != 1 {
+		t.Fatalf("completion callbacks = %#v", result)
+	}
+	callback := result.NativeFollowup[0]
+	if callback.DeliveryID != result.Deliveries[0].ID || callback.MessageID != result.Message.ID || callback.RecipientID != "parent" || callback.HostID != "desktop-local" || callback.ThreadID != "thread-parent" {
+		t.Fatalf("native follow-up = %#v", callback)
+	}
+	if !strings.Contains(callback.Prompt, "SWARM_COMPLETION from=child message_id="+result.Message.ID) || !strings.Contains(callback.Prompt, "tests green") {
+		t.Fatalf("native follow-up prompt = %q", callback.Prompt)
+	}
+	replayed, forwarded, err := service.ForwardCompletion(context.Background(), "complete-idle-parent", "child", "tests green")
+	if err != nil || !forwarded || !replayed.Replayed || len(replayed.NativeFollowup) != 1 || replayed.NativeFollowup[0].DeliveryID != callback.DeliveryID {
+		t.Fatalf("replayed completion = %#v forwarded=%t err=%v", replayed, forwarded, err)
+	}
+}
+
+func TestSendReturnsNativeFollowupOnlyForIdleAttachedTask(t *testing.T) {
+	for _, status := range []store.WorkerStatus{store.WorkerPending, store.WorkerRunning, store.WorkerDone, store.WorkerFailed} {
+		t.Run(string(status), func(t *testing.T) {
+			st := testStore(t)
+			at := time.Date(2026, 7, 22, 16, 50, 0, 0, time.UTC)
+			saveWorkers(t, st,
+				store.Worker{ID: "sender", Engine: "tracker", Status: store.WorkerIdle, CreatedAt: at, UpdatedAt: at},
+				store.Worker{ID: "recipient", Engine: "tracker", Status: status, ThreadID: "thread-recipient", CreatedAt: at, UpdatedAt: at},
+			)
+			result, err := (Service{Store: st, Now: func() time.Time { return at }}).Send(context.Background(), SendRequest{
+				RequestID: "non-idle-recipient-" + string(status), Kind: store.MessageDirect, From: "sender", To: "recipient", Body: "late note",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.NativeFollowup) != 0 || len(result.Deliveries) != 1 || result.Deliveries[0].State != store.DeliveryQueued {
+				t.Fatalf("%s recipient result = %#v", status, result)
+			}
+		})
+	}
+}
+
 func TestTouchCreatesBilateralWarningWithoutBlocking(t *testing.T) {
 	st := testStore(t)
 	at := time.Date(2026, 7, 21, 14, 0, 0, 0, time.UTC)

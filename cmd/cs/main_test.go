@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -244,6 +245,44 @@ func TestCLIReportFailedSetsTerminatedAt(t *testing.T) {
 	}
 	if worker.Lifecycle.Session.CompletedAt != nil {
 		t.Fatalf("CompletedAt = %v, want nil", worker.Lifecycle.Session.CompletedAt)
+	}
+}
+
+func TestForwardCompletionBackfillsNativeCallbackStatePathFromDaemonStatus(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	var calls []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/completions":
+			_ = json.NewEncoder(w).Encode(protocol.CompletionResponse{
+				Forwarded: true,
+				Message: &protocol.MessageResponse{
+					Message: store.Message{ID: "message-1"},
+					NativeFollowup: []store.NativeFollowupRequest{{
+						DeliveryID: "delivery-1", MessageID: "message-1", RecipientID: "parent",
+						HostID: "desktop-local", ThreadID: "thread-parent", Prompt: "completion",
+					}},
+				},
+			})
+		case "/status":
+			_ = json.NewEncoder(w).Encode(daemon.Status{StatePath: statePath})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	response, err := (cli{out: &bytes.Buffer{}, err: &bytes.Buffer{}}).forwardCompletion("", server.URL, "request-1", "child", "done")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Message == nil || len(response.Message.NativeFollowup) != 1 || response.Message.NativeFollowup[0].StatePath != statePath {
+		t.Fatalf("completion response = %#v", response)
+	}
+	if got, want := strings.Join(calls, ","), "POST /v1/completions,GET /status"; got != want {
+		t.Fatalf("daemon calls = %q, want %q", got, want)
 	}
 }
 
@@ -593,6 +632,112 @@ func TestCLIMessageNativeBridgeRequiresRuntimeMatchedConfirmation(t *testing.T) 
 	}
 	if len(confirmed.Delivery.History) != 3 {
 		t.Fatalf("idempotent confirmation history = %#v", confirmed.Delivery.History)
+	}
+}
+
+func TestCLIMessageNativeFollowupRequiresThreadMatchedConfirmation(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 7, 22, 17, 0, 0, 0, time.UTC)
+	state := filepath.Join(t.TempDir(), "state.db")
+	savePairWorkers(t, state, now, "MTG-Thomas/codex-swarm#callback")
+	st := store.NewJSONStore(state)
+	if _, err := st.UpdateWorker("w-to", func(worker *store.Worker) error {
+		worker.Engine = "tracker"
+		worker.HostID = "desktop-local"
+		worker.ThreadID = "thread-idle"
+		worker.ApplyStatusAt(store.WorkerIdle, now)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+	if err := c.run([]string{"message", "--json", "--state", state, "--request-id", "native-followup", "w-from", "w-to", "respond and continue"}); err != nil {
+		t.Fatal(err)
+	}
+	var response protocol.MessageResponse
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+		t.Fatalf("message JSON = %q: %v", out.String(), err)
+	}
+	if len(response.NativeSteering) != 0 || len(response.NativeFollowup) != 1 || len(response.Deliveries) != 1 || response.Deliveries[0].State != store.DeliveryQueued {
+		t.Fatalf("response = %#v", response)
+	}
+	callback := response.NativeFollowup[0]
+	if callback.StatePath != state || callback.HostID != "desktop-local" || callback.ThreadID != "thread-idle" || !strings.Contains(callback.Prompt, "respond and continue") {
+		t.Fatalf("native follow-up = %#v", callback)
+	}
+	if err := c.run([]string{"message", "confirm-followup", "--state", state, "--worker", "w-to", "--thread", "wrong-thread", callback.DeliveryID}); err == nil || !strings.Contains(err.Error(), "refuse native follow-up confirmation") {
+		t.Fatalf("wrong thread confirmation error = %v", err)
+	}
+	out.Reset()
+	failed := []string{"message", "followup-failed", "--json", "--state", state, "--worker", "w-to", "--thread", "thread-idle", "--error", "native host unavailable", callback.DeliveryID}
+	if err := c.run(failed); err != nil {
+		t.Fatal(err)
+	}
+	var delivered store.DeliveredMessage
+	if err := json.Unmarshal(out.Bytes(), &delivered); err != nil {
+		t.Fatalf("failure JSON = %q: %v", out.String(), err)
+	}
+	if delivered.Delivery.State != store.DeliveryQueued || delivered.Delivery.LastError != "native host unavailable" || len(delivered.Delivery.History) != 2 {
+		t.Fatalf("failed delivery = %#v", delivered.Delivery)
+	}
+	out.Reset()
+	confirm := []string{"message", "confirm-followup", "--json", "--state", state, "--worker", "w-to", "--thread", "thread-idle", callback.DeliveryID}
+	if err := c.run(confirm); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(out.Bytes(), &delivered); err != nil {
+		t.Fatalf("confirmation JSON = %q: %v", out.String(), err)
+	}
+	if delivered.Delivery.State != store.DeliverySteered || len(delivered.Delivery.History) != 3 {
+		t.Fatalf("confirmed delivery = %#v", delivered.Delivery)
+	}
+	out.Reset()
+	if err := c.run(confirm); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(out.Bytes(), &delivered); err != nil {
+		t.Fatal(err)
+	}
+	if len(delivered.Delivery.History) != 3 {
+		t.Fatalf("idempotent confirmation history = %#v", delivered.Delivery.History)
+	}
+}
+
+func TestCLICloseJSONReturnsIdleParentFollowup(t *testing.T) {
+	var out bytes.Buffer
+	now := time.Date(2026, 7, 22, 17, 5, 0, 0, time.UTC)
+	state := filepath.Join(t.TempDir(), "state.db")
+	st := store.NewJSONStore(state)
+	if err := st.SaveWorkers(
+		store.Worker{ID: "parent", Engine: "tracker", Status: store.WorkerIdle, HostID: "desktop-local", ThreadID: "thread-parent", CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour)},
+		store.Worker{ID: "child", ParentID: "parent", Engine: "tracker", Status: store.WorkerIdle, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour)},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveClaim(store.Claim{ID: "claim-child", WorkerID: "child", Repo: "/repo", Scope: "cmd/cs", Status: store.ClaimActive, CreatedAt: now.Add(-time.Hour), UpdatedAt: now.Add(-time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	c := cli{out: &out, err: &bytes.Buffer{}, now: func() time.Time { return now }}
+	if err := c.run([]string{"close", "--json", "--state", state, "--refresh-pr=false", "--request-id", "close-child", "--note", "tests green", "child"}); err != nil {
+		t.Fatal(err)
+	}
+	var response protocol.CloseResponse
+	if err := json.Unmarshal(out.Bytes(), &response); err != nil {
+		t.Fatalf("close JSON = %q: %v", out.String(), err)
+	}
+	if response.Worker.ID != "child" || response.Worker.Status != store.WorkerDone || len(response.ReleasedClaims) != 1 || response.ReleasedClaims[0].Status != store.ClaimReleased {
+		t.Fatalf("close response = %#v", response)
+	}
+	if !response.Completion.Forwarded || response.Completion.Message == nil || len(response.Completion.Message.NativeFollowup) != 1 {
+		t.Fatalf("completion response = %#v", response.Completion)
+	}
+	callback := response.Completion.Message.NativeFollowup[0]
+	if callback.StatePath != state || callback.RecipientID != "parent" || callback.ThreadID != "thread-parent" || !strings.Contains(callback.Prompt, "tests green") {
+		t.Fatalf("close native follow-up = %#v", callback)
+	}
+	claims, err := st.ListClaims()
+	if err != nil || len(claims) != 1 || claims[0].Status != store.ClaimReleased {
+		t.Fatalf("claims = %#v err=%v", claims, err)
 	}
 }
 

@@ -54,6 +54,7 @@ type SendResult struct {
 	Message        store.Message
 	Deliveries     []store.Delivery
 	NativeSteering []store.NativeSteeringRequest
+	NativeFollowup []store.NativeFollowupRequest
 	Replayed       bool
 }
 
@@ -249,16 +250,28 @@ func (s Service) createAndDeliver(ctx context.Context, requestID string, kind st
 		if err != nil {
 			return SendResult{}, err
 		}
-		if !needsNativeSteeringBridge(worker) {
+		if needsNativeSteeringBridge(worker) {
+			result.NativeSteering = append(result.NativeSteering, store.NativeSteeringRequest{
+				DeliveryID: delivery.ID, MessageID: saved.ID, RecipientID: worker.ID,
+				HostID: worker.HostID, ThreadID: worker.ThreadID, TurnID: worker.TurnID,
+				Prompt: formatForWorker(saved),
+			})
 			continue
 		}
-		result.NativeSteering = append(result.NativeSteering, store.NativeSteeringRequest{
-			DeliveryID: delivery.ID, MessageID: saved.ID, RecipientID: worker.ID,
-			HostID: worker.HostID, ThreadID: worker.ThreadID, TurnID: worker.TurnID,
-			Prompt: formatForWorker(saved),
-		})
+		if needsNativeFollowupBridge(worker) {
+			result.NativeFollowup = append(result.NativeFollowup, store.NativeFollowupRequest{
+				DeliveryID: delivery.ID, MessageID: saved.ID, RecipientID: worker.ID,
+				HostID: worker.HostID, ThreadID: worker.ThreadID, Prompt: formatForWorker(saved),
+			})
+		}
 	}
 	return result, nil
+}
+
+func needsNativeFollowupBridge(worker store.Worker) bool {
+	return store.CapabilitiesForWorker(worker).Has(store.CapabilityNativeFollowupBridge) &&
+		worker.Status == store.WorkerIdle &&
+		strings.TrimSpace(worker.ThreadID) != ""
 }
 
 func needsNativeSteeringBridge(worker store.Worker) bool {
