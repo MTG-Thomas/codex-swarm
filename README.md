@@ -63,9 +63,21 @@ This keeps coordination logic independent of any one agent runtime.
 
 ## Install
 
-Download the archive for your operating system from the
-[latest GitHub release](https://github.com/MTG-Thomas/codex-swarm/releases/latest),
-extract `cs` and `csd`, and place them on `PATH`.
+On Windows, download the `*-setup.exe` for your architecture from the
+[latest GitHub release](https://github.com/MTG-Thomas/codex-swarm/releases/latest)
+and run it. The installer is per-user, installs into
+`%LocalAppData%\Programs\codex-swarm`, registers with Windows Installed Apps,
+and can add that directory to your user `PATH`. Run a newer installer to
+upgrade in place; uninstall from **Settings > Apps > Installed apps**.
+
+The installer manages only `cs.exe`, `csd.exe`, and the PATH entry it created.
+It does not install or remove the optional daemon service, and it does not
+remove swarm state under `%AppData%\codex-swarm`. Manage the service explicitly
+with `csd install` or `csd uninstall`. Stop a running daemon before an upgrade
+if Windows reports that `csd.exe` is in use.
+
+For a portable Windows install, or on macOS and Linux, download the archive for
+your operating system, extract `cs` and `csd`, and place them on `PATH`.
 
 To build from source:
 
@@ -82,8 +94,8 @@ cs doctor
 ```
 
 Release archives are published for Windows, macOS, and Linux on amd64 and
-arm64. Windows executables include product and file-version metadata. They are
-not currently Authenticode-signed.
+arm64. Windows amd64 and arm64 releases also include installers. Windows
+executables and installers are not currently Authenticode-signed.
 
 ## Start coordinating work
 

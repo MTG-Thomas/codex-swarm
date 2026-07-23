@@ -4,6 +4,12 @@ All notable changes to codex-swarm are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- A per-user Inno Setup installer for Windows amd64 and arm64 releases,
+  including Installed Apps registration, optional user PATH integration,
+  in-place upgrades, and clean uninstall behavior.
+
 ## [0.7.1] - 2026-07-22
 
 ### Fixed
