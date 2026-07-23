@@ -30,12 +30,12 @@ try {
     New-Item -ItemType Directory -Path $downloadDir -Force | Out-Null
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 
-    & gh release download $tag --repo jrsoftware/issrc --pattern $assetName --dir $downloadDir
+    & gh release download $tag --repo jrsoftware/issrc --pattern $assetName --dir $downloadDir | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "gh release download failed with exit code $LASTEXITCODE."
     }
 
-    & gh release verify-asset $assetPath --repo jrsoftware/issrc
+    & gh release verify-asset $assetPath --repo jrsoftware/issrc | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "GitHub attestation verification failed with exit code $LASTEXITCODE."
     }
