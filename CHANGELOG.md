@@ -4,6 +4,14 @@ All notable changes to codex-swarm are documented here.
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-07-23
+
+### Fixed
+
+- New SQLite coordination ledgers use the accurate `state.db` filename.
+  Existing `state.json` ledgers remain selected until a controlled migration,
+  and `state.db` wins deterministically when both paths exist.
+
 ## [0.7.2] - 2026-07-23
 
 ### Added
