@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/MTG-Thomas/codex-swarm/internal/config"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -157,5 +158,5 @@ func windowsServiceArgs(processArgs, startArgs []string) []string {
 
 func defaultServiceStatePath() string {
 	programData := envDefault("ProgramData", `C:\ProgramData`)
-	return filepath.Join(programData, "codex-swarm", "state.json")
+	return config.StatePathIn(filepath.Join(programData, "codex-swarm"))
 }

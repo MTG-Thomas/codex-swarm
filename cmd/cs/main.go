@@ -18,6 +18,7 @@ import (
 
 	"github.com/MTG-Thomas/codex-swarm/internal/appserver"
 	bf "github.com/MTG-Thomas/codex-swarm/internal/bifrost"
+	"github.com/MTG-Thomas/codex-swarm/internal/config"
 	"github.com/MTG-Thomas/codex-swarm/internal/coordination"
 	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
 	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
@@ -1790,13 +1791,7 @@ func defaultStatePath() string {
 	if value := os.Getenv("CODEX_SWARM_STATE"); value != "" {
 		return value
 	}
-	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
-		return filepath.Join(dir, "codex-swarm", "state.json")
-	}
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		return filepath.Join(home, ".codex-swarm", "state.json")
-	}
-	return filepath.Join(".codex-swarm", "state.json")
+	return config.DefaultStatePath()
 }
 
 func mockSummary(prompt string) string {

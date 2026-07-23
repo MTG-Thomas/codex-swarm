@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"time"
 
+	"github.com/MTG-Thomas/codex-swarm/internal/config"
 	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
 	"github.com/MTG-Thomas/codex-swarm/internal/version"
 )
@@ -91,11 +91,5 @@ func envDefault(name, fallback string) string {
 }
 
 func defaultStatePath() string {
-	if dir, err := os.UserConfigDir(); err == nil && dir != "" {
-		return filepath.Join(dir, "codex-swarm", "state.json")
-	}
-	if home, err := os.UserHomeDir(); err == nil && home != "" {
-		return filepath.Join(home, ".codex-swarm", "state.json")
-	}
-	return filepath.Join(".codex-swarm", "state.json")
+	return config.DefaultStatePath()
 }

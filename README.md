@@ -45,10 +45,12 @@ The `cs` CLI is the normal operator surface. `csd` keeps an optional loopback
 service available for status, durable message delivery, file-touch events,
 completion forwarding, readiness, and explicit idempotent dispatch.
 
-The machine-global ledger is authoritative. Its compatibility filename is
-`state.json`, but current state files are SQLite databases. On Windows the
-default is `%AppData%\codex-swarm\state.json`. Use `--state` or
-`CODEX_SWARM_STATE` only when an intentionally isolated ledger is required.
+The machine-global ledger is authoritative and stored in SQLite. New
+installations use `%AppData%\codex-swarm\state.db` on Windows. For a safe
+upgrade, an existing `state.json` ledger remains the default until it is
+migrated while the daemon is stopped; if both files exist, `state.db` wins.
+Use `--state` or `CODEX_SWARM_STATE` only when an intentionally isolated ledger
+is required.
 
 Every worker retains its engine identity, while runtime behavior is described
 by stable capabilities:
