@@ -9,7 +9,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/MTG-Thomas/codex-swarm/internal/claims"
@@ -57,12 +59,28 @@ type coordinationStore interface {
 	ListMessages(string) ([]store.DeliveredMessage, error)
 }
 
+type codexTaskStore interface {
+	IngestCodexTasks(store.CodexTaskIngestRequest) (store.CodexTaskIngestResult, error)
+	AddCodexTaskCollectionPage(store.CodexTaskCollectionPageRequest) (store.CodexTaskCollectionPageResult, error)
+	FinishCodexTaskCollection(store.CodexTaskCollectionFinishRequest) (store.CodexTaskCollectionFinishResult, error)
+	GetCodexTaskCollectionStatus(string, string) (store.CodexTaskCollectionStatus, error)
+	ListCodexTasks(store.CodexTaskListFilter) (store.CodexTaskPage, error)
+	CodexTaskStats(*time.Time) (store.CodexTaskStats, error)
+}
+
 // Server exposes read-only daemon HTTP endpoints over swarm state.
 type Server struct {
 	store         readStore
 	statePath     string
 	issueProvider readiness.IssueMetadataProvider
 	steerer       coordination.TurnSteerer
+	runtimeCtx    context.Context
+	runtimeCancel context.CancelFunc
+	spawnRunner   AppserverTurnRunner
+	launchMu      sync.Mutex
+	launches      map[string]*appserverLaunch
+	spawnDisabled string
+	runtimeWG     sync.WaitGroup
 }
 
 // NewServer builds a read-only daemon server over the provided store.
@@ -75,11 +93,32 @@ func NewServer(statePath string, st readStore) *Server {
 }
 
 func NewServerWithIssueProvider(statePath string, st readStore, provider readiness.IssueMetadataProvider) *Server {
+	runtimeCtx, runtimeCancel := context.WithCancel(context.Background())
 	return &Server{
 		store:         st,
 		statePath:     statePath,
 		issueProvider: provider,
+		runtimeCtx:    runtimeCtx,
+		runtimeCancel: runtimeCancel,
+		launches:      map[string]*appserverLaunch{},
+		spawnDisabled: privilegedRuntimeReason(),
 	}
+}
+
+// SetAppserverTurnRunner installs a deterministic daemon-owned runner. It is
+// intended for tests and alternate runtimes configured before serving.
+func (s *Server) SetAppserverTurnRunner(runner AppserverTurnRunner) {
+	s.spawnRunner = runner
+	// A deterministic injected runner cannot launch a real privileged process.
+	// Clearing this guard keeps unit tests portable in root-owned containers.
+	s.spawnDisabled = ""
+}
+
+// Close stops daemon-owned app-server processes without converting their
+// already-persisted task identities into false failures.
+func (s *Server) Close() {
+	s.runtimeCancel()
+	s.runtimeWG.Wait()
 }
 
 // SetTurnSteerer installs an optional daemon-owned runtime. By default active
@@ -101,9 +140,151 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/messages", s.handleMessages)
 	mux.HandleFunc("/v1/touches", s.handleTouches)
 	mux.HandleFunc("/v1/completions", s.handleCompletions)
+	mux.HandleFunc("/v1/codex-tasks", s.handleCodexTasks)
+	mux.HandleFunc("/v1/codex-tasks/ingest", s.handleCodexTaskIngest)
+	mux.HandleFunc("/v1/codex-tasks/collections/pages", s.handleCodexTaskCollectionPage)
+	mux.HandleFunc("/v1/codex-tasks/collections/finish", s.handleCodexTaskCollectionFinish)
+	mux.HandleFunc("/v1/codex-tasks/collections/status", s.handleCodexTaskCollectionStatus)
+	mux.HandleFunc("/v1/codex-tasks/status", s.handleCodexTaskStatus)
+	mux.HandleFunc("/v1/appserver/spawns", s.handleAppserverSpawn)
 	mux.HandleFunc("/v1/dispatch", s.handleDispatch)
 	mux.HandleFunc("/v1/status", s.handleLegacyStatus)
 	return mux
+}
+
+func (s *Server) codexTasks() (codexTaskStore, error) {
+	st, ok := s.store.(codexTaskStore)
+	if !ok {
+		return nil, errors.New("store does not support the Codex task index")
+	}
+	return st, nil
+}
+
+func (s *Server) handleCodexTasks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, r)
+		return
+	}
+	st, err := s.codexTasks()
+	if err != nil {
+		writeRouteError(w, r, http.StatusNotImplemented, "task_index_unavailable", err.Error())
+		return
+	}
+	filter, err := codexTaskFilterFromQuery(r.URL.Query())
+	if err != nil {
+		writeRouteError(w, r, http.StatusBadRequest, "invalid_filter", err.Error())
+		return
+	}
+	page, err := st.ListCodexTasks(filter)
+	if err != nil {
+		writeRouteError(w, r, http.StatusBadRequest, "task_list_failed", err.Error())
+		return
+	}
+	writeJSON(w, protocol.CodexTaskListResponse(page))
+}
+
+func (s *Server) handleCodexTaskIngest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w, r)
+		return
+	}
+	if !isLoopbackRemote(r.RemoteAddr) {
+		writeRouteError(w, r, http.StatusForbidden, "loopback_required", "Codex task ingestion requires loopback daemon access")
+		return
+	}
+	st, err := s.codexTasks()
+	if err != nil {
+		writeRouteError(w, r, http.StatusNotImplemented, "task_index_unavailable", err.Error())
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4<<20)
+	var request protocol.CodexTaskIngestRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeRouteError(w, r, http.StatusBadRequest, "invalid_json", "parse Codex task snapshot: "+err.Error())
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeRouteError(w, r, http.StatusBadRequest, "invalid_json", "Codex task snapshot must contain one JSON document")
+		return
+	}
+	result, err := st.IngestCodexTasks(request)
+	if err != nil {
+		status, code := http.StatusBadRequest, "task_ingest_failed"
+		if errors.Is(err, store.ErrCodexTaskReplayMismatch) {
+			status, code = http.StatusConflict, "request_replay_mismatch"
+		}
+		writeRouteError(w, r, status, code, err.Error())
+		return
+	}
+	writeJSON(w, protocol.CodexTaskIngestResponse(result))
+}
+
+func (s *Server) handleCodexTaskStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w, r)
+		return
+	}
+	st, err := s.codexTasks()
+	if err != nil {
+		writeRouteError(w, r, http.StatusNotImplemented, "task_index_unavailable", err.Error())
+		return
+	}
+	var staleBefore *time.Time
+	if value := strings.TrimSpace(r.URL.Query().Get("stale_before")); value != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			writeRouteError(w, r, http.StatusBadRequest, "invalid_filter", "stale_before must be RFC3339")
+			return
+		}
+		parsed = parsed.UTC()
+		staleBefore = &parsed
+	}
+	stats, err := st.CodexTaskStats(staleBefore)
+	if err != nil {
+		writeRouteError(w, r, http.StatusInternalServerError, "task_status_failed", err.Error())
+		return
+	}
+	writeJSON(w, protocol.CodexTaskStatusResponse(stats))
+}
+
+func codexTaskFilterFromQuery(query url.Values) (store.CodexTaskListFilter, error) {
+	filter := store.CodexTaskListFilter{
+		HostID: strings.TrimSpace(query.Get("host")), Project: strings.TrimSpace(query.Get("project")),
+		Status: strings.TrimSpace(query.Get("status")), Source: strings.TrimSpace(query.Get("source")),
+		Tier: strings.ToUpper(strings.TrimSpace(query.Get("tier"))), Cursor: strings.TrimSpace(query.Get("cursor")),
+	}
+	if value := strings.TrimSpace(query.Get("limit")); value != "" {
+		limit, err := strconv.Atoi(value)
+		if err != nil {
+			return filter, errors.New("limit must be an integer")
+		}
+		filter.Limit = limit
+	}
+	if value := strings.TrimSpace(query.Get("unread")); value != "" {
+		unread, err := strconv.ParseBool(value)
+		if err != nil {
+			return filter, errors.New("unread must be true or false")
+		}
+		filter.Unread = &unread
+	}
+	if value := strings.TrimSpace(query.Get("include_tombstoned")); value != "" {
+		include, err := strconv.ParseBool(value)
+		if err != nil {
+			return filter, errors.New("include_tombstoned must be true or false")
+		}
+		filter.IncludeTombstoned = include
+	}
+	if value := strings.TrimSpace(query.Get("stale_before")); value != "" {
+		at, err := time.Parse(time.RFC3339Nano, value)
+		if err != nil {
+			return filter, errors.New("stale_before must be RFC3339")
+		}
+		at = at.UTC()
+		filter.StaleBefore = &at
+	}
+	return filter, nil
 }
 
 func (s *Server) coordinationService() (coordination.Service, coordinationStore, error) {
@@ -290,6 +471,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		status.DeliveredMessages = metrics.DeliveredMessages
 		status.RecentTouches = metrics.RecentTouches
 		status.ConflictMessages = metrics.ConflictMessages
+	}
+	if taskSource, ok := s.store.(codexTaskStore); ok {
+		stats, err := taskSource.CodexTaskStats(nil)
+		if err != nil {
+			writeRouteError(w, r, http.StatusInternalServerError, "task_status_failed", err.Error())
+			return
+		}
+		status.CodexTaskCount = stats.Total
 	}
 	writeJSON(w, status)
 }
@@ -612,6 +801,17 @@ func isLegacyFallbackStatus(err error) bool {
 	return errors.As(err, &status) && (status.StatusCode == http.StatusNotFound || status.StatusCode == http.StatusNotImplemented)
 }
 
+// AppserverSpawnNeedsCallerRuntime reports only failures that prove the daemon
+// did not accept a spawn. Transport failures after POST are intentionally not
+// safe to retry because the original daemon may still be creating the task.
+func AppserverSpawnNeedsCallerRuntime(err error) bool {
+	var status statusError
+	if !errors.As(err, &status) {
+		return false
+	}
+	return status.StatusCode == http.StatusNotFound || status.StatusCode == http.StatusNotImplemented || status.StatusCode == http.StatusServiceUnavailable
+}
+
 // Claims returns claims and conflict summaries from the daemon.
 func (c Client) Claims(ctx context.Context) (ClaimsResponse, error) {
 	var claimList ClaimsResponse
@@ -639,6 +839,26 @@ func (c Client) Dispatch(ctx context.Context, request DispatchRequest) (Dispatch
 		return DispatchResponse{}, err
 	}
 	return response, nil
+}
+
+// SpawnAppserver transfers one persisted worker's first turn to csd and
+// returns after csd has durably recorded the task identity.
+func (c Client) SpawnAppserver(ctx context.Context, request protocol.AppserverSpawnRequest) (protocol.AppserverSpawnResponse, error) {
+	// Unlike read-only daemon calls, task creation may legitimately take longer
+	// than ten seconds to initialize Codex. The caller's context is the sole
+	// request deadline unless an explicit HTTPClient was supplied.
+	if c.HTTPClient == nil {
+		c.HTTPClient = defaultAppserverHTTPClient()
+	}
+	var response protocol.AppserverSpawnResponse
+	if err := c.post(ctx, "/v1/appserver/spawns", request, &response); err != nil {
+		return protocol.AppserverSpawnResponse{}, err
+	}
+	return response, nil
+}
+
+func defaultAppserverHTTPClient() *http.Client {
+	return &http.Client{}
 }
 
 // Message routes a DM or subtree broadcast through the daemon courier.
@@ -675,6 +895,73 @@ func (c Client) Completion(ctx context.Context, request protocol.CompletionReque
 	var response protocol.CompletionResponse
 	if err := c.post(ctx, "/v1/completions", request, &response); err != nil {
 		return protocol.CompletionResponse{}, err
+	}
+	return response, nil
+}
+
+// CodexTasks reads one stable page from the durable Codex task discovery index.
+func (c Client) CodexTasks(ctx context.Context, filter store.CodexTaskListFilter) (protocol.CodexTaskListResponse, error) {
+	var response protocol.CodexTaskListResponse
+	query := url.Values{}
+	if filter.HostID != "" {
+		query.Set("host", filter.HostID)
+	}
+	if filter.Project != "" {
+		query.Set("project", filter.Project)
+	}
+	if filter.Status != "" {
+		query.Set("status", filter.Status)
+	}
+	if filter.Source != "" {
+		query.Set("source", filter.Source)
+	}
+	if filter.Tier != "" {
+		query.Set("tier", filter.Tier)
+	}
+	if filter.Cursor != "" {
+		query.Set("cursor", filter.Cursor)
+	}
+	if filter.Limit != 0 {
+		query.Set("limit", strconv.Itoa(filter.Limit))
+	}
+	if filter.Unread != nil {
+		query.Set("unread", strconv.FormatBool(*filter.Unread))
+	}
+	if filter.IncludeTombstoned {
+		query.Set("include_tombstoned", "true")
+	}
+	if filter.StaleBefore != nil {
+		query.Set("stale_before", filter.StaleBefore.UTC().Format(time.RFC3339Nano))
+	}
+	path := "/v1/codex-tasks"
+	if encoded := query.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	if err := c.get(ctx, path, &response); err != nil {
+		return protocol.CodexTaskListResponse{}, err
+	}
+	return response, nil
+}
+
+// IngestCodexTasks submits one explicit metadata-only host snapshot.
+func (c Client) IngestCodexTasks(ctx context.Context, request protocol.CodexTaskIngestRequest) (protocol.CodexTaskIngestResponse, error) {
+	var response protocol.CodexTaskIngestResponse
+	if err := c.post(ctx, "/v1/codex-tasks/ingest", request, &response); err != nil {
+		return protocol.CodexTaskIngestResponse{}, err
+	}
+	return response, nil
+}
+
+// CodexTaskStatus summarizes the durable discovery index.
+func (c Client) CodexTaskStatus(ctx context.Context, staleBefore *time.Time) (protocol.CodexTaskStatusResponse, error) {
+	var response protocol.CodexTaskStatusResponse
+	path := "/v1/codex-tasks/status"
+	if staleBefore != nil {
+		query := url.Values{"stale_before": []string{staleBefore.UTC().Format(time.RFC3339Nano)}}
+		path += "?" + query.Encode()
+	}
+	if err := c.get(ctx, path, &response); err != nil {
+		return protocol.CodexTaskStatusResponse{}, err
 	}
 	return response, nil
 }

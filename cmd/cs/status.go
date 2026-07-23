@@ -137,6 +137,11 @@ func (c cli) readWorkerStatus(statePath, daemonURL string) (protocol.Status, []p
 		MessageCount: metrics.MessageCount, QueuedMessages: metrics.QueuedMessages, SteeredMessages: metrics.SteeredMessages,
 		DeliveredMessages: metrics.DeliveredMessages, RecentTouches: metrics.RecentTouches, ConflictMessages: metrics.ConflictMessages,
 	}
+	if taskStats, taskErr := st.CodexTaskStats(nil); taskErr != nil {
+		return protocol.Status{}, nil, taskErr
+	} else {
+		status.CodexTaskCount = taskStats.Total
+	}
 	return status, summarizeStatusWorkers(workers), nil
 }
 

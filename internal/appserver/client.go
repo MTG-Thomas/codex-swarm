@@ -683,7 +683,7 @@ func (r Runner) runTurn(ctx context.Context, cwd, threadID, prompt string, obser
 		}},
 	})
 	if err != nil {
-		return RunResult{}, err
+		return RunResult{ThreadID: threadID, Status: "threadStarted"}, err
 	}
 	started := RunResult{ThreadID: threadID, TurnID: turn.Turn.ID, Status: turn.Turn.Status}
 	if observer != nil {

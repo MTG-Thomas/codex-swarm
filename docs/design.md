@@ -32,8 +32,11 @@ delivery and inspection surface; it does not become an arbitrary remote shell.
 
 The machine-global SQLite store is authoritative for workers, capabilities,
 claims, messages, events, gates, issue and PR links, and lifecycle state. The
-historical default filename remains `state.json` for compatibility. Migration
-retains a legacy JSON copy with a `.legacy.json` suffix.
+default filename is `state.db`. Existing installations continue to select a
+legacy `state.json` database when `state.db` is absent, avoiding an unsafe
+rename of an open SQLite/WAL database. If both paths exist, `state.db` is
+authoritative. The older JSON-to-SQLite content migration retains a legacy JSON
+copy with a `.legacy.json` suffix.
 
 Other systems keep their own authority:
 
@@ -43,6 +46,47 @@ Other systems keep their own authority:
   compare-and-swap decisions.
 - Remote SSH hosts own their Git and Codex credentials.
 - Codex app-server owns its threads, turns, and runtime events.
+
+The Codex task index is a durable discovery cache, not lifecycle authority.
+Codex hosts explicitly ingest bounded metadata snapshots. Stable host/thread
+identity, labels, paths, observed status and unread state, source timestamps,
+last-seen state, and opaque wait cursors remain discoverable after the task
+falls outside the host's current listing window. Prompt and response bodies are
+not part of this schema. Coordinator-authored P0-P3 classification, outcome,
+unresolved-loop, operator-decision, and next-action summaries may be retained
+without copying task messages. A missing task is recorded only from a host-declared
+complete snapshot; absence from a bounded window is not completion, deletion,
+or even evidence that the task is unavailable.
+
+The preferred recurring-ingestion seam is a host-owned, two-phase page
+collector. The Codex host calls its own discovery tool and stages only the
+returned metadata; codex-swarm never opens a competing app-server connection
+or reads private session history. A durable observation manifest fixes host,
+source, and observation time. Independently replayable pages preserve opaque
+cursor continuity across coordinator interruptions. Finalization validates the
+page chain and atomically feeds the existing snapshot ingestion transaction.
+Only an exhausted collection explicitly finalized with complete coverage can
+mark unseen records missing. Task list and status endpoints remain immediate,
+nonblocking projections over the resulting index, while compact collection
+status exposes the next page and exact opaque cursor needed after a restart.
+
+Host-observed task status does not derive from an attached swarm worker. For a
+`cs`-spawned app-server worker, the CLI persists the worker and transfers the
+first turn to `csd`; the daemon returns durable host, thread, turn, and
+worktree readback before continuing the turn asynchronously. Request timeout
+is not a task failure, and idempotent replay cannot create a second task.
+If the installed daemon runs as root or Windows LocalSystem, its mutation route
+refuses the launch. The CLI instead starts a detached, listener-free `csd`
+runtime under the caller's identity so Codex credentials and process authority
+remain user-owned.
+
+Logical operations are also derived rather than persisted. A normalized GitHub
+issue reference is the strongest key; otherwise workers inherit the root
+parent worker key. Claims can use their own explicit issue link, while
+messages, gates, pull-request state, and indexed Codex tasks join only through
+their existing worker or exact runtime identity. Broken ancestry and unlinked
+records stay visible without receiving a fabricated key. This projection is a
+protocol seam for operation-level evidence and decisions, not a new authority.
 
 Swarm records identity, warnings, links, and returned evidence. It does not
 silently override a target system's decision.
@@ -72,7 +116,8 @@ ownership. App-server workers record host, thread, turn, and runtime owner. A
 externally owned task exposes a native-steering request for its owning Codex
 host instead of opening a competing connection. Remote app-server workers
 retain the same coordination model while their checkout and Codex process live
-over SSH.
+over SSH. Daemon shutdown detaches an already-persisted task as resumable
+instead of converting process cancellation into a false terminal failure.
 
 ## State and events
 
@@ -80,6 +125,39 @@ SQLite transactions preserve worker lifecycle, normalized messages and
 deliveries, append-only delivery transitions, claims, recent file touches,
 gates, and event envelopes. Store
 mutations must be atomic and safe under concurrent CLI and daemon access.
+
+Logical operations are deterministic projections over those authoritative
+records, not another persisted ledger. An issue-backed lineage uses its
+case-normalized issue reference as the operation key; otherwise a healthy
+lineage uses its root worker ID. Missing parents, parent cycles, invalid issue
+references, and unlinked records remain visible without a fabricated fallback.
+
+Operator decisions are the narrow persisted complement to that projection.
+They retain an optional operation key, repository and issue references,
+summary, rationale, bounded evidence references, dissent, author worker, and
+provenance gaps. Recording and superseding require idempotency request IDs.
+Supersession inserts a successor and timestamps the prior decision in one
+SQLite transaction, preserving history and leaving one current successor.
+Local evidence references are checked at write time; external references are
+not fetched. Decision storage does not index prompts, transcripts, responses,
+or tool output.
+
+The task index uses normalized SQLite rows because host, status, unread,
+staleness, and project filters plus keyset pagination are proven query needs.
+Snapshot ingestion has its own durable request-ID replay table. Reusing a
+request ID with different normalized metadata is rejected. The replay table is
+bounded to the latest 5,000 ingests so a long-running heartbeat cannot grow it
+without limit. Seen, missing, and tombstoned transitions share a durable
+observation-time/request-ID watermark, while coordinator classification has a
+separate classification-time/request-ID watermark; late snapshots cannot
+regress either state machine.
+
+Collector manifests and page fingerprints make host retries independently
+idempotent before and after finalization. Finalized page payloads are compacted
+and old finalized manifests are bounded with the same retention intent as
+ingest replays. An abandoned collection has no effect on indexed task state;
+open collections use server receipt time for seven-day cleanup and a hard cap
+of 1,000 so a loopback producer cannot grow staging without bound.
 
 Worker snapshots are deterministic handoff artifacts. Transcripts expose the
 durable event timeline. Work packets combine worker identity, repository,
@@ -146,6 +224,11 @@ without an explicit operator action.
 Broad daemon surfaces are read-only. Mutation routes remain loopback-only,
 small, typed, and idempotent. API contracts shared outside handlers live in
 `internal/protocol`; versioned mutation paths return typed JSON errors.
+
+`GET /v1/codex-tasks` and `GET /v1/codex-tasks/status` expose the discovery
+cache. `POST /v1/codex-tasks/ingest` is the only task-index mutation: it accepts
+a bounded metadata-only snapshot, requires loopback access and a request ID,
+and does not start Codex or scrape proprietary session storage.
 
 The daemon's message route is queue-capable but intentionally does not launch
 Codex processes. Native steering of an external task belongs to the Codex host

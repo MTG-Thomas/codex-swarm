@@ -167,3 +167,25 @@ jobs:
           if (Get-Service -Name $serviceName -ErrorAction SilentlyContinue) {
             throw "service still exists after uninstall"
           }
+
+      - name: Windows installer smoke
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $makensis = ./scripts/bootstrap-nsis.ps1 -InstallDir (Join-Path $env:RUNNER_TEMP 'nsis')
+          $outputDir = Join-Path $env:RUNNER_TEMP 'installer-output'
+          New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
+          & $makensis `
+            '/DAPP_VERSION=0.0.0-ci' `
+            '/DAPP_VERSION_NUMERIC=0.0.0.0' `
+            '/DAPP_ARCH=amd64' `
+            "/DSOURCE_DIR=$env:GITHUB_WORKSPACE" `
+            "/DOUTPUT_DIR=$outputDir" `
+            '/DAPP_ID_SUFFIX=.ci' `
+            installer/codex-swarm.nsi
+          if ($LASTEXITCODE -ne 0) {
+            throw "makensis failed with exit code $LASTEXITCODE"
+          }
+          ./scripts/test-windows-installer.ps1 `
+            -InstallerPath (Join-Path $outputDir 'codex-swarm-v0.0.0-ci-windows-amd64-setup.exe')

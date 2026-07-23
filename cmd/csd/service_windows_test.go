@@ -8,16 +8,18 @@ import (
 )
 
 func TestWindowsServiceDefaultStatePathUsesProgramData(t *testing.T) {
-	t.Setenv("ProgramData", `C:\ProgramData`)
+	programData := t.TempDir()
+	t.Setenv("ProgramData", programData)
 	got := defaultServiceStatePath()
-	want := filepath.Join(`C:\ProgramData`, "codex-swarm", "state.json")
+	want := filepath.Join(programData, "codex-swarm", "state.db")
 	if got != want {
 		t.Fatalf("defaultServiceStatePath() = %q, want %q", got, want)
 	}
 }
 
 func TestWindowsServiceServeOptionsDefaultToProgramData(t *testing.T) {
-	t.Setenv("ProgramData", `C:\ProgramData`)
+	programData := t.TempDir()
+	t.Setenv("ProgramData", programData)
 	addr, state, err := serveOptionsWithDefaultState(nil, defaultServiceStatePath())
 	if err != nil {
 		t.Fatalf("serveOptionsWithDefaultState() error = %v", err)
@@ -25,7 +27,7 @@ func TestWindowsServiceServeOptionsDefaultToProgramData(t *testing.T) {
 	if addr != "127.0.0.1:8787" {
 		t.Fatalf("addr = %q, want default daemon address", addr)
 	}
-	want := filepath.Join(`C:\ProgramData`, "codex-swarm", "state.json")
+	want := filepath.Join(programData, "codex-swarm", "state.db")
 	if state != want {
 		t.Fatalf("state = %q, want %q", state, want)
 	}

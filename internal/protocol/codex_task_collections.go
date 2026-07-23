@@ -1,0 +1,10 @@
+package protocol
+
+import "github.com/MTG-Thomas/codex-swarm/internal/store"
+
+type CodexTaskHostObservation = store.CodexTaskHostObservation
+type CodexTaskCollectionPageRequest = store.CodexTaskCollectionPageRequest
+type CodexTaskCollectionPageResponse = store.CodexTaskCollectionPageResult
+type CodexTaskCollectionFinishRequest = store.CodexTaskCollectionFinishRequest
+type CodexTaskCollectionFinishResponse = store.CodexTaskCollectionFinishResult
+type CodexTaskCollectionStatusResponse = store.CodexTaskCollectionStatus

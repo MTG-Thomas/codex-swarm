@@ -4,11 +4,74 @@ All notable changes to codex-swarm are documented here.
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-07-23
+
+### Fixed
+
+- New SQLite coordination ledgers use the accurate `state.db` filename.
+  Existing `state.json` ledgers remain selected until a controlled migration,
+  and `state.db` wins deterministically when both paths exist.
+
+## [0.7.2] - 2026-07-23
+
+### Added
+
+- A per-user NSIS installer for Windows amd64 and arm64 releases,
+  including Installed Apps registration, optional user PATH integration,
+  in-place upgrades, and clean uninstall behavior.
+
+## [0.7.1] - 2026-07-22
+
+### Fixed
+
+- Detached caller-owned app-server runtimes no longer inherit the spawning
+  CLI's stderr pipe. On Windows this allows `cs spawn --engine appserver` to
+  return after durable task identity is recorded instead of remaining blocked
+  until the first turn completes.
+
+## [0.7.0] - 2026-07-22
+
 ### Added
 
 - `cs attention` derives a scriptable human or JSON open-loop view from the
   authoritative SQLite records for queued messages, blocked claims, stale
   workers, validator rejections, failed gates, and pull-request next actions.
+- `cs operation list|show` derives stable issue-first or root-worker operation
+  keys across workers, claims, message deliveries, gate evidence, recorded pull
+  requests, and linked Codex tasks, with keyless degraded records for broken
+  ancestry or unsupported links.
+- `cs decision record|list|show|supersede` preserves explicit rationale,
+  evidence references, dissent, author identity, provenance gaps, and atomic
+  supersession history against the derived logical-operation scope.
+- `cs tasks ingest|list|status` maintains a durable, host-scoped Codex task
+  index with stable pagination, unread and lifecycle metadata, coordinator
+  classifications, and explicit missing or tombstone state.
+- `cs tasks collect page|status|finish` gives each Codex host a resumable,
+  idempotent way to contribute paged task snapshots without starting another
+  app-server process or inferring task lifecycle.
+- Daemon-owned app-server spawn: `cs spawn --engine appserver` now returns after
+  durable host, thread, turn, and worktree readback while `csd` continues the
+  first turn and reports completion asynchronously.
+- Privileged daemons refuse to launch Codex. When the installed daemon runs as
+  Windows LocalSystem or root, `cs` uses a detached, listener-free `csd`
+  runtime under the caller's identity and sends the prompt over stdin.
+
+### Fixed
+
+- A caller timeout no longer marks an already-created Codex task failed.
+  Worker-bound replay returns the original task identity and refuses prompt
+  changes instead of creating a duplicate task.
+- Daemon shutdown records an active app-server task as detached and resumable
+  rather than treating runtime cancellation as a terminal task failure.
+- A closed parent response pipe no longer cancels a detached app-server first
+  turn after durable task identity has been recorded.
+
+### Security
+
+- GitHub Actions are pinned to canonical commit SHAs, with their tag targets
+  and upstream provenance documented and verified before this release.
+- Task-collection status readback now enforces the same loopback-only boundary
+  as collection page and finish mutations.
 
 ## [0.6.1] - 2026-07-22
 

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -144,6 +145,66 @@ func (s *JSONStore) ListMessages(recipientID string) ([]DeliveredMessage, error)
 		return nil
 	})
 	return messages, err
+}
+
+// ListAllMessages returns every durable message delivery newest first. A
+// message with multiple recipients appears once per delivery because delivery
+// state is recipient-specific.
+func (s *JSONStore) ListAllMessages() ([]DeliveredMessage, error) {
+	var messages []DeliveredMessage
+	err := s.withStateLock(func() error {
+		var err error
+		messages, err = listAllMessages(s.tx)
+		return err
+	})
+	return messages, err
+}
+
+func listAllMessages(q sqlExecutor) (messages []DeliveredMessage, err error) {
+	rows, err := q.Query(`SELECT m.id,m.request_id,m.kind,m.sender,m.body,m.created_at,
+			d.id,d.recipient_id,d.state,d.last_error,d.created_at,d.updated_at
+			FROM message_deliveries d JOIN messages m ON m.id=d.message_id
+			ORDER BY m.created_at DESC,d.id`)
+	if err != nil {
+		return nil, fmt.Errorf("list all messages: %w", err)
+	}
+	for rows.Next() {
+		var item DeliveredMessage
+		var messageCreated, deliveryCreated, updated string
+		if err := rows.Scan(&item.Message.ID, &item.Message.RequestID, &item.Message.Kind, &item.Message.From, &item.Message.Body, &messageCreated,
+			&item.Delivery.ID, &item.Delivery.RecipientID, &item.Delivery.State, &item.Delivery.LastError, &deliveryCreated, &updated); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		item.Delivery.MessageID = item.Message.ID
+		if item.Message.CreatedAt, err = time.Parse(time.RFC3339Nano, messageCreated); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		if item.Delivery.CreatedAt, err = time.Parse(time.RFC3339Nano, deliveryCreated); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		if item.Delivery.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		messages = append(messages, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	for i := range messages {
+		messages[i].Delivery.History, err = listDeliveryEvents(q, messages[i].Delivery.ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return messages, nil
 }
 
 // ListQueuedMessages returns the messages waiting for a worker's next turn.
@@ -399,11 +460,72 @@ func messageFingerprint(message Message, recipients []string) string {
 }
 
 func pathKey(value string) string {
-	key := filepath.ToSlash(filepath.Clean(strings.TrimSpace(value)))
-	if runtime.GOOS == "windows" {
-		return strings.ToLower(key)
+	value = strings.TrimSpace(value)
+	windowsPath := runtime.GOOS == "windows" || looksLikeWindowsPath(value)
+	if windowsPath {
+		// State can be read on a different host than the one that produced it.
+		// Clean the path beneath its Windows volume so drive and UNC roots
+		// remain distinct and .. cannot traverse above the volume boundary.
+		return strings.ToLower(cleanWindowsPath(value))
 	}
+	key := filepath.ToSlash(filepath.Clean(value))
 	return key
+}
+
+func cleanWindowsPath(value string) string {
+	value = strings.ReplaceAll(value, `\`, "/")
+	if len(value) >= 2 && value[1] == ':' {
+		volume, rest := value[:2], value[2:]
+		if rest == "" {
+			return volume + "."
+		}
+		return volume + path.Clean(rest)
+	}
+	if volume, rest, ok := splitUNCVolume(value); ok {
+		if rest == "" {
+			return volume
+		}
+		return volume + path.Clean(rest)
+	}
+	return path.Clean(value)
+}
+
+func splitUNCVolume(value string) (string, string, bool) {
+	if len(value) >= 8 && (strings.EqualFold(value[:8], "//?/UNC/") || strings.EqualFold(value[:8], "//./UNC/")) {
+		return splitUNCShare(value[:8], value[8:])
+	}
+	if !strings.HasPrefix(value, "//") {
+		return "", "", false
+	}
+	return splitUNCShare("//", value[2:])
+}
+
+func splitUNCShare(prefix, tail string) (string, string, bool) {
+	hostEnd := strings.IndexByte(tail, '/')
+	if hostEnd <= 0 {
+		return "", "", false
+	}
+	host, afterHost := tail[:hostEnd], tail[hostEnd+1:]
+	shareEnd := strings.IndexByte(afterHost, '/')
+	if shareEnd < 0 {
+		if afterHost == "" {
+			return "", "", false
+		}
+		return prefix + host + "/" + afterHost, "", true
+	}
+	share := afterHost[:shareEnd]
+	if share == "" {
+		return "", "", false
+	}
+	return prefix + host + "/" + share, afterHost[shareEnd:], true
+}
+
+func looksLikeWindowsPath(value string) bool {
+	if len(value) >= 2 && value[1] == ':' {
+		letter := value[0]
+		return letter >= 'A' && letter <= 'Z' || letter >= 'a' && letter <= 'z'
+	}
+	return strings.HasPrefix(value, `\\`) || strings.HasPrefix(value, "//")
 }
 
 func lineRangesOverlap(left, right FileTouch) bool {

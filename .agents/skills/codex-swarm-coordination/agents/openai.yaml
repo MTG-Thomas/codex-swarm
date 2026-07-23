@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex Swarm Coordination"
+  short_description: "Coordinate substantial Codex work with cs."
+  default_prompt: "Use codex-swarm for scoped claims, durable messages and callbacks, evidence, handoffs, and atomic closeout."

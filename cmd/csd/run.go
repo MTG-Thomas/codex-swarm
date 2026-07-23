@@ -15,6 +15,7 @@ import (
 
 func runServer(ctx context.Context, addr, statePath string, out io.Writer) error {
 	server := daemon.NewServer(statePath, store.NewJSONStore(statePath))
+	defer server.Close()
 	httpServer := &http.Server{
 		Addr:              addr,
 		Handler:           server.Handler(),

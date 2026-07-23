@@ -45,10 +45,12 @@ The `cs` CLI is the normal operator surface. `csd` keeps an optional loopback
 service available for status, durable message delivery, file-touch events,
 completion forwarding, readiness, and explicit idempotent dispatch.
 
-The machine-global ledger is authoritative. Its compatibility filename is
-`state.json`, but current state files are SQLite databases. On Windows the
-default is `%AppData%\codex-swarm\state.json`. Use `--state` or
-`CODEX_SWARM_STATE` only when an intentionally isolated ledger is required.
+The machine-global ledger is authoritative and stored in SQLite. New
+installations use `%AppData%\codex-swarm\state.db` on Windows. For a safe
+upgrade, an existing `state.json` ledger remains the default until it is
+migrated while the daemon is stopped; if both files exist, `state.db` wins.
+Use `--state` or `CODEX_SWARM_STATE` only when an intentionally isolated ledger
+is required.
 
 Every worker retains its engine identity, while runtime behavior is described
 by stable capabilities:
@@ -65,9 +67,23 @@ This keeps coordination logic independent of any one agent runtime.
 
 ## Install
 
-Download the archive for your operating system from the
-[latest GitHub release](https://github.com/MTG-Thomas/codex-swarm/releases/latest),
-extract `cs` and `csd`, and place them on `PATH`.
+On Windows, download the `*-setup.exe` for your architecture from the
+[latest GitHub release](https://github.com/MTG-Thomas/codex-swarm/releases/latest)
+and run it. The installer is per-user, installs into
+`%LocalAppData%\Programs\codex-swarm`, registers with Windows Installed Apps,
+and can add that directory to your user `PATH`. Run a newer installer to
+upgrade in place; uninstall from **Settings > Apps > Installed apps**. It is
+built with [NSIS](https://nsis.sourceforge.io/License), whose open-source
+license permits commercial use.
+
+The installer manages only `cs.exe`, `csd.exe`, and the PATH entry it created.
+It does not install or remove the optional daemon service, and it does not
+remove swarm state under `%AppData%\codex-swarm`. Manage the service explicitly
+with `csd install` or `csd uninstall`. Stop a running daemon before an upgrade
+if Windows reports that `csd.exe` is in use.
+
+For a portable Windows install, or on macOS and Linux, download the archive for
+your operating system, extract `cs` and `csd`, and place them on `PATH`.
 
 To build from source:
 
@@ -84,8 +100,8 @@ cs doctor
 ```
 
 Release archives are published for Windows, macOS, and Linux on amd64 and
-arm64. Windows executables include product and file-version metadata. They are
-not currently Authenticode-signed.
+arm64. Windows amd64 and arm64 releases also include installers. Windows
+executables and installers are not currently Authenticode-signed.
 
 ## Start coordinating work
 
@@ -120,7 +136,13 @@ cs spawn --engine appserver --repo . --worktree `
 ```
 
 `--worktree` creates and records an isolated branch and worktree. Conversation
-isolation alone does not isolate filesystem writes.
+isolation alone does not isolate filesystem writes. `cs spawn` returns after a
+`csd` runtime has durably recorded the host, thread, turn, and worktree
+identity, while that runtime continues to own the first turn. A matching
+user-session daemon is preferred. A privileged Windows service or root daemon
+refuses to launch Codex, so `cs` starts a listener-free, detached `csd` runtime
+under the caller's identity instead. A caller timeout does not mark that
+resumable task failed; inspect the recorded worker before retrying.
 
 ### Claim scope before editing
 
@@ -213,6 +235,166 @@ rejections, current failed gates, and recorded pull-request next actions. It
 does not refresh GitHub or create a second open-loop ledger; use `cs pr status`
 when a recorded pull-request state needs live readback.
 
+### Retain Codex task discovery beyond the host window
+
+Codex hosts can submit each `list_threads` observation to a durable discovery
+index. This preserves task identity after a task falls outside a host's newest
+task window without attaching the task as a swarm worker. For recurring
+coordinator heartbeats, stage each host-owned page as it arrives and finish the
+observation without waiting on any task:
+
+```powershell
+cs tasks collect page --host desktop --observation heartbeat-20260722T1800Z `
+  --page 1 --next-cursor page-2 --file page-1.json
+cs tasks collect status --host desktop --observation heartbeat-20260722T1800Z
+cs tasks collect page --host desktop --observation heartbeat-20260722T1800Z `
+  --page 2 --cursor page-2 --file page-2.json
+cs tasks collect finish --host desktop --observation heartbeat-20260722T1800Z `
+  --coverage window
+cs tasks list --limit 100 --json
+cs tasks status --stale-for 24h
+```
+
+Each page file uses a deliberately narrow metadata-only shape:
+
+```json
+{
+  "tasks": [
+    {
+      "thread_id": "019f84c9-84e0-7b43-ab2f-a0de6287c627",
+      "title": "Coordinator",
+      "project": "codex-swarm",
+      "cwd": "C:\\Users\\ThomasBray\\src\\codex-swarm",
+      "status": "active",
+      "unread": false,
+      "wait_cursor": "opaque-host-cursor",
+      "coordinator": true
+    }
+  ]
+}
+```
+
+`--host` may come from `CODEX_HOST_ID`; connected hosts must use distinct,
+stable IDs. For example, a collector running on the connected remote
+workstation uses its own identity and loopback daemon:
+
+```powershell
+$env:CODEX_HOST_ID = "codex-remote-workstation-01"
+$env:CODEX_SWARM_DAEMON_URL = "http://127.0.0.1:8787"
+cs tasks collect page --observation remote-heartbeat-20260722T1800Z `
+  --page 1 --file remote-page-1.json
+cs tasks collect status --observation remote-heartbeat-20260722T1800Z
+```
+
+Do not expose `csd` beyond loopback to centralize collection. A connected host
+either submits to its own local daemon or passes the same metadata-only page to
+the coordinator, which records it under that host's stable ID.
+
+The first page fixes the observation timestamp. Page and finish
+retries are idempotent, while changed content under the same observation/page
+identity is rejected. `finish` validates contiguous pages, the opaque cursor
+chain, duplicate task IDs, and the 1,000-task bound before one atomic ingest.
+Use `coverage: window` whenever the owning host has only a bounded view. Use
+`complete` only after the final page returned no next cursor; only then can
+absence mark an older task missing. Explicit `tombstoned: true` remains the
+only deletion-like observation.
+
+The collector is a hook for the Codex host that already owns `list_threads`.
+It does not call Codex, scrape session files, launch app-server, or infer task
+lifecycle from swarm worker state. Existing `tasks list` and `tasks status`
+provide immediate nonblocking daemon readback after `finish`;
+`tasks collect status` returns the staged page count and exact next cursor after
+an interrupted heartbeat. Opaque listing and wait cursors are preserved
+byte-for-byte.
+Unfinished collections older than seven days are pruned when a new observation
+starts, and the daemon refuses to exceed 1,000 simultaneously open
+observations.
+
+For bootstrap, classification updates, or another trusted producer that
+already owns a complete envelope, direct ingestion remains available:
+
+```powershell
+cs tasks ingest --file codex-task-snapshot.json
+```
+
+### Group related coordination as one operation
+
+`cs operation` derives one logical view across existing worker ancestry, issue
+links, claims, message deliveries, gate evidence, recorded pull requests, and
+indexed Codex tasks:
+
+```powershell
+cs operation list
+cs operation list --issue MTG-Thomas/codex-swarm#75 --json
+cs operation show issue:mtg-thomas/codex-swarm#75
+```
+
+Issue-backed work uses a case-normalized `issue:owner/repo#number` key. Other
+worker trees use `worker:<root-worker-id>`. Missing parents, parent cycles,
+invalid issue references, and unlinked records remain visible and keyless; the
+projection never guesses an operation from a repository path or task title.
+It is read-only and does not create an operation ledger or change claim
+warning semantics.
+
+The metadata-only snapshot contract is:
+
+```json
+{
+  "request_id": "local-20260722T170000Z",
+  "host_id": "local",
+  "source": "codex.list_threads",
+  "observed_at": "2026-07-22T17:00:00Z",
+  "coverage": "window",
+  "tasks": [
+    {
+      "thread_id": "019f84c9-84e0-7b43-ab2f-a0de6287c627",
+      "title": "Coordinator",
+      "project": "codex-swarm",
+      "cwd": "C:\\Users\\ThomasBray\\src\\codex-swarm",
+      "status": "active",
+      "unread": false,
+      "wait_cursor": "opaque-host-cursor",
+      "coordinator": true,
+      "classification": {
+        "tier": "P0",
+        "last_meaningful_outcome": "Implementation is under review",
+        "unresolved_loop": "PR has not merged",
+        "smallest_next_action": "Read review findings"
+      }
+    }
+  ]
+}
+```
+
+Use `coverage: "window"` for bounded `list_threads` results. Absence from a
+window never means complete or deleted. `coverage: "complete"` may mark an
+older record `missing_since`, and an explicit task `tombstoned: true` records a
+host-observed tombstone. The index keeps titles, paths, status, unread state,
+timestamps, discovery source, and opaque cursors; it does not accept prompt,
+final-message, or transcript bodies. Optional coordinator classification keeps
+P0-P3 tier, last outcome, unresolved loop, operator decision, smallest next
+action, and classification time. Omitting `wait_cursor` preserves the last
+cursor; supplying an empty string clears it. Walk every result page with
+`next_cursor`; the default page size is 50, but the retained inventory is not
+limited to 50.
+
+The cache begins with what a host explicitly ingests. It prevents future
+forgetting and can bootstrap older known task IDs, but it does not scrape Codex
+session files or claim to discover pre-index history on its own.
+
+Indexed `status` is the Codex host's observation, independent of an attached
+swarm worker lifecycle. A task may therefore remain `active` and resumable even
+when a synchronous launch request timed out and its worker record says failed.
+
+When `CODEX_SWARM_DAEMON_URL` or `--daemon` is set, the CLI uses the typed
+loopback API. Collector pages and finish requests use
+`POST /v1/codex-tasks/collections/pages` and
+`POST /v1/codex-tasks/collections/finish`. Trusted producers may still post a
+full envelope to `POST /v1/codex-tasks/ingest`. Readback uses
+`GET /v1/codex-tasks` or `GET /v1/codex-tasks/status`. All mutation routes are
+loopback-only. Collector and direct-ingest replay records have bounded
+retention.
+
 ### Coordinate issue and pull-request work
 
 ```powershell
@@ -242,6 +424,35 @@ cs gate record --repo . --worker <worker-id> --gate test `
 
 Recorded evidence includes the command, result, commit, timestamp, and worker.
 Recording a gate does not run the command for you.
+
+### Preserve coordination decisions
+
+Record an explicit decision against the logical operation derived by
+`cs operation`, along with its rationale and bounded evidence references:
+
+```powershell
+cs decision record --request-id decide-76-retention `
+  --author <worker-id> --issue owner/repo#76 `
+  --summary "Keep decision history in SQLite" `
+  --rationale "Supersession must preserve the evidence used at the time" `
+  --evidence gate:<gate-evidence-id> `
+  --dissent "Revisit retention after measuring use"
+
+cs decision list --issue owner/repo#76 --current
+cs decision show <decision-id>
+cs decision supersede <decision-id> --request-id decide-76-retention-v2 `
+  --summary "Keep bounded decision history" `
+  --rationale "Observed volume supports retaining explicit records"
+```
+
+`record` and `supersede` are narrow, request-ID-idempotent SQLite writes.
+Supersession creates a new record, timestamps the prior record, and keeps both
+readable. Use `--clear-evidence` or `--clear-dissent` when a replacement should
+not inherit those fields. Local `worker:`, `gate:`, `claim:`, `decision:`, and `operation:`
+evidence references are checked when written. Missing authors or evidence stay
+visible as provenance gaps; external references are retained without fetching
+their content. Decision records never ingest prompts, transcripts, or tool
+output.
 
 ### Run the daemon
 
@@ -274,6 +485,8 @@ competing app-server connection that cannot see the in-flight turn.
 | Area | Commands |
 | --- | --- |
 | Health and identity | `doctor`, `version`, `agent`, `status` |
+| Codex task discovery | `tasks ingest`, `tasks list`, `tasks status` |
+| Logical operations and decisions | `operation list`, `operation show`, `decision record`, `decision list`, `decision show`, `decision supersede` |
 | Worker lifecycle | `spawn`, `attach`, `send`, `resume`, `show`, `close`, `report` |
 | Coordination | `claim`, `message`, `inbox`, `touch`, `handoff`, `worker check` |
 | Handoff context | `workpacket`, `transcript`, `show --snapshot` |
@@ -290,7 +503,12 @@ Run `cs` or `cs <command> --help` for the current command contract.
 - Claims and file-touch conflicts are warnings, never hard locks.
 - Worktree creation, GitHub writes, service changes, and platform mutations
   require explicit commands.
-- The daemon does not expose arbitrary command or filesystem execution.
+- The daemon exposes only narrow worker operations; it does not expose
+  arbitrary command or filesystem execution. App-server spawn accepts an
+  existing persisted worker and an idempotent worker-bound request ID.
+- Privileged service identities never launch Codex. The caller-owned runtime
+  receives its prompt over stdin, not the process command line, and opens no
+  listener.
 - Tokens, private keys, and platform credentials do not belong in the ledger.
 - Remote Git credentials remain on the remote host.
 - Schedules are persisted control-plane records; they do not execute workers

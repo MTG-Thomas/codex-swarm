@@ -27,8 +27,13 @@ in [roadmap.md](roadmap.md).
 - SQLite-backed machine-global authority with legacy JSON migration.
 - Normalized messages, deliveries, append-only delivery transitions, file
   touches, claims, gates, and events.
+- Derived logical-operation grouping plus request-ID-idempotent, evidence-backed
+  decision records with atomic supersession history and visible provenance gaps.
 - Capability-based runtime behavior independent of engine identity.
-- Durable app-server thread and turn identity, including live steering.
+- Daemon-owned app-server first turns with prompt durable identity readback,
+  idempotent launch replay, asynchronous completion, and live steering.
+- Privileged-daemon launch refusal plus a detached, listener-free caller-owned
+  `csd` runtime for Windows service and root-daemon installations.
 - Managed local worktrees and isolated remote Git sessions over SSH.
 - Loopback daemon with read-only operational APIs and narrow idempotent
   mutation routes.
@@ -41,12 +46,18 @@ in [roadmap.md](roadmap.md).
 - Scriptable human and JSON attention views derived from queued messages,
   blocked claims, stale workers, validator rejections, failed gates, and
   recorded pull-request next actions.
+- Scriptable derived operation views that group issue-backed or root-worker
+  coordination across workers, claims, messages, gates, recorded pull requests,
+  and linked Codex tasks while exposing broken links as unscoped records.
 - Warning-only ownership claims, file-touch conflicts, and worker checks.
 - Durable direct and subtree messages with JSON/readback evidence, handoffs,
   and parent completion.
 - Product-visible live steering for `cs`-owned turns plus a guarded native-host
   bridge for attached Codex tasks, queue fallback, and durable final-agent
   acknowledgement capture.
+- Durable metadata-only Codex task discovery plus a host-owned paginated
+  collector hook; coordinator heartbeats can stage more than 50 tasks and read
+  the resulting status immediately without blocking on child turns.
 - Atomic `close` with claim release and pull-request refresh.
 - Repository hints and commit-bound validation evidence.
 - Read-only stale-state inspection plus explicit janitor application.
@@ -55,9 +66,10 @@ in [roadmap.md](roadmap.md).
 ## Maturity constraints
 
 - Scheduling records are persisted but do not yet execute workers.
-- Daemon ownership of `cs`-spawned app-server runtime and restart recovery is
-  incomplete; externally owned turns require their Codex host to execute the
-  native-steering request and confirm it.
+- Daemon restart preserves resumable task identity but does not yet reconnect
+  an interrupted app-server transport automatically; externally owned turns
+  require their Codex host to execute the native-steering request and confirm
+  it.
 - Exact pre-edit intent depends on runtime hooks; file-change evidence is more
   complete than pre-write evidence.
 - GitHub synchronization remains explicit and local state remains authoritative.
