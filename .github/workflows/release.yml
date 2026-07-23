@@ -27,6 +27,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -72,6 +73,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Download Windows artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -90,17 +93,20 @@ jobs:
 
       - name: Build installers
         shell: pwsh
+        env:
+          ISCC_PATH: ${{ steps.inno.outputs.path }}
+          RELEASE_REF_NAME: ${{ github.ref_name }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $version = '${{ github.ref_name }}'.TrimStart('v')
+          $version = $env:RELEASE_REF_NAME.TrimStart('v')
           $numericVersion = ($version -split '[-+]')[0]
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           foreach ($arch in 'amd64', 'arm64') {
-            $artifactDir = Join-Path 'artifacts' "codex-swarm-${{ github.ref_name }}-windows-$arch"
-            $archive = Join-Path $artifactDir "codex-swarm-${{ github.ref_name }}-windows-$arch.zip"
+            $artifactDir = Join-Path 'artifacts' "codex-swarm-$($env:RELEASE_REF_NAME)-windows-$arch"
+            $archive = Join-Path $artifactDir "codex-swarm-$($env:RELEASE_REF_NAME)-windows-$arch.zip"
             $sourceDir = Join-Path $env:RUNNER_TEMP "codex-swarm-$arch"
             Expand-Archive -LiteralPath $archive -DestinationPath $sourceDir
-            & '${{ steps.inno.outputs.path }}' `
+            & $env:ISCC_PATH `
               "/DAppVersion=$version" `
               "/DAppVersionNumeric=$numericVersion" `
               "/DAppArch=$arch" `

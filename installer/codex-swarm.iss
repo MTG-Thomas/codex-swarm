@@ -94,20 +94,35 @@ begin
     Delete(Result, Length(Result), 1);
 end;
 
-function PathContainsExact(PathValue, Target: string): Boolean;
+procedure EnumeratePathEntries(
+  PathValue: string; var Entries: TArrayOfString);
 var
   DelimiterPos: Integer;
   Entry: string;
 begin
-  Result := False;
-  Target := NormalizePathEntry(Target);
+  SetArrayLength(Entries, 0);
   PathValue := PathValue + ';';
   while Length(PathValue) > 0 do
   begin
     DelimiterPos := Pos(';', PathValue);
     Entry := Copy(PathValue, 1, DelimiterPos - 1);
     Delete(PathValue, 1, DelimiterPos);
-    if CompareText(NormalizePathEntry(Entry), Target) = 0 then
+    SetArrayLength(Entries, GetArrayLength(Entries) + 1);
+    Entries[GetArrayLength(Entries) - 1] := Entry;
+  end;
+end;
+
+function PathContainsExact(PathValue, Target: string): Boolean;
+var
+  Entries: TArrayOfString;
+  Index: Integer;
+begin
+  Result := False;
+  Target := NormalizePathEntry(Target);
+  EnumeratePathEntries(PathValue, Entries);
+  for Index := 0 to GetArrayLength(Entries) - 1 do
+  begin
+    if CompareText(NormalizePathEntry(Entries[Index]), Target) = 0 then
     begin
       Result := True;
       Exit;
@@ -117,23 +132,20 @@ end;
 
 function RemoveExactPath(PathValue, Target: string): string;
 var
-  DelimiterPos: Integer;
-  Entry: string;
+  Entries: TArrayOfString;
+  Index: Integer;
 begin
   Result := '';
   Target := NormalizePathEntry(Target);
-  PathValue := PathValue + ';';
-  while Length(PathValue) > 0 do
+  EnumeratePathEntries(PathValue, Entries);
+  for Index := 0 to GetArrayLength(Entries) - 1 do
   begin
-    DelimiterPos := Pos(';', PathValue);
-    Entry := Copy(PathValue, 1, DelimiterPos - 1);
-    Delete(PathValue, 1, DelimiterPos);
-    if (Entry <> '') and
-       (CompareText(NormalizePathEntry(Entry), Target) <> 0) then
+    if (Entries[Index] <> '') and
+       (CompareText(NormalizePathEntry(Entries[Index]), Target) <> 0) then
     begin
       if Result <> '' then
         Result := Result + ';';
-      Result := Result + Entry;
+      Result := Result + Entries[Index];
     end;
   end;
 end;

@@ -35,7 +35,7 @@ try {
         throw "gh release download failed with exit code $LASTEXITCODE."
     }
 
-    & gh release verify-asset $assetPath --repo jrsoftware/issrc | Out-Host
+    & gh release verify-asset $tag $assetPath --repo jrsoftware/issrc | Out-Host
     if ($LASTEXITCODE -ne 0) {
         throw "GitHub attestation verification failed with exit code $LASTEXITCODE."
     }
