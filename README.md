@@ -68,7 +68,9 @@ On Windows, download the `*-setup.exe` for your architecture from the
 and run it. The installer is per-user, installs into
 `%LocalAppData%\Programs\codex-swarm`, registers with Windows Installed Apps,
 and can add that directory to your user `PATH`. Run a newer installer to
-upgrade in place; uninstall from **Settings > Apps > Installed apps**.
+upgrade in place; uninstall from **Settings > Apps > Installed apps**. It is
+built with [NSIS](https://nsis.sourceforge.io/License), whose open-source
+license permits commercial use.
 
 The installer manages only `cs.exe`, `csd.exe`, and the PATH entry it created.
 It does not install or remove the optional daemon service, and it does not

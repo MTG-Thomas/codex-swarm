@@ -39,16 +39,14 @@ $installDir = Join-Path $TestRoot 'app'
 $stateDir = Join-Path $TestRoot 'state'
 $stateSentinel = Join-Path $stateDir 'state-preserved.txt'
 $appId = 'MTG-Thomas.codex-swarm.ci'
-$uninstallKey = "Software\Microsoft\Windows\CurrentVersion\Uninstall\${appId}_is1"
+$uninstallKey = "Software\Microsoft\Windows\CurrentVersion\Uninstall\$appId"
 $originalPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-$uninstaller = Join-Path $installDir 'unins000.exe'
+$uninstaller = Join-Path $installDir 'Uninstall.exe'
 
 function Invoke-Installer {
     $process = Start-Process -FilePath $installer -ArgumentList @(
-        '/VERYSILENT',
-        '/SUPPRESSMSGBOXES',
-        '/NORESTART',
-        "/DIR=`"$installDir`""
+        '/S',
+        "/D=$installDir"
     ) -Wait -PassThru
     if ($process.ExitCode -ne 0) {
         throw "Installer failed with exit code $($process.ExitCode)."
@@ -99,9 +97,7 @@ try {
     }
 
     $process = Start-Process -FilePath $uninstaller -ArgumentList @(
-        '/VERYSILENT',
-        '/SUPPRESSMSGBOXES',
-        '/NORESTART'
+        '/S'
     ) -Wait -PassThru
     if ($process.ExitCode -ne 0) {
         throw "Uninstaller failed with exit code $($process.ExitCode)."
@@ -125,12 +121,11 @@ try {
     if ($currentPath -and -not $currentPath.EndsWith(';')) {
         $currentPath += ';'
     }
-    [Environment]::SetEnvironmentVariable('Path', $currentPath + $installDir, 'User')
+    $preExistingEntry = '"{0}\"' -f $installDir
+    [Environment]::SetEnvironmentVariable('Path', $currentPath + $preExistingEntry, 'User')
     Invoke-Installer
     $process = Start-Process -FilePath $uninstaller -ArgumentList @(
-        '/VERYSILENT',
-        '/SUPPRESSMSGBOXES',
-        '/NORESTART'
+        '/S'
     ) -Wait -PassThru
     if ($process.ExitCode -ne 0) {
         throw "Ownership test uninstaller failed with exit code $($process.ExitCode)."
@@ -143,9 +138,7 @@ try {
 } finally {
     if (Test-Path -LiteralPath $uninstaller) {
         Start-Process -FilePath $uninstaller -ArgumentList @(
-            '/VERYSILENT',
-            '/SUPPRESSMSGBOXES',
-            '/NORESTART'
+            '/S'
         ) -Wait | Out-Null
     }
     [Environment]::SetEnvironmentVariable('Path', $originalPath, 'User')

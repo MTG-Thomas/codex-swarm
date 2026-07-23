@@ -82,39 +82,41 @@ jobs:
           pattern: codex-swarm-${{ github.ref_name }}-windows-*
           path: artifacts
 
-      - name: Bootstrap verified Inno Setup
-        id: inno
+      - name: Bootstrap verified NSIS
+        id: nsis
         shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
-          $iscc = ./scripts/bootstrap-inno-setup.ps1 -InstallDir (Join-Path $env:RUNNER_TEMP 'inno-setup')
-          "path=$iscc" >> $env:GITHUB_OUTPUT
+          $makensis = ./scripts/bootstrap-nsis.ps1 -InstallDir (Join-Path $env:RUNNER_TEMP 'nsis')
+          "path=$makensis" >> $env:GITHUB_OUTPUT
 
       - name: Build installers
         shell: pwsh
         env:
-          ISCC_PATH: ${{ steps.inno.outputs.path }}
+          MAKENSIS_PATH: ${{ steps.nsis.outputs.path }}
           RELEASE_REF_NAME: ${{ github.ref_name }}
         run: |
           $ErrorActionPreference = 'Stop'
           $version = $env:RELEASE_REF_NAME.TrimStart('v')
-          $numericVersion = ($version -split '[-+]')[0]
+          $numericVersionParts = @(($version -split '[-+]')[0] -split '\.')
+          while ($numericVersionParts.Count -lt 4) {
+            $numericVersionParts += '0'
+          }
+          $numericVersion = ($numericVersionParts | Select-Object -First 4) -join '.'
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           foreach ($arch in 'amd64', 'arm64') {
             $artifactDir = Join-Path 'artifacts' "codex-swarm-$($env:RELEASE_REF_NAME)-windows-$arch"
             $archive = Join-Path $artifactDir "codex-swarm-$($env:RELEASE_REF_NAME)-windows-$arch.zip"
             $sourceDir = Join-Path $env:RUNNER_TEMP "codex-swarm-$arch"
             Expand-Archive -LiteralPath $archive -DestinationPath $sourceDir
-            & $env:ISCC_PATH `
-              "/DAppVersion=$version" `
-              "/DAppVersionNumeric=$numericVersion" `
-              "/DAppArch=$arch" `
-              "/DSourceDir=$sourceDir" `
-              "/DOutputDir=$((Resolve-Path dist).Path)" `
-              installer/codex-swarm.iss
+            & $env:MAKENSIS_PATH `
+              "/DAPP_VERSION=$version" `
+              "/DAPP_VERSION_NUMERIC=$numericVersion" `
+              "/DAPP_ARCH=$arch" `
+              "/DSOURCE_DIR=$sourceDir" `
+              "/DOUTPUT_DIR=$((Resolve-Path dist).Path)" `
+              installer/codex-swarm.nsi
             if ($LASTEXITCODE -ne 0) {
-              throw "ISCC failed for $arch with exit code $LASTEXITCODE"
+              throw "makensis failed for $arch with exit code $LASTEXITCODE"
             }
           }
 
