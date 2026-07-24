@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -61,6 +62,9 @@ func TestSystemdUserServiceInstallAndUninstall(t *testing.T) {
 	runSystemctl = func(scope serviceScope, args ...string) ([]byte, error) {
 		call := append([]string{scope.String()}, args...)
 		calls = append(calls, call)
+		if slices.Equal(args, []string{"show", "--property=LoadState", "--value", serviceName + ".service"}) {
+			return []byte("loaded\n"), nil
+		}
 		return nil, nil
 	}
 
@@ -95,6 +99,7 @@ func TestSystemdUserServiceInstallAndUninstall(t *testing.T) {
 		t.Fatalf("user unit still exists after uninstall: %v", err)
 	}
 	wantCalls := [][]string{
+		{"user", "show", "--property=LoadState", "--value", serviceName + ".service"},
 		{"user", "stop", serviceName + ".service"},
 		{"user", "disable", serviceName + ".service"},
 		{"user", "daemon-reload"},
@@ -106,7 +111,61 @@ func TestSystemdUserServiceInstallAndUninstall(t *testing.T) {
 
 func TestSystemdUserServicePathRejectsRelativeConfigHome(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "relative")
+	originalRunSystemctl := runSystemctl
+	t.Cleanup(func() { runSystemctl = originalRunSystemctl })
+	runSystemctl = func(serviceScope, ...string) ([]byte, error) {
+		t.Fatal("systemctl called before path validation")
+		return nil, nil
+	}
 	if _, err := systemdServicePath(serviceConfig{Name: serviceName}, serviceScopeUser); err == nil {
 		t.Fatal("systemdServicePath accepted relative XDG_CONFIG_HOME")
+	}
+	if err := uninstallService([]string{"--user"}); err == nil {
+		t.Fatal("uninstallService accepted relative XDG_CONFIG_HOME")
+	}
+}
+
+func TestSystemdUninstallToleratesMissingUnit(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	originalRunSystemctl := runSystemctl
+	t.Cleanup(func() { runSystemctl = originalRunSystemctl })
+	var calls [][]string
+	runSystemctl = func(scope serviceScope, args ...string) ([]byte, error) {
+		calls = append(calls, append([]string{scope.String()}, args...))
+		if args[0] == "show" {
+			return []byte("not-found\n"), nil
+		}
+		return nil, nil
+	}
+	if err := uninstallService([]string{"--user"}); err != nil {
+		t.Fatalf("uninstallService missing unit: %v", err)
+	}
+	wantCalls := [][]string{
+		{"user", "show", "--property=LoadState", "--value", serviceName + ".service"},
+		{"user", "daemon-reload"},
+	}
+	if !slices.EqualFunc(calls, wantCalls, slices.Equal[[]string]) {
+		t.Fatalf("systemctl calls = %#v, want %#v", calls, wantCalls)
+	}
+}
+
+func TestSystemdUninstallPropagatesStopFailure(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	originalRunSystemctl := runSystemctl
+	t.Cleanup(func() { runSystemctl = originalRunSystemctl })
+	runSystemctl = func(_ serviceScope, args ...string) ([]byte, error) {
+		switch args[0] {
+		case "show":
+			return []byte("loaded\n"), nil
+		case "stop":
+			return []byte("stop failed"), errors.New("exit status 1")
+		default:
+			t.Fatalf("unexpected systemctl call after stop failure: %v", args)
+			return nil, nil
+		}
+	}
+	err := uninstallService([]string{"--user"})
+	if err == nil || !strings.Contains(err.Error(), "stop codex-swarm-daemon.service") {
+		t.Fatalf("uninstallService stop error = %v", err)
 	}
 }

@@ -49,11 +49,21 @@ func uninstallService(args []string) error {
 		return err
 	}
 	unit := cfg.Name + ".service"
-	_, _ = runSystemctl(scope, "stop", unit)
-	_, _ = runSystemctl(scope, "disable", unit)
 	path, err := systemdServicePath(cfg, scope)
 	if err != nil {
 		return err
+	}
+	loaded, err := systemdUnitLoaded(scope, unit)
+	if err != nil {
+		return err
+	}
+	if loaded {
+		if output, err := runSystemctl(scope, "stop", unit); err != nil {
+			return fmt.Errorf("%s stop %s: %w: %s", systemctlName(scope), unit, err, string(output))
+		}
+		if output, err := runSystemctl(scope, "disable", unit); err != nil {
+			return fmt.Errorf("%s disable %s: %w: %s", systemctlName(scope), unit, err, string(output))
+		}
 	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove systemd unit %s: %w", path, err)
@@ -129,4 +139,16 @@ func systemctlName(scope serviceScope) string {
 		return "systemctl --user"
 	}
 	return "systemctl"
+}
+
+func systemdUnitLoaded(scope serviceScope, unit string) (bool, error) {
+	output, err := runSystemctl(scope, "show", "--property=LoadState", "--value", unit)
+	if err != nil {
+		return false, fmt.Errorf("%s show LoadState for %s: %w: %s", systemctlName(scope), unit, err, string(output))
+	}
+	state := strings.TrimSpace(string(output))
+	if state == "" {
+		return false, fmt.Errorf("%s returned an empty LoadState for %s", systemctlName(scope), unit)
+	}
+	return state != "not-found", nil
 }
