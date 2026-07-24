@@ -37,9 +37,9 @@ func run() error {
 			fmt.Println(version.String())
 			return nil
 		case "install":
-			return installService()
+			return installService(args[1:])
 		case "uninstall":
-			return uninstallService()
+			return uninstallService(args[1:])
 		default:
 			return fmt.Errorf("unknown command %q", args[0])
 		}

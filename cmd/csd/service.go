@@ -1,12 +1,21 @@
 package main
 
 import (
+	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 )
 
 const serviceName = "codex-swarm-daemon"
+
+type serviceScope uint8
+
+const (
+	serviceScopeSystem serviceScope = iota
+	serviceScopeUser
+)
 
 type serviceConfig struct {
 	Name        string
@@ -37,4 +46,27 @@ func defaultServiceConfig() (serviceConfig, error) {
 	}
 	cfg.Args = []string{"serve", "--addr", cfg.Addr, "--state", cfg.StatePath}
 	return cfg, nil
+}
+
+func parseServiceScope(command string, args []string) (serviceScope, error) {
+	fs := flag.NewFlagSet(command, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	user := fs.Bool("user", false, "install the service for the current user")
+	if err := fs.Parse(args); err != nil {
+		return serviceScopeSystem, fmt.Errorf("%s options: %w", command, err)
+	}
+	if fs.NArg() != 0 {
+		return serviceScopeSystem, fmt.Errorf("%s accepts no positional arguments", command)
+	}
+	if *user {
+		return serviceScopeUser, nil
+	}
+	return serviceScopeSystem, nil
+}
+
+func (s serviceScope) String() string {
+	if s == serviceScopeUser {
+		return "user"
+	}
+	return "system"
 }

@@ -9,7 +9,10 @@ import (
 	"path/filepath"
 )
 
-func installService() error {
+func installService(args []string) error {
+	if _, err := parseServiceScope("install", args); err != nil {
+		return err
+	}
 	cfg, err := defaultServiceConfig()
 	if err != nil {
 		return err
@@ -32,7 +35,10 @@ func installService() error {
 	return nil
 }
 
-func uninstallService() error {
+func uninstallService(args []string) error {
+	if _, err := parseServiceScope("uninstall", args); err != nil {
+		return err
+	}
 	cfg, err := defaultServiceConfig()
 	if err != nil {
 		return err

@@ -4,8 +4,18 @@ package main
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestWindowsServiceRejectsUserScope(t *testing.T) {
+	if err := installService([]string{"--user"}); err == nil || !strings.Contains(err.Error(), "not supported on Windows") {
+		t.Fatalf("installService(--user) error = %v", err)
+	}
+	if err := uninstallService([]string{"--user"}); err == nil || !strings.Contains(err.Error(), "not supported on Windows") {
+		t.Fatalf("uninstallService(--user) error = %v", err)
+	}
+}
 
 func TestWindowsServiceDefaultStatePathUsesProgramData(t *testing.T) {
 	programData := t.TempDir()

@@ -85,6 +85,23 @@ if Windows reports that `csd.exe` is in use.
 For a portable Windows install, or on macOS and Linux, download the archive for
 your operating system, extract `cs` and `csd`, and place them on `PATH`.
 
+On Linux, prefer the current user's systemd manager so the daemon shares that
+user's Codex credentials and coordination state:
+
+```bash
+csd install --user
+systemctl --user start codex-swarm-daemon.service
+export CODEX_SWARM_DAEMON_URL=http://127.0.0.1:8787
+csd status
+```
+
+`csd install --user` writes
+`$XDG_CONFIG_HOME/systemd/user/codex-swarm-daemon.service`, falling back to
+`~/.config/systemd/user`, and enables it for `default.target`. The existing
+unflagged `csd install` remains the root/system service path. Enable systemd
+user lingering separately when the daemon must start at boot and remain
+available without an interactive login.
+
 To build from source:
 
 ```powershell
@@ -465,7 +482,9 @@ csd install
 The daemon binds to loopback by default. Its broad status surfaces are
 read-only. Mutation routes are deliberately narrow and require idempotency
 keys. Service installation is explicit and uses the native Windows service,
-macOS LaunchAgent, or Linux systemd surface.
+macOS LaunchAgent, or Linux systemd surface. Linux supports both the existing
+system service and the preferred user-owned service through
+`csd install --user` and `csd uninstall --user`.
 
 The daemon persists messages but does not launch Codex on behalf of an HTTP
 caller. Externally owned turns are steered only by their owning Codex host; this
