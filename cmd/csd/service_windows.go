@@ -15,7 +15,14 @@ import (
 	"golang.org/x/sys/windows/svc/mgr"
 )
 
-func installService() error {
+func installService(args []string) error {
+	scope, err := parseServiceScope("install", args)
+	if err != nil {
+		return err
+	}
+	if scope == serviceScopeUser {
+		return fmt.Errorf("--user service installation is not supported on Windows")
+	}
 	cfg, err := defaultServiceConfig()
 	if err != nil {
 		return err
@@ -44,7 +51,14 @@ func installService() error {
 	return nil
 }
 
-func uninstallService() error {
+func uninstallService(args []string) error {
+	scope, err := parseServiceScope("uninstall", args)
+	if err != nil {
+		return err
+	}
+	if scope == serviceScopeUser {
+		return fmt.Errorf("--user service uninstallation is not supported on Windows")
+	}
 	cfg, err := defaultServiceConfig()
 	if err != nil {
 		return err

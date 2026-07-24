@@ -10,7 +10,8 @@ in [roadmap.md](roadmap.md).
 - `cs` and `csd` version stamping with commit and build date.
 - Windows PE product, file-version, company, description, and original-name
   metadata. Executables are not currently Authenticode-signed.
-- Native Windows service, macOS LaunchAgent, and Linux systemd install paths.
+- Native Windows service, macOS LaunchAgent, and Linux system and user systemd
+  install paths.
 
 ## Quality and security
 

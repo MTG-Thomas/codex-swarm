@@ -27,6 +27,10 @@ csd local daemon
 
 The CLI remains useful without the daemon. The daemon adds a long-lived local
 delivery and inspection surface; it does not become an arbitrary remote shell.
+On Linux, a user-owned systemd unit is preferred when the daemon must launch
+Codex because it preserves the operator's credentials and state ownership.
+The root systemd unit remains available for read-only and non-Codex service
+work, and continues to refuse privileged Codex launches.
 
 ## Authority boundaries
 
