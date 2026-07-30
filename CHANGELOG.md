@@ -4,6 +4,14 @@ All notable changes to codex-swarm are documented here.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-07-30
+
+### Fixed
+
+- The Windows installer now preserves user `PATH` values longer than NSIS's
+  1,024-character string buffer when adding, upgrading, or removing
+  `codex-swarm`.
+
 ## [0.7.3] - 2026-07-23
 
 ### Fixed
