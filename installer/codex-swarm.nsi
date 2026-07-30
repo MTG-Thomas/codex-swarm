@@ -109,15 +109,13 @@ Section "Uninstall"
     Pop $0
     Pop $1
     ${If} $0 != 0
-      MessageBox MB_ICONSTOP|MB_OK "Unable to remove ${APP_NAME} from the current user's PATH: $1"
-      Abort
-    ${EndIf}
-    ${If} "$1" != "removed"
+      DetailPrint "Unable to remove ${APP_NAME} from the current user's PATH: $1"
+    ${ElseIf} "$1" != "removed"
     ${AndIf} "$1" != "absent"
-      MessageBox MB_ICONSTOP|MB_OK "Unexpected PATH helper result while uninstalling ${APP_NAME}: $1"
-      Abort
+      DetailPrint "Unexpected PATH helper result while uninstalling ${APP_NAME}: $1"
+    ${Else}
+      SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
     ${EndIf}
-    SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
   ${EndIf}
 
   DeleteRegKey HKCU "${UNINSTALL_KEY}"

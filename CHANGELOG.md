@@ -4,6 +4,15 @@ All notable changes to codex-swarm are documented here.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-07-30
+
+### Fixed
+
+- Windows uninstall continues removing the application and registration when
+  best-effort cleanup of its managed user `PATH` entry cannot run.
+- Windows installer coverage now verifies `REG_EXPAND_SZ` preservation and
+  removal when the installed PATH helper is unavailable.
+
 ## [0.8.1] - 2026-07-30
 
 ### Fixed
@@ -11,6 +20,14 @@ All notable changes to codex-swarm are documented here.
 - The Windows installer now preserves user `PATH` values longer than NSIS's
   1,024-character string buffer when adding, upgrading, or removing
   `codex-swarm`.
+
+## [0.8.0] - 2026-07-24
+
+### Added
+
+- `csd install --user` and `csd uninstall --user` manage a per-user systemd
+  service for Linux Codex workstations while preserving the existing system
+  service behavior.
 
 ## [0.7.3] - 2026-07-23
 
