@@ -133,6 +133,8 @@ func (c cli) run(args []string) error {
 		return c.janitor(args[1:])
 	case "version":
 		return c.version(args[1:])
+	case "__installer-path":
+		return c.installerPath(args[1:])
 	case "gate":
 		return c.gate(args[1:])
 	case "validate":

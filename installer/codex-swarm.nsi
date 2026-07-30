@@ -49,13 +49,9 @@ VIAddVersionKey /LANG=1033 "ProductVersion" "${APP_VERSION}"
 !include "LogicLib.nsh"
 !include "MUI2.nsh"
 !include "Sections.nsh"
-!include "StrFunc.nsh"
 !include "WinMessages.nsh"
 !include "WinVer.nsh"
 !include "x64.nsh"
-
-${Using:StrFunc} StrTok
-${Using:StrFunc} UnStrTok
 
 !define MUI_ABORTWARNING
 !define MUI_UNABORTWARNING
@@ -109,12 +105,19 @@ Section "Uninstall"
   ReadRegDWORD $0 HKCU "${SETTINGS_KEY}" "PathManaged"
   ${IfNot} ${Errors}
   ${AndIf} $0 = 1
-    ReadRegStr $1 HKCU "Environment" "Path"
-    Push "$1"
-    Push "$INSTDIR"
-    Call un.RemoveExactPath
+    nsExec::ExecToStack '"$INSTDIR\cs.exe" __installer-path remove'
+    Pop $0
     Pop $1
-    Call un.WriteUserPath
+    ${If} $0 != 0
+      MessageBox MB_ICONSTOP|MB_OK "Unable to remove ${APP_NAME} from the current user's PATH: $1"
+      Abort
+    ${EndIf}
+    ${If} "$1" != "removed"
+    ${AndIf} "$1" != "absent"
+      MessageBox MB_ICONSTOP|MB_OK "Unexpected PATH helper result while uninstalling ${APP_NAME}: $1"
+      Abort
+    ${EndIf}
+    SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
   ${EndIf}
 
   DeleteRegKey HKCU "${UNINSTALL_KEY}"
@@ -153,7 +156,6 @@ Function un.onInit
 FunctionEnd
 
 Function ConfigurePath
-  ReadRegStr $0 HKCU "Environment" "Path"
   ClearErrors
   ReadRegDWORD $1 HKCU "${SETTINGS_KEY}" "PathManaged"
   ${If} ${Errors}
@@ -165,216 +167,41 @@ Function ConfigurePath
   SectionGetFlags ${SEC_PATH} $3
   IntOp $3 $3 & ${SF_SELECTED}
   ${If} $3 <> 0
-    Push "$0"
-    Push "$INSTDIR"
-    Call PathContainsExact
+    nsExec::ExecToStack '"$INSTDIR\cs.exe" __installer-path add'
+    Pop $0
     Pop $3
-    ${If} $3 = 0
-      StrLen $3 "$0"
-      ${If} $3 > 0
-        StrCpy $3 "$0" 1 -1
-        ${If} $3 != ";"
-          StrCpy $0 "$0;"
-        ${EndIf}
-      ${EndIf}
-      StrCpy $0 "$0$INSTDIR"
-      Call WriteUserPath
-      WriteRegDWORD HKCU "${SETTINGS_KEY}" "PathManaged" 1
-    ${ElseIf} $2 = 0
-      WriteRegDWORD HKCU "${SETTINGS_KEY}" "PathManaged" 0
+    ${If} $0 != 0
+      MessageBox MB_ICONSTOP|MB_OK "Unable to add ${APP_NAME} to the current user's PATH: $3"
+      Abort
     ${EndIf}
+    ${If} "$3" == "added"
+      WriteRegDWORD HKCU "${SETTINGS_KEY}" "PathManaged" 1
+    ${ElseIf} "$3" == "present"
+      ${If} $2 = 0
+        WriteRegDWORD HKCU "${SETTINGS_KEY}" "PathManaged" 0
+      ${EndIf}
+    ${Else}
+      MessageBox MB_ICONSTOP|MB_OK "Unexpected PATH helper result while installing ${APP_NAME}: $3"
+      Abort
+    ${EndIf}
+    SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
   ${Else}
     ${If} $2 = 1
     ${AndIf} $1 = 1
-      Push "$0"
-      Push "$INSTDIR"
-      Call RemoveExactPath
+      nsExec::ExecToStack '"$INSTDIR\cs.exe" __installer-path remove'
       Pop $0
-      Call WriteUserPath
+      Pop $3
+      ${If} $0 != 0
+        MessageBox MB_ICONSTOP|MB_OK "Unable to remove ${APP_NAME} from the current user's PATH: $3"
+        Abort
+      ${EndIf}
+      ${If} "$3" != "removed"
+      ${AndIf} "$3" != "absent"
+        MessageBox MB_ICONSTOP|MB_OK "Unexpected PATH helper result while configuring ${APP_NAME}: $3"
+        Abort
+      ${EndIf}
+      SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
     ${EndIf}
     DeleteRegValue HKCU "${SETTINGS_KEY}" "PathManaged"
   ${EndIf}
 FunctionEnd
-
-Function WriteUserPath
-  ClearErrors
-  ${If} "$0" == ""
-    DeleteRegValue HKCU "Environment" "Path"
-  ${Else}
-    WriteRegExpandStr HKCU "Environment" "Path" "$0"
-  ${EndIf}
-  ${If} ${Errors}
-    MessageBox MB_ICONSTOP|MB_OK "Unable to update the current user's PATH."
-    Abort
-  ${EndIf}
-  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
-FunctionEnd
-
-Function un.WriteUserPath
-  ClearErrors
-  ${If} "$1" == ""
-    DeleteRegValue HKCU "Environment" "Path"
-  ${Else}
-    WriteRegExpandStr HKCU "Environment" "Path" "$1"
-  ${EndIf}
-  ${If} ${Errors}
-    MessageBox MB_ICONSTOP|MB_OK "Unable to update the current user's PATH."
-    Abort
-  ${EndIf}
-  SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
-FunctionEnd
-
-!macro DefineNormalizePathEntry Prefix
-Function ${Prefix}NormalizePathEntry
-  Exch $0
-  Push $1
-  Push $2
-
-  ${Do}
-    StrCpy $1 "$0" 1
-    ${If} "$1" == " "
-    ${OrIf} "$1" == "$\t"
-      StrCpy $0 "$0" "" 1
-    ${Else}
-      ${ExitDo}
-    ${EndIf}
-  ${Loop}
-
-  ${Do}
-    StrLen $2 "$0"
-    ${If} $2 = 0
-      ${ExitDo}
-    ${EndIf}
-    IntOp $2 $2 - 1
-    StrCpy $1 "$0" 1 $2
-    ${If} "$1" == " "
-    ${OrIf} "$1" == "$\t"
-      StrCpy $0 "$0" $2
-    ${Else}
-      ${ExitDo}
-    ${EndIf}
-  ${Loop}
-
-  StrLen $2 "$0"
-  ${If} $2 >= 2
-    StrCpy $1 "$0" 1
-    ${If} "$1" == '"'
-      StrCpy $1 "$0" 1 -1
-      ${If} "$1" == '"'
-        IntOp $2 $2 - 2
-        StrCpy $0 "$0" $2 1
-      ${EndIf}
-    ${EndIf}
-  ${EndIf}
-
-  ${Do}
-    StrLen $2 "$0"
-    ${If} $2 <= 3
-      ${ExitDo}
-    ${EndIf}
-    StrCpy $1 "$0" 1 -1
-    ${If} "$1" == "\"
-    ${OrIf} "$1" == "/"
-      IntOp $2 $2 - 1
-      StrCpy $0 "$0" $2
-    ${Else}
-      ${ExitDo}
-    ${EndIf}
-  ${Loop}
-
-  Pop $2
-  Pop $1
-  Exch $0
-FunctionEnd
-!macroend
-
-!insertmacro DefineNormalizePathEntry ""
-!insertmacro DefineNormalizePathEntry "un."
-
-!macro DefinePathContainsExact Prefix TokenFunction
-Function ${Prefix}PathContainsExact
-  Exch $0
-  Exch
-  Exch $1
-  Push $2
-  Push $3
-  Push $4
-
-  Push "$0"
-  Call ${Prefix}NormalizePathEntry
-  Pop $0
-  StrCpy $2 0
-  StrCpy $4 0
-
-  ${Do}
-    ${${TokenFunction}} $3 "$1" ";" "$2" "1"
-    ${If} "$3" == ""
-      ${ExitDo}
-    ${EndIf}
-    Push "$3"
-    Call ${Prefix}NormalizePathEntry
-    Pop $3
-    ${If} "$3" == "$0"
-      StrCpy $4 1
-      ${ExitDo}
-    ${EndIf}
-    IntOp $2 $2 + 1
-  ${Loop}
-
-  StrCpy $0 "$4"
-  Pop $4
-  Pop $3
-  Pop $2
-  Pop $1
-  Exch $0
-FunctionEnd
-!macroend
-
-!insertmacro DefinePathContainsExact "" StrTok
-
-!macro DefineRemoveExactPath Prefix TokenFunction
-Function ${Prefix}RemoveExactPath
-  Exch $0
-  Exch
-  Exch $1
-  Push $2
-  Push $3
-  Push $4
-  Push $5
-
-  Push "$0"
-  Call ${Prefix}NormalizePathEntry
-  Pop $0
-  StrCpy $2 0
-  StrCpy $5 ""
-
-  ${Do}
-    ${${TokenFunction}} $3 "$1" ";" "$2" "1"
-    ${If} "$3" == ""
-      ${ExitDo}
-    ${EndIf}
-    StrCpy $4 "$3"
-    Push "$4"
-    Call ${Prefix}NormalizePathEntry
-    Pop $4
-    ${If} "$4" != "$0"
-      ${If} "$5" != ""
-        StrCpy $5 "$5;"
-      ${EndIf}
-      StrCpy $5 "$5$3"
-    ${EndIf}
-    IntOp $2 $2 + 1
-  ${Loop}
-
-  StrCpy $0 "$5"
-  Pop $5
-  Pop $4
-  Pop $3
-  Pop $2
-  Pop $1
-  Exch $0
-FunctionEnd
-!macroend
-
-!insertmacro DefineRemoveExactPath "" StrTok
-!insertmacro DefineRemoveExactPath "un." UnStrTok

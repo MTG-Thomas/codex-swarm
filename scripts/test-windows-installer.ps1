@@ -16,6 +16,25 @@ if ($env:OS -ne 'Windows_NT') {
     throw 'The Windows installer smoke test must run on Windows.'
 }
 
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+namespace CodexSwarmInstallerTest {
+    public static class NativeMethods {
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        public static extern IntPtr SendMessageTimeout(
+            IntPtr window,
+            uint message,
+            UIntPtr wParam,
+            string lParam,
+            uint flags,
+            uint timeout,
+            out UIntPtr result);
+    }
+}
+'@
+
 $TestRoot = [System.IO.Path]::GetFullPath($TestRoot)
 $allowedRoots = @(
     $env:RUNNER_TEMP
@@ -63,6 +82,22 @@ function Test-UserPathEntry {
         }
     }
     return $false
+}
+
+function Set-UserPath {
+    param([AllowEmptyString()][string]$Value)
+
+    [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
+    $result = [UIntPtr]::Zero
+    [void][CodexSwarmInstallerTest.NativeMethods]::SendMessageTimeout(
+        [IntPtr]0xffff,
+        0x001A,
+        [UIntPtr]::Zero,
+        'Environment',
+        2,
+        5000,
+        [ref]$result
+    )
 }
 
 try {
@@ -122,7 +157,7 @@ try {
         $currentPath += ';'
     }
     $preExistingEntry = '"{0}\"' -f $installDir
-    [Environment]::SetEnvironmentVariable('Path', $currentPath + $preExistingEntry, 'User')
+    Set-UserPath -Value ($currentPath + $preExistingEntry)
     Invoke-Installer
     $process = Start-Process -FilePath $uninstaller -ArgumentList @(
         '/S'
@@ -134,6 +169,42 @@ try {
         throw 'Uninstaller removed a PATH entry that existed before installation.'
     }
 
+    $longPathSegments = [Collections.Generic.List[string]]::new()
+    if ($originalPath) {
+        $longPathSegments.Add($originalPath)
+    }
+    for ($index = 0; ($longPathSegments -join ';').Length -le 4096; $index++) {
+        $longPathSegments.Add((Join-Path $TestRoot (
+            'long-path-segment-{0:D3}-{1}' -f $index, ('x' * 80)
+        )))
+    }
+    $longPath = $longPathSegments -join ';'
+    Set-UserPath -Value $longPath
+
+    Invoke-Installer
+    $expectedInstalledLongPath = "$longPath;$installDir"
+    $actualInstalledLongPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if ($actualInstalledLongPath -cne $expectedInstalledLongPath) {
+        throw "Installer did not preserve the long user PATH while adding itself. Expected length $($expectedInstalledLongPath.Length), got $($actualInstalledLongPath.Length)."
+    }
+
+    Invoke-Installer
+    $actualReinstalledLongPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if ($actualReinstalledLongPath -cne $expectedInstalledLongPath) {
+        throw 'Reinstall changed or duplicated the installer entry in the long user PATH.'
+    }
+
+    $process = Start-Process -FilePath $uninstaller -ArgumentList @(
+        '/S'
+    ) -Wait -PassThru
+    if ($process.ExitCode -ne 0) {
+        throw "Long PATH test uninstaller failed with exit code $($process.ExitCode)."
+    }
+    $actualUninstalledLongPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if ($actualUninstalledLongPath -cne $longPath) {
+        throw "Uninstaller did not restore the long user PATH exactly. Expected length $($longPath.Length), got $($actualUninstalledLongPath.Length)."
+    }
+
     Write-Host 'Windows installer smoke test passed.'
 } finally {
     if (Test-Path -LiteralPath $uninstaller) {
@@ -141,7 +212,7 @@ try {
             '/S'
         ) -Wait | Out-Null
     }
-    [Environment]::SetEnvironmentVariable('Path', $originalPath, 'User')
+    Set-UserPath -Value $originalPath
     Remove-Item -LiteralPath "Registry::HKEY_CURRENT_USER\$uninstallKey" -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath 'Registry::HKEY_CURRENT_USER\Software\MTG-Thomas\codex-swarm.ci' -Recurse -Force -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $TestRoot) {
