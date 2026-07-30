@@ -55,6 +55,16 @@ func Apply(current, entry string, action Action) (string, Result, error) {
 				kept = append(kept, part)
 			}
 		}
+		onlyEmpty := true
+		for _, part := range kept {
+			if normalizeEntry(part) != "" {
+				onlyEmpty = false
+				break
+			}
+		}
+		if onlyEmpty {
+			return "", Removed, nil
+		}
 		return strings.Join(kept, ";"), Removed, nil
 	default:
 		return current, "", fmt.Errorf("unsupported PATH action %q", action)

@@ -71,6 +71,22 @@ func TestApply(t *testing.T) {
 			wantPath:   `C:\One;;C:\Two;`,
 			wantResult: Absent,
 		},
+		{
+			name:       "remove only entry empties path",
+			current:    `C:\Tools\codex-swarm`,
+			entry:      `C:\Tools\codex-swarm`,
+			action:     Remove,
+			wantPath:   "",
+			wantResult: Removed,
+		},
+		{
+			name:       "remove collapses separator-only path",
+			current:    `;C:\Tools\codex-swarm;`,
+			entry:      `C:\Tools\codex-swarm`,
+			action:     Remove,
+			wantPath:   "",
+			wantResult: Removed,
+		},
 	}
 
 	for _, test := range tests {

@@ -59,7 +59,19 @@ $stateDir = Join-Path $TestRoot 'state'
 $stateSentinel = Join-Path $stateDir 'state-preserved.txt'
 $appId = 'MTG-Thomas.codex-swarm.ci'
 $uninstallKey = "Software\Microsoft\Windows\CurrentVersion\Uninstall\$appId"
-$originalPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+$environmentKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
+try {
+    $originalPath = [string]$environmentKey.GetValue(
+        'Path',
+        '',
+        [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+    )
+    $originalPathKind = $environmentKey.GetValueKind('Path')
+} catch {
+    $originalPathKind = [Microsoft.Win32.RegistryValueKind]::ExpandString
+} finally {
+    $environmentKey.Dispose()
+}
 $uninstaller = Join-Path $installDir 'Uninstall.exe'
 
 function Invoke-Installer {
@@ -75,7 +87,7 @@ function Invoke-Installer {
 function Test-UserPathEntry {
     param([string]$Entry)
 
-    $path = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $path = Get-UserPathValue
     foreach ($segment in $path -split ';') {
         if ($segment.Trim().Trim('"').TrimEnd('\', '/') -ieq $Entry.TrimEnd('\', '/')) {
             return $true
@@ -84,20 +96,58 @@ function Test-UserPathEntry {
     return $false
 }
 
-function Set-UserPath {
-    param([AllowEmptyString()][string]$Value)
+function Get-UserPathValue {
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
+    try {
+        return [string]$key.GetValue(
+            'Path',
+            '',
+            [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+        )
+    } finally {
+        $key.Dispose()
+    }
+}
 
-    [Environment]::SetEnvironmentVariable('Path', $Value, 'User')
-    $result = [UIntPtr]::Zero
-    [void][CodexSwarmInstallerTest.NativeMethods]::SendMessageTimeout(
-        [IntPtr]0xffff,
-        0x001A,
-        [UIntPtr]::Zero,
-        'Environment',
-        2,
-        5000,
-        [ref]$result
+function Update-UserPathValue {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [AllowEmptyString()][string]$Value,
+        [Microsoft.Win32.RegistryValueKind]$ValueKind = [Microsoft.Win32.RegistryValueKind]::ExpandString
     )
+
+    if ($PSCmdlet.ShouldProcess('HKCU\Environment\Path', "write $ValueKind value")) {
+        $key = [Microsoft.Win32.Registry]::CurrentUser.CreateSubKey('Environment')
+        try {
+            $key.SetValue('Path', $Value, $ValueKind)
+        } finally {
+            $key.Dispose()
+        }
+        $result = [UIntPtr]::Zero
+        [void][CodexSwarmInstallerTest.NativeMethods]::SendMessageTimeout(
+            [IntPtr]0xffff,
+            0x001A,
+            [UIntPtr]::Zero,
+            'Environment',
+            2,
+            5000,
+            [ref]$result
+        )
+    }
+}
+
+function Confirm-UserPathValueKind {
+    param([Microsoft.Win32.RegistryValueKind]$Expected)
+
+    $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
+    try {
+        $actual = $key.GetValueKind('Path')
+    } finally {
+        $key.Dispose()
+    }
+    if ($actual -ne $Expected) {
+        throw "Expected user PATH registry kind $Expected, got $actual."
+    }
 }
 
 try {
@@ -152,12 +202,12 @@ try {
         throw 'Uninstaller removed state outside the application directory.'
     }
 
-    $currentPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $currentPath = Get-UserPathValue
     if ($currentPath -and -not $currentPath.EndsWith(';')) {
         $currentPath += ';'
     }
     $preExistingEntry = '"{0}\"' -f $installDir
-    Set-UserPath -Value ($currentPath + $preExistingEntry)
+    Update-UserPathValue -Value ($currentPath + $preExistingEntry) -ValueKind $originalPathKind
     Invoke-Installer
     $process = Start-Process -FilePath $uninstaller -ArgumentList @(
         '/S'
@@ -170,6 +220,7 @@ try {
     }
 
     $longPathSegments = [Collections.Generic.List[string]]::new()
+    $longPathSegments.Add('%LOCALAPPDATA%\Microsoft\WindowsApps')
     if ($originalPath) {
         $longPathSegments.Add($originalPath)
     }
@@ -179,20 +230,23 @@ try {
         )))
     }
     $longPath = $longPathSegments -join ';'
-    Set-UserPath -Value $longPath
+    Update-UserPathValue -Value $longPath -ValueKind ExpandString
+    Confirm-UserPathValueKind -Expected ExpandString
 
     Invoke-Installer
     $expectedInstalledLongPath = "$longPath;$installDir"
-    $actualInstalledLongPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $actualInstalledLongPath = Get-UserPathValue
     if ($actualInstalledLongPath -cne $expectedInstalledLongPath) {
         throw "Installer did not preserve the long user PATH while adding itself. Expected length $($expectedInstalledLongPath.Length), got $($actualInstalledLongPath.Length)."
     }
+    Confirm-UserPathValueKind -Expected ExpandString
 
     Invoke-Installer
-    $actualReinstalledLongPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $actualReinstalledLongPath = Get-UserPathValue
     if ($actualReinstalledLongPath -cne $expectedInstalledLongPath) {
         throw 'Reinstall changed or duplicated the installer entry in the long user PATH.'
     }
+    Confirm-UserPathValueKind -Expected ExpandString
 
     $process = Start-Process -FilePath $uninstaller -ArgumentList @(
         '/S'
@@ -200,19 +254,40 @@ try {
     if ($process.ExitCode -ne 0) {
         throw "Long PATH test uninstaller failed with exit code $($process.ExitCode)."
     }
-    $actualUninstalledLongPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    $actualUninstalledLongPath = Get-UserPathValue
     if ($actualUninstalledLongPath -cne $longPath) {
         throw "Uninstaller did not restore the long user PATH exactly. Expected length $($longPath.Length), got $($actualUninstalledLongPath.Length)."
     }
+    Confirm-UserPathValueKind -Expected ExpandString
 
-    Write-Host 'Windows installer smoke test passed.'
+    Invoke-Installer
+    Remove-Item -LiteralPath (Join-Path $installDir 'cs.exe') -Force
+    $process = Start-Process -FilePath $uninstaller -ArgumentList @(
+        '/S'
+    ) -Wait -PassThru
+    if ($process.ExitCode -ne 0) {
+        throw "Missing PATH helper test uninstaller failed with exit code $($process.ExitCode)."
+    }
+    if (Test-Path -LiteralPath "Registry::HKEY_CURRENT_USER\$uninstallKey") {
+        throw 'Missing PATH helper test left its Installed Apps entry behind.'
+    }
+    if (Test-Path -LiteralPath (Join-Path $installDir 'csd.exe')) {
+        throw 'Missing PATH helper test left csd.exe behind.'
+    }
+    if ((Get-UserPathValue) -cne $expectedInstalledLongPath) {
+        throw 'Missing PATH helper test unexpectedly changed the user PATH.'
+    }
+    Confirm-UserPathValueKind -Expected ExpandString
+    Update-UserPathValue -Value $longPath -ValueKind ExpandString
+
+    Write-Output 'Windows installer smoke test passed.'
 } finally {
     if (Test-Path -LiteralPath $uninstaller) {
         Start-Process -FilePath $uninstaller -ArgumentList @(
             '/S'
         ) -Wait | Out-Null
     }
-    Set-UserPath -Value $originalPath
+    Update-UserPathValue -Value $originalPath -ValueKind $originalPathKind
     Remove-Item -LiteralPath "Registry::HKEY_CURRENT_USER\$uninstallKey" -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath 'Registry::HKEY_CURRENT_USER\Software\MTG-Thomas\codex-swarm.ci' -Recurse -Force -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $TestRoot) {
