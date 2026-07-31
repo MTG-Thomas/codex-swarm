@@ -58,6 +58,7 @@ by stable capabilities:
 - `live_message`: an active turn can receive steering immediately
 - `resume`: the recorded execution can be resumed
 - `managed_worktree`: swarm owns an isolated Git worktree for the worker
+- `host_worktree`: Codex owns an isolated Git worktree bound to the worker
 - `automatic_completion`: completion can be recorded by the runtime
 - `external_tracker`: execution is owned by another system
 - `native_steering_bridge`: an active externally owned turn can be injected by its Codex host
@@ -140,7 +141,40 @@ cs attach --worker <worker-id> --engine appserver `
   --thread <thread-id> --turn <turn-id> --host-id <host-id>
 ```
 
-### Start a worker
+### Create a Codex-hosted task
+
+When the coordinator is already running in Codex Desktop or another Codex host,
+prefer the host's native task API for task and worktree creation. Swarm reserves
+the durable coordination identity first, then binds the identity returned by
+Codex:
+
+```powershell
+cs dispatch prepare --json --repo . --parent <coordinator-worker-id> `
+  --role implementer --prompt "Implement the bounded change and run the checks"
+
+cs dispatch bind --worker <reserved-worker-id> --host-id <host-id> `
+  --thread <thread-id> --turn <active-turn-id> --cwd <task-cwd> `
+  --branch <task-branch>
+```
+
+`dispatch prepare` is an idempotent reservation. Its JSON contains a
+`native_task_create` envelope with the exact prompt, repository, requested
+`worktree` or `local` environment, ledger path, and stable bind request ID. The
+owning Codex host resolves the repository through its project list, calls its
+native task-creation tool, waits for a real `threadId`, reads the task's active
+turn and cwd, and supplies those values to `dispatch bind`. A temporary
+`clientThreadId` returned during worktree setup is not a task identity and must
+not be bound.
+
+The task prompt carries its pre-reserved worker and parent IDs plus the required
+identity-readback gate and `cs close --json` callback path, preventing a fast
+child from closing before the host identity is bound. Codex remains
+authoritative for the task, runtime, and worktree; swarm records their returned
+identity and coordinates claims, messages, handoffs, and completion. Use
+`--environment local` only when the task should work directly in the saved
+project checkout.
+
+### Start a cs-owned worker
 
 Use the deterministic mock engine for coordination tests and the app-server
 engine for a real Codex thread:
@@ -160,6 +194,10 @@ user-session daemon is preferred. A privileged Windows service or root daemon
 refuses to launch Codex, so `cs` starts a listener-free, detached `csd` runtime
 under the caller's identity instead. A caller timeout does not mark that
 resumable task failed; inspect the recorded worker before retrying.
+
+Keep `cs spawn --engine appserver` for headless, SSH, CI, and daemon-owned flows
+where no Codex host task API is available. It is a fallback runtime path, not
+the preferred way for one Codex Desktop task to create another.
 
 ### Claim scope before editing
 

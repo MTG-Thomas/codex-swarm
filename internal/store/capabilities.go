@@ -9,6 +9,7 @@ const (
 	CapabilityLiveMessage          RuntimeCapability = "live_message"
 	CapabilityResume               RuntimeCapability = "resume"
 	CapabilityManagedWorktree      RuntimeCapability = "managed_worktree"
+	CapabilityHostWorktree         RuntimeCapability = "host_worktree"
 	CapabilityAutomaticCompletion  RuntimeCapability = "automatic_completion"
 	CapabilityExternalTracker      RuntimeCapability = "external_tracker"
 	CapabilityNativeSteeringBridge RuntimeCapability = "native_steering_bridge"
@@ -66,6 +67,9 @@ func CapabilitiesForWorker(worker Worker) RuntimeCapabilities {
 	if truthfulManagedWorktree(worker) {
 		capabilities = append(capabilities, CapabilityManagedWorktree)
 	}
+	if truthfulHostWorktree(worker) {
+		capabilities = append(capabilities, CapabilityHostWorktree)
+	}
 	return capabilities
 }
 
@@ -88,6 +92,18 @@ func truthfulManagedWorktree(worker Worker) bool {
 	}
 	for _, event := range worker.Events {
 		if event.Type == "worktree.created" {
+			return true
+		}
+	}
+	return false
+}
+
+func truthfulHostWorktree(worker Worker) bool {
+	if strings.TrimSpace(worker.Worktree) == "" || worker.TaskEnvironment != NativeTaskEnvironmentWorktree {
+		return false
+	}
+	for _, event := range worker.Events {
+		if event.Type == "native.task.bound" {
 			return true
 		}
 	}

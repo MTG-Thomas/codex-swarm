@@ -33,6 +33,8 @@ in [roadmap.md](roadmap.md).
 - Capability-based runtime behavior independent of engine identity.
 - Daemon-owned app-server first turns with prompt durable identity readback,
   idempotent launch replay, asynchronous completion, and live steering.
+- Two-phase host-native Codex task dispatch with idempotent worker reservation,
+  authoritative host/thread/turn/worktree binding, and parent closeout routing.
 - Privileged-daemon launch refusal plus a detached, listener-free caller-owned
   `csd` runtime for Windows service and root-daemon installations.
 - Managed local worktrees and isolated remote Git sessions over SSH.
@@ -56,6 +58,8 @@ in [roadmap.md](roadmap.md).
 - Product-visible live steering for `cs`-owned turns plus a guarded native-host
   bridge for attached Codex tasks, queue fallback, and durable final-agent
   acknowledgement capture.
+- Scriptable `dispatch prepare` and `dispatch bind` envelopes for Codex-hosted
+  task creation without making swarm a second task or worktree runtime.
 - Durable metadata-only Codex task discovery plus a host-owned paginated
   collector hook; coordinator heartbeats can stage more than 50 tasks and read
   the resulting status immediately without blocking on child turns.

@@ -97,7 +97,8 @@ func Build(input Input) Snapshot {
 }
 
 func truthfulCheckout(worker store.Worker) (string, string) {
-	if store.CapabilitiesForWorker(worker).Has(store.CapabilityManagedWorktree) {
+	capabilities := store.CapabilitiesForWorker(worker)
+	if capabilities.Has(store.CapabilityManagedWorktree) || capabilities.Has(store.CapabilityHostWorktree) {
 		return strings.TrimSpace(worker.Worktree), strings.TrimSpace(worker.Branch)
 	}
 	return "", ""

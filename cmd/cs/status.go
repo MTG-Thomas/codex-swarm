@@ -158,7 +158,8 @@ func summarizeStatusWorkers(workers []store.Worker) []protocol.WorkerStatus {
 }
 
 func truthfulWorkerWorktree(worker store.Worker) string {
-	if store.CapabilitiesForWorker(worker).Has(store.CapabilityManagedWorktree) {
+	capabilities := store.CapabilitiesForWorker(worker)
+	if capabilities.Has(store.CapabilityManagedWorktree) || capabilities.Has(store.CapabilityHostWorktree) {
 		return worker.Worktree
 	}
 	return ""

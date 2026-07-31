@@ -107,6 +107,8 @@ func (c cli) run(args []string) error {
 		return c.decision(args[1:])
 	case "spawn":
 		return c.spawn(args[1:])
+	case "dispatch":
+		return c.dispatch(args[1:])
 	case "attach":
 		return c.attach(args[1:])
 	case "send":
@@ -1426,6 +1428,12 @@ func (c cli) show(args []string) error {
 	if worker.TurnID != "" {
 		fmt.Fprintf(c.out, "turn=%s\n", worker.TurnID)
 	}
+	if worktree := truthfulWorkerWorktree(worker); worktree != "" {
+		fmt.Fprintf(c.out, "worktree=%s\n", worktree)
+		if worker.Branch != "" {
+			fmt.Fprintf(c.out, "branch=%s\n", worker.Branch)
+		}
+	}
 	fmt.Fprintf(c.out, "repo=%s\nprompt=%s\n", worker.ProjectRoot, worker.Prompt)
 	if worker.Report != "" {
 		fmt.Fprintf(c.out, "report=%s\n", worker.Report)
@@ -1795,6 +1803,8 @@ Usage:
   cs spawn --repo . --prompt "inspect this repo"
   cs spawn --engine appserver --repo . --prompt "summarize this repo in one sentence"
   cs spawn --engine appserver --repo . --worktree --remote-host user@host --prompt "work remotely"
+  cs dispatch prepare --repo . --parent <worker> --prompt "create a host-owned Codex task" --json
+  cs dispatch bind --worker <worker> --host-id <host> --thread <thread> --cwd <task-cwd>
   cs attach --repo . --thread <thread-id> --prompt "track this Codex task"
   cs attach --worker <worker-id> --engine appserver --thread <thread-id> --turn <turn-id>
   cs spawn --issue owner/repo#123 --repo . --prompt "work this issue"
