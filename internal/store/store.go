@@ -40,30 +40,31 @@ const (
 
 // Worker is a durable local record for one agent or subagent.
 type Worker struct {
-	ID               string               `json:"id"`
-	ParentID         string               `json:"parent_id,omitempty"`
-	Role             string               `json:"role,omitempty"`
-	Issue            string               `json:"issue,omitempty"`
-	ValidationOf     string               `json:"validation_of,omitempty"`
-	ValidationStatus string               `json:"validation_status,omitempty"`
-	ProjectRoot      string               `json:"project_root"`
-	Worktree         string               `json:"worktree"`
-	Branch           string               `json:"branch"`
-	ThreadID         string               `json:"thread_id"`
-	TurnID           string               `json:"turn_id,omitempty"`
-	HostID           string               `json:"host_id,omitempty"`
-	Engine           string               `json:"engine"`
-	RuntimeOwner     RuntimeOwner         `json:"runtime_owner,omitempty"`
-	Remote           *RemoteExecution     `json:"remote,omitempty"`
-	Status           WorkerStatus         `json:"status"`
-	Lifecycle        *lifecycle.Lifecycle `json:"lifecycle,omitempty"`
-	Prompt           string               `json:"prompt"`
-	LastMessage      string               `json:"last_message,omitempty"`
-	Report           string               `json:"report,omitempty"`
-	PullRequests     []PullRequestState   `json:"pull_requests,omitempty"`
-	CreatedAt        time.Time            `json:"created_at"`
-	UpdatedAt        time.Time            `json:"updated_at"`
-	Events           []Event              `json:"events,omitempty"`
+	ID               string                `json:"id"`
+	ParentID         string                `json:"parent_id,omitempty"`
+	Role             string                `json:"role,omitempty"`
+	Issue            string                `json:"issue,omitempty"`
+	ValidationOf     string                `json:"validation_of,omitempty"`
+	ValidationStatus string                `json:"validation_status,omitempty"`
+	ProjectRoot      string                `json:"project_root"`
+	Worktree         string                `json:"worktree"`
+	Branch           string                `json:"branch"`
+	ThreadID         string                `json:"thread_id"`
+	TurnID           string                `json:"turn_id,omitempty"`
+	HostID           string                `json:"host_id,omitempty"`
+	Engine           string                `json:"engine"`
+	RuntimeOwner     RuntimeOwner          `json:"runtime_owner,omitempty"`
+	TaskEnvironment  NativeTaskEnvironment `json:"task_environment,omitempty"`
+	Remote           *RemoteExecution      `json:"remote,omitempty"`
+	Status           WorkerStatus          `json:"status"`
+	Lifecycle        *lifecycle.Lifecycle  `json:"lifecycle,omitempty"`
+	Prompt           string                `json:"prompt"`
+	LastMessage      string                `json:"last_message,omitempty"`
+	Report           string                `json:"report,omitempty"`
+	PullRequests     []PullRequestState    `json:"pull_requests,omitempty"`
+	CreatedAt        time.Time             `json:"created_at"`
+	UpdatedAt        time.Time             `json:"updated_at"`
+	Events           []Event               `json:"events,omitempty"`
 }
 
 // RuntimeOwner identifies which process owns a worker's live app-server
@@ -74,6 +75,15 @@ type RuntimeOwner string
 const (
 	RuntimeOwnerCS       RuntimeOwner = "cs"
 	RuntimeOwnerExternal RuntimeOwner = "external"
+)
+
+// NativeTaskEnvironment identifies the checkout mode requested from the
+// Codex host when it creates an externally owned task.
+type NativeTaskEnvironment string
+
+const (
+	NativeTaskEnvironmentLocal    NativeTaskEnvironment = "local"
+	NativeTaskEnvironmentWorktree NativeTaskEnvironment = "worktree"
 )
 
 // RemoteExecution identifies the SSH transport and isolated Git workspace for

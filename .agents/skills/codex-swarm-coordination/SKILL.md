@@ -41,7 +41,7 @@ cs attach --repo "<absolute-repo>" --thread "<thread-id>" `
   --prompt "<short task summary>"
 ```
 
-Create a worker when this task does not already have one:
+Create a coordination-only worker when this task does not already have one:
 
 ```powershell
 cs spawn --repo "<absolute-repo>" --role "<role>" `
@@ -49,14 +49,49 @@ cs spawn --repo "<absolute-repo>" --role "<role>" `
 ```
 
 For work dispatched or resumed by another task, preserve the coordinator's
-worker and Codex host/thread identity. Create the worker with
-`--parent <coordinator-worker-id>` so completion has a durable route back.
+worker and Codex host/thread identity. Use `--parent <coordinator-worker-id>` so
+completion has a durable route back.
 
-Use `--engine appserver` only to create a real Codex task. Add `--worktree` only
-when filesystem isolation is required; conversation isolation does not isolate
-files. App-server spawn may continue asynchronously after durable host, thread,
-turn, and worktree identity is recorded. Inspect the worker before retrying a
-timed-out spawn so a resumable task is not duplicated.
+When the user explicitly authorizes a new task and the current Codex host
+exposes native project, task-creation, and task-readback tools, use the
+two-phase native dispatch path:
+
+1. Reserve the worker:
+
+   ```powershell
+   cs dispatch prepare --json --repo "<absolute-repo>" `
+     --parent "<coordinator-worker-id>" --prompt "<task>"
+   ```
+
+2. Resolve the envelope's exact `project_root` through the host's project-list
+   tool. Use the returned project ID and the envelope's `environment` and exact
+   prompt with the native task-creation tool. Do not override model or reasoning
+   unless the user requested it.
+3. A returned `clientThreadId` means worktree setup is incomplete. Do not bind
+   it or pass it to thread tools. Wait for the real task to appear, preserving
+   the returned host ID.
+4. Read the real task to obtain its thread ID, active turn ID if present, and
+   cwd, then bind the returned identity:
+
+   ```powershell
+   cs dispatch bind --state "<state-path>" --request-id "<bind-request-id>" `
+     --worker "<reserved-worker-id>" --host-id "<host-id>" `
+     --thread "<thread-id>" --turn "<turn-id>" --cwd "<task-cwd>"
+   ```
+
+   Add `--branch` only when host readback provides one.
+5. Verify the durable worker identity before treating dispatch as successful.
+
+If task creation or binding fails, report the pending reservation and exact
+tool error. Do not fall back to `spawn` in the same attempt and create a
+duplicate task.
+
+Use `cs spawn --engine appserver` for a real Codex task only when native host
+task creation is unavailable, such as headless, SSH, CI, or daemon-owned work.
+Add `--worktree` only when filesystem isolation is required; conversation
+isolation does not isolate files. App-server spawn may continue asynchronously
+after durable host, thread, turn, and worktree identity is recorded. Inspect the
+worker before retrying a timed-out spawn so a resumable task is not duplicated.
 
 Use remote `spawn` options only for an explicitly authorized SSH workspace.
 Remote Git state remains authoritative on the remote host while the coordination
@@ -226,7 +261,8 @@ callback is confirmed or has a recorded delivery error.
   hosts, or platform state unless the command and user intent are explicit.
 - Keep `csd` loopback-only. Never expose it to centralize multiple hosts.
 - Prefer runtime capabilities (`live_message`, `resume`, `managed_worktree`,
-  `automatic_completion`, `external_tracker`) over engine-name assumptions.
+  `host_worktree`, `automatic_completion`, `external_tracker`) over engine-name
+  assumptions.
 - Keep secrets, tokens, private keys, prompt bodies, and customer data out of
   the ledger.
 - Use `cs legacy import-coordinator` only for migration. Use the legacy

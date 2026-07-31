@@ -11,6 +11,8 @@ file contains unfinished work only.
 
 - Improve attachment and identity discovery so existing Codex tasks join the
   ledger without manual archaeology.
+- Add a Codex-host adapter that executes and acknowledges the existing native
+  task-create envelope automatically; the two-phase CLI contract is complete.
 - Surface relevant claims, queued messages, file touches, and recent conflicts
   automatically at task start and resume.
 - Feed the derived attention view into task start and resume without turning it

@@ -42,6 +42,10 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Race test
+        if: runner.os == 'Linux'
+        run: go test -race ./...
+
       - name: Build
         run: |
           go build -trimpath ./cmd/cs

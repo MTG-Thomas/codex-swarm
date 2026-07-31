@@ -16,6 +16,7 @@ func TestCapabilitiesForWorkerAreStableAcrossEngineIdentity(t *testing.T) {
 		{name: "mock", worker: Worker{Engine: "mock"}, want: RuntimeCapabilities{CapabilityAutomaticCompletion}},
 		{name: "new engine remains protocol compatible", worker: Worker{Engine: "future-engine"}, want: RuntimeCapabilities{}},
 		{name: "managed worktree requires evidence", worker: Worker{Engine: "future-engine", Worktree: "/repo/worktree", Events: []Event{{Type: "worktree.created"}}}, want: RuntimeCapabilities{CapabilityManagedWorktree}},
+		{name: "host worktree requires binding evidence", worker: Worker{Engine: "appserver", RuntimeOwner: RuntimeOwnerExternal, TaskEnvironment: NativeTaskEnvironmentWorktree, Worktree: "/repo/worktree", ThreadID: "thread-1", Events: []Event{{Type: "native.task.bound"}}}, want: RuntimeCapabilities{CapabilityLiveMessage, CapabilityResume, CapabilityAutomaticCompletion, CapabilityNativeSteeringBridge, CapabilityNativeFollowupBridge, CapabilityHostWorktree}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -34,7 +35,8 @@ func TestCapabilitiesForWorkerAreStableAcrossEngineIdentity(t *testing.T) {
 
 func TestCapabilitiesForWorkerRejectsFabricatedWorktree(t *testing.T) {
 	worker := Worker{Engine: "tracker", Worktree: "/repo/fabricated"}
-	if CapabilitiesForWorker(worker).Has(CapabilityManagedWorktree) {
-		t.Fatal("fabricated worktree reported as managed")
+	capabilities := CapabilitiesForWorker(worker)
+	if capabilities.Has(CapabilityManagedWorktree) || capabilities.Has(CapabilityHostWorktree) {
+		t.Fatal("fabricated worktree reported as truthful")
 	}
 }

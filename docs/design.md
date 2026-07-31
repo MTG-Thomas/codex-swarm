@@ -50,6 +50,7 @@ Other systems keep their own authority:
   compare-and-swap decisions.
 - Remote SSH hosts own their Git and Codex credentials.
 - Codex app-server owns its threads, turns, and runtime events.
+- Codex hosts own native task creation and any worktree created for that task.
 
 The Codex task index is a durable discovery cache, not lifecycle authority.
 Codex hosts explicitly ingest bounded metadata snapshots. Stable host/thread
@@ -73,6 +74,19 @@ Only an exhausted collection explicitly finalized with complete coverage can
 mark unseen records missing. Task list and status endpoints remain immediate,
 nonblocking projections over the resulting index, while compact collection
 status exposes the next page and exact opaque cursor needed after a restart.
+
+Native task dispatch uses the same authority-preserving shape. `dispatch prepare`
+atomically reserves a pending externally owned worker and emits a host-action
+envelope; it does not start app-server or create a Git worktree.
+The owning Codex host resolves the saved project, creates the task with its
+native API, and waits until worktree setup yields a real thread ID.
+`dispatch bind` then atomically records the returned host, thread, active turn,
+cwd, and
+branch against the reservation. Both phases reject mismatched request-ID
+replays, and binding refuses to replace an existing runtime identity. The
+host-created task receives the reserved worker and parent IDs in its prompt so
+closeout can use the existing native follow-up bridge without creating a
+second worker record.
 
 Host-observed task status does not derive from an attached swarm worker. For a
 `cs`-spawned app-server worker, the CLI persists the worker and transfers the
@@ -106,6 +120,7 @@ Engine names describe implementation. Capabilities describe behavior:
 - `live_message`
 - `resume`
 - `managed_worktree`
+- `host_worktree`
 - `automatic_completion`
 - `external_tracker`
 - `native_steering_bridge`
@@ -122,6 +137,10 @@ host instead of opening a competing connection. Remote app-server workers
 retain the same coordination model while their checkout and Codex process live
 over SSH. Daemon shutdown detaches an already-persisted task as resumable
 instead of converting process cancellation into a false terminal failure.
+Host-native dispatch is externally owned app-server execution: Codex creates
+and owns the task and checkout, while swarm owns only the reservation, binding,
+and coordination lifecycle. Daemon-owned `cs spawn --engine appserver` remains
+the explicit fallback when no host task API is present.
 
 ## State and events
 
