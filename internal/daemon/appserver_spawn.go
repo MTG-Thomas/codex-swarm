@@ -134,7 +134,7 @@ func (s *Server) startAppserverWorker(ctx context.Context, request protocol.Apps
 	if worker.Engine != "appserver" || worker.RuntimeOwner != store.RuntimeOwnerCS {
 		return protocol.AppserverSpawnResponse{}, fmt.Errorf("%w: worker=%s engine=%s runtime_owner=%s", errInvalidAppserverWorker, worker.ID, worker.Engine, worker.RuntimeOwner)
 	}
-	fingerprint := appserverSpawnFingerprint(worker, request.Prompt)
+	fingerprint := appserverSpawnFingerprint(worker, request.Prompt, request.Model)
 
 	s.launchMu.Lock()
 	if existing := s.launches[worker.ID]; existing != nil {
@@ -203,7 +203,7 @@ func (s *Server) runAppserverWorker(st appserverWorkerStore, worker store.Worker
 		close(launch.done)
 		s.removeLaunch(worker.ID, launch)
 	}()
-	runner := s.appserverRunner(worker)
+	runner := s.appserverRunner(worker, request.Model)
 	startedPersisted := false
 	result, runErr := runner.RunTurnCoordinated(s.runtimeCtx, workerExecutionRoot(worker), request.Prompt, func(started appserver.RunResult) error {
 		at := time.Now().UTC()
@@ -385,14 +385,14 @@ func validateAppserverSpawnRequest(request protocol.AppserverSpawnRequest) error
 	return nil
 }
 
-func (s *Server) appserverRunner(worker store.Worker) AppserverTurnRunner {
+func (s *Server) appserverRunner(worker store.Worker, model string) AppserverTurnRunner {
 	if s.spawnRunner != nil {
 		return s.spawnRunner
 	}
 	if worker.Remote == nil {
-		return appserver.Runner{}
+		return appserver.Runner{Model: model}
 	}
-	return appserver.Runner{Process: appserver.SSHProcess{Target: worker.Remote.Host, Jump: worker.Remote.JumpHost, CodexBinary: worker.Remote.CodexBinary}, Sandbox: "danger-full-access"}
+	return appserver.Runner{Process: appserver.SSHProcess{Target: worker.Remote.Host, Jump: worker.Remote.JumpHost, CodexBinary: worker.Remote.CodexBinary}, Model: model, Sandbox: "danger-full-access"}
 }
 
 func (s *Server) removeLaunch(workerID string, launch *appserverLaunch) {
@@ -423,7 +423,7 @@ func replayAppserverSpawn(worker store.Worker, requestID, fingerprint string) (b
 	return false, nil
 }
 
-func appserverSpawnFingerprint(worker store.Worker, prompt string) string {
+func appserverSpawnFingerprint(worker store.Worker, prompt, model string) string {
 	data, _ := json.Marshal(struct {
 		WorkerID string                 `json:"worker_id"`
 		HostID   string                 `json:"host_id"`
@@ -431,7 +431,8 @@ func appserverSpawnFingerprint(worker store.Worker, prompt string) string {
 		Worktree string                 `json:"worktree"`
 		Remote   *store.RemoteExecution `json:"remote,omitempty"`
 		Prompt   string                 `json:"prompt"`
-	}{worker.ID, worker.HostID, worker.ProjectRoot, worker.Worktree, worker.Remote, prompt})
+		Model    string                 `json:"model,omitempty"`
+	}{worker.ID, worker.HostID, worker.ProjectRoot, worker.Worktree, worker.Remote, prompt, model})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }

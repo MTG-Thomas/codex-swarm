@@ -1223,6 +1223,14 @@ func TestCLISpawnAppserverPrintsLifecycleDisplayStatus(t *testing.T) {
 	}
 }
 
+func TestCLISpawnRejectsModelForMockEngine(t *testing.T) {
+	c := cli{out: &bytes.Buffer{}, err: &bytes.Buffer{}, now: time.Now}
+	err := c.run([]string{"spawn", "--engine", "mock", "--model", "gpt-5.6-luna", "--prompt", "audit"})
+	if err == nil || err.Error() != "--model requires --engine appserver" {
+		t.Fatalf("spawn error = %v, want appserver-only model error", err)
+	}
+}
+
 func TestCLIRepoHints(t *testing.T) {
 	var out bytes.Buffer
 	c := cli{out: &out, err: &bytes.Buffer{}, now: time.Now}

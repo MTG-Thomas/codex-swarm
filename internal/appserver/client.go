@@ -477,6 +477,7 @@ func (c *Client) respond(id int64, result any) error {
 type Runner struct {
 	Binary           string
 	Process          Process
+	Model            string
 	Sandbox          string
 	CompletionPolicy CompletionPolicy
 }
@@ -660,6 +661,7 @@ func (r Runner) runTurn(ctx context.Context, cwd, threadID, prompt string, obser
 		}
 		thread, err := client.ThreadStart(ctx, ThreadStartParams{
 			CWD:            cwd,
+			Model:          r.Model,
 			ApprovalPolicy: "never",
 			Sandbox:        sandbox,
 			ServiceName:    "codex-swarm",

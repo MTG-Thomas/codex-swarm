@@ -7,6 +7,7 @@ type AppserverSpawnRequest struct {
 	RequestID string `json:"request_id"`
 	WorkerID  string `json:"worker_id"`
 	Prompt    string `json:"prompt"`
+	Model     string `json:"model,omitempty"`
 }
 
 // AppserverSpawnResponse is returned after thread/start and turn/start have

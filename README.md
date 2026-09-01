@@ -186,6 +186,9 @@ cs spawn --engine appserver --repo . --worktree `
   --prompt "Implement the bounded change and run the repository checks"
 ```
 
+Pass `--model <model-id>` to select a model for a newly created app-server
+thread. Omit it to use Codex's configured default.
+
 `--worktree` creates and records an isolated branch and worktree. Conversation
 isolation alone does not isolate filesystem writes. `cs spawn` returns after a
 `csd` runtime has durably recorded the host, thread, turn, and worktree

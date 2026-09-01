@@ -17,6 +17,13 @@ import (
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
 
+func TestAppserverSpawnFingerprintIncludesModel(t *testing.T) {
+	worker := store.Worker{ID: "worker", ProjectRoot: t.TempDir()}
+	if appserverSpawnFingerprint(worker, "audit", "gpt-5.6-luna") == appserverSpawnFingerprint(worker, "audit", "gpt-5.6-terra") {
+		t.Fatal("model override must participate in spawn replay fingerprint")
+	}
+}
+
 func TestDaemonAppserverSpawnReturnsAfterDurableIdentityForFourLongTurns(t *testing.T) {
 	statePath := t.TempDir() + "/state.json"
 	st := store.NewJSONStore(statePath)

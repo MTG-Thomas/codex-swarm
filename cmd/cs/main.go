@@ -383,6 +383,7 @@ func (c cli) spawn(args []string) error {
 	repo := fs.String("repo", ".", "repository root")
 	prompt := fs.String("prompt", "", "worker prompt")
 	engine := fs.String("engine", "mock", "worker engine: mock or appserver")
+	model := fs.String("model", "", "Codex model for app-server workers")
 	role := fs.String("role", "", "worker role, for example implementer, reviewer, tester, or docs")
 	parentID := fs.String("parent", "", "parent worker id")
 	issueValue := fs.String("issue", "", "GitHub issue reference, for example owner/repo#123")
@@ -415,6 +416,9 @@ func (c cli) spawn(args []string) error {
 	managedBranch := "cs/" + managedName
 	if *engine != "mock" && *engine != "appserver" {
 		return fmt.Errorf("unknown engine %q", *engine)
+	}
+	if strings.TrimSpace(*model) != "" && *engine != "appserver" {
+		return errors.New("--model requires --engine appserver")
 	}
 	remoteRequested := strings.TrimSpace(*remoteHost) != ""
 	if remoteRequested && (*engine != "appserver" || !*createWorktree) {
@@ -555,7 +559,7 @@ func (c cli) spawn(args []string) error {
 		if err := store.NewJSONStore(*statePath).SaveWorker(worker); err != nil {
 			return fmt.Errorf("persist app-server worker before launch worker=%s host=%s worktree=%s: %w", worker.ID, worker.HostID, worker.Worktree, err)
 		}
-		request := protocol.AppserverSpawnRequest{RequestID: "appserver-spawn-" + worker.ID, WorkerID: worker.ID, Prompt: appserverPrompt}
+		request := protocol.AppserverSpawnRequest{RequestID: "appserver-spawn-" + worker.ID, WorkerID: worker.ID, Prompt: appserverPrompt, Model: strings.TrimSpace(*model)}
 		var response protocol.AppserverSpawnResponse
 		if c.appserverSpawner == nil && c.appserverRunner != nil {
 			response, err = c.runInjectedAppserverSpawn(ctx, *statePath, worker, appserverPrompt, request.RequestID)

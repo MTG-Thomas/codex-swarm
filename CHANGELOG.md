@@ -4,6 +4,12 @@ All notable changes to codex-swarm are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `cs spawn --engine appserver --model <model-id>` selects the Codex model for
+  the newly created worker thread while preserving the configured default when
+  omitted.
+
 ## [0.8.2] - 2026-07-30
 
 ### Fixed
