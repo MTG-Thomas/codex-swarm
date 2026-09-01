@@ -4,6 +4,8 @@ All notable changes to codex-swarm are documented here.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-09-01
+
 ### Added
 
 - `cs spawn --engine appserver --model <model-id>` selects the Codex model for
