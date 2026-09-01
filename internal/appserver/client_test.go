@@ -67,6 +67,19 @@ func TestInitializeSendsInitializedNotification(t *testing.T) {
 	}
 }
 
+func TestThreadStartIncludesModelOverride(t *testing.T) {
+	var written bytes.Buffer
+	server := strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{"thread":{"id":"thread-1"}}}` + "\n")
+	client := NewClient(&written, server)
+
+	if _, err := client.ThreadStart(context.Background(), ThreadStartParams{CWD: `C:\repo`, Model: "gpt-5.6-luna"}); err != nil {
+		t.Fatalf("ThreadStart() error = %v", err)
+	}
+	if got := written.String(); !strings.Contains(got, `"model":"gpt-5.6-luna"`) {
+		t.Fatalf("thread/start request = %s, want model override", got)
+	}
+}
+
 func TestWaitTurnCompleted(t *testing.T) {
 	var written bytes.Buffer
 	server := strings.NewReader(`{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thread-1"}}

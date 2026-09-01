@@ -28,6 +28,7 @@ type Error struct {
 
 type ThreadStartParams struct {
 	CWD            string `json:"cwd,omitempty"`
+	Model          string `json:"model,omitempty"`
 	ApprovalPolicy string `json:"approvalPolicy,omitempty"`
 	Sandbox        string `json:"sandbox,omitempty"`
 	ServiceName    string `json:"serviceName,omitempty"`
