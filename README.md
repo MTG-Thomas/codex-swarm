@@ -271,6 +271,16 @@ clears blocker fields, and forwards completion to the parent worker. Use
 JSON close response includes any `native_steering` or `native_followup` callback
 that the owning Codex host must inject and acknowledge.
 
+## Cross-host mailbox (opt-in)
+
+A [Worker + D1 relay](docs/cross-host-relay.md) adds shared task enrollment,
+durable handoffs and advisory resource claims across machines. `cs relay` is
+the operator API; `csd relay` delivers through the destination user's local
+`codex queue`. Lost responses reuse request IDs, and uncertain submissions are
+not automatically repeated. Existing local coordination remains available.
+See the guide for configuration, explicit enrollment, receipt verification,
+testing and deployment. This does not replicate the local swarm database.
+
 ## Common workflows
 
 ### Inspect current activity

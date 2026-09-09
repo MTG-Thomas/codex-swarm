@@ -6,3 +6,6 @@ coverage.out
 *.exe
 *.test
 cmd/*/resource_windows_*.syso
+node_modules/
+.wrangler/
+.dev.vars

@@ -274,3 +274,12 @@ cross-platform or persistence risk at a durable boundary. Current examples are
 SQLite and native Windows service integration. A CLI framework, GitHub SDK, or
 service abstraction should be added only when the existing boundary becomes
 measurably less safe or maintainable.
+
+## Optional cross-host relay
+
+The Worker/D1 service owns explicitly shared mailbox, enrollment and advisory
+claim records. The local swarm ledger still owns existing local coordination.
+Each user-owned receiver keeps a separate `relay.db` for local enrollment and
+submission recovery. There is no multi-master replication or elevated remote
+execution endpoint. See [cross-host relay](cross-host-relay.md) for transaction,
+authorization, recovery and acknowledgment boundaries.

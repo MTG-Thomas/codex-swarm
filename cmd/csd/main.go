@@ -27,6 +27,8 @@ func run() error {
 	args := os.Args[1:]
 	if len(args) > 0 {
 		switch args[0] {
+		case "relay":
+			return relayHost(args[1:])
 		case "serve":
 			return serve(args[1:])
 		case "status":

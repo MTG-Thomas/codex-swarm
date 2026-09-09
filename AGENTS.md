@@ -31,7 +31,9 @@ Do not install upstream skill packs globally for this repo. Use `docs/skills.md`
 
 ## Current Architecture Invariants
 
-- The machine-global local state is authoritative. New stores use `state.db`; existing `state.json` SQLite ledgers remain selected until a controlled migration.
+- The machine-global local state is authoritative for existing local coordination.
+  The opt-in Worker/D1 relay owns only its explicitly shared mailbox and advisory
+  claims; it does not replicate the local store. New stores use `state.db`; existing `state.json` SQLite ledgers remain selected until a controlled migration.
 - Keep worker engine identity for diagnostics, but make coordination decisions through stable runtime capabilities rather than engine-name checks.
 - Claims and conflict messages are warning-only. Git, GitHub, Bifrost, and other target systems retain authority for their own mutations and conflicts.
 - When `cs message --json` returns `native_steering`, use the owning Codex host's native task-message tool with the returned host, thread, and prompt. Confirm success with `cs message confirm-steered`, or record tool failure with `cs message steering-failed`; never open a competing app-server process to steer an externally owned turn.
@@ -70,3 +72,11 @@ go build -trimpath ./cmd/csd
 Run `go test -race ./...` when changing daemon concurrency, worker lifecycle, JSON-RPC multiplexing, store access, goroutines, or cancellation behavior.
 
 Run `govulncheck ./...` when dependencies, GitHub integration, daemon security boundaries, command execution, or path handling change.
+
+## Cross-host relay verification
+
+For relay changes also run `npm ci`, `npm test`, `npm run test:integration`,
+`npm run check`, and `npm audit` in `coordinator/` with Node 22+. Integration
+uses a fake Codex executable, never a live task. Preserve the distinction between
+submitted, acknowledged and completed. Never automatically retry a Codex
+submission whose outcome is uncertain.

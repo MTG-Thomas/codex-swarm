@@ -193,3 +193,36 @@ jobs:
           }
           ./scripts/test-windows-installer.ps1 `
             -InstallerPath (Join-Path $outputDir 'codex-swarm-v0.0.0-ci-windows-amd64-setup.exe')
+
+  relay:
+    name: Worker and cross-host relay
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Setup Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: coordinator/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci
+        working-directory: coordinator
+      - name: D1 contract tests
+        run: npm test
+        working-directory: coordinator
+      - name: Go and D1 integration
+        run: npm run test:integration
+        working-directory: coordinator
+      - name: Worker build preview
+        run: npm run check
+        working-directory: coordinator
+      - name: Dependency audit
+        run: npm audit
+        working-directory: coordinator

@@ -1,0 +1,21 @@
+{
+  "name": "codex-swarm-coordinator",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+  "workers_dev": false,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "codex-swarm",
+      "database_id": "ee70620a-8bf6-477a-a344-fedd79c84036",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "account_id": "b5fc61a1bec847ecc83b3b880b563aaf",
+  "routes": [
+    {
+      "pattern": "codex-swarm.midtowntg.com",
+      "custom_domain": true,
+    },
+  ],
+}

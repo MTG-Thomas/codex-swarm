@@ -82,3 +82,11 @@ losing identity, ownership evidence, or the safe next action.
 
 Exit signal: a new machine can install the latest release, understand the
 operating model, and verify a healthy local service without reading source.
+
+## Cross-host relay follow-up
+
+The opt-in mailbox has a Worker/D1 implementation and local Go receiver. Remaining
+work: live account/Windows acceptance, optional user-service installation,
+retention with a defined replay horizon, automatic host-observed acknowledgments,
+and an explicit mapping/export contract for existing local workers and claims.
+Do not treat the relay as transparent replacement of the local ledger.

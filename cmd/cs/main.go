@@ -93,6 +93,8 @@ func (c cli) run(args []string) error {
 	}
 
 	switch args[0] {
+	case "relay":
+		return c.relayCommand(args[1:])
 	case "doctor":
 		return c.doctor(args[1:])
 	case "status":
@@ -1788,6 +1790,7 @@ func (c cli) printUsage() {
 	fmt.Fprintln(c.out, `cs - Codex swarm operator CLI
 
 Usage:
+  cs relay register|send|get|tasks|inbox|receipt (cross-host mailbox)
   cs status [--since 24h] [--repo .] [--status working,idle] [--limit 50]
   cs status --all
   cs status --issues
