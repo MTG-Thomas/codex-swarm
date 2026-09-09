@@ -92,6 +92,40 @@ It cannot cancel a submission already in progress. Enrollment is operator
 permission to accept work from the trusted swarm, not a grant to bypass Codex
 approval policy. Do not enroll tasks without authorization.
 
+## Windows packaged-shell path visibility
+
+A virtualized packaged desktop shell can see an AppData file that Task Scheduler
+cannot. Windows may redirect new AppData writes into a private per-user, per-app
+location while presenting the usual path inside that app. See Microsoft's
+[packaged desktop file-system behavior](https://learn.microsoft.com/en-us/windows/msix/desktop/desktop-to-uwp-behind-the-scenes#appdata-operations-on-windows-10-version-1903-and-later).
+A successful `Test-Path` or interactive launch in the creating shell does not
+prove that a scheduled process can access the same filename.
+
+For a durable installation launched from a packaged shell, stage binaries,
+private relay configuration and the relay journal in verified user-owned paths
+outside AppData, such as `%USERPROFILE%\codex-swarm`. The destination must not
+be under `%APPDATA%`, `%LOCALAPPDATA%` or a package-private directory. Check executable hashes and required file visibility from an unpackaged
+process. Keep secrets local and restrict configuration ACLs. Do not make an app's
+private package cache the permanent datastore: uninstalling the app can remove it.
+
+Preserve the existing machine ledger's actual physical file. Before moving a
+relay journal on the same host **as the same OS user**, stop its receiver, wait
+for process exit, preserve all rows and identity, and verify the offline copy.
+Changing the journal's OS user is unsupported; do not rewrite its identity.
+A local-only SYSTEM service has no relay journal to transfer; its machine ledger
+and an existing user-owned relay journal are separate stores. Both the new receiver and any rollback receiver must
+use the latest journal; never revert to a stale copy after delivery resumes.
+
+Prove a local-only scheduled canary on a separate loopback port and temporary
+physical state/log before stopping an existing daemon. Wait for the old process
+to exit and release its listener before starting its replacement. Then verify integrated
+startup and a real observed delivery. `0x80070002` with no daemon log is evidence
+of a launch failure, not proof of its cause; an exit code of 1 needs the daemon
+log. Never run a diagnostic receiver against the live coordinator with an empty
+journal: the receiver checks central readiness and claims work before checking
+local enrollment. Use a synthetic
+loopback coordinator/identity for relay startup diagnostics.
+
 ## Send and verify
 
 Save the bounded handoff as a UTF-8 file (maximum 16 KiB). Include the intended
