@@ -50,27 +50,37 @@ func run() error {
 }
 
 func serve(args []string) error {
-	addr, statePath, err := serveOptions(args)
+	cfg, err := parseServeConfig(args, defaultStatePath())
 	if err != nil {
 		return err
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), terminationSignals()...)
 	defer stop()
-	return runServer(ctx, addr, statePath, os.Stdout)
+	return runConfiguredServer(ctx, cfg, os.Stdout)
 }
 
 func serveOptions(args []string) (string, string, error) {
 	return serveOptionsWithDefaultState(args, defaultStatePath())
 }
 
+type serveConfig struct{ Addr, StatePath, RelayConfig string }
+
 func serveOptionsWithDefaultState(args []string, defaultState string) (string, string, error) {
+	c, err := parseServeConfig(args, defaultState)
+	return c.Addr, c.StatePath, err
+}
+func parseServeConfig(args []string, defaultState string) (serveConfig, error) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", envDefault("CODEX_SWARM_DAEMON_ADDR", "127.0.0.1:8787"), "daemon listen address")
-	statePath := fs.String("state", envDefault("CODEX_SWARM_STATE", defaultState), "state file path")
+	state := fs.String("state", envDefault("CODEX_SWARM_STATE", defaultState), "local ledger path")
+	relay := fs.String("relay-config", os.Getenv("CODEX_SWARM_RELAY_CONFIG"), "absolute private relay JSON config path (opt-in)")
 	if err := fs.Parse(args); err != nil {
-		return "", "", err
+		return serveConfig{}, err
 	}
-	return *addr, *statePath, nil
+	if fs.NArg() != 0 {
+		return serveConfig{}, fmt.Errorf("serve accepts no positional arguments")
+	}
+	return serveConfig{Addr: *addr, StatePath: *state, RelayConfig: *relay}, nil
 }
 
 func status() error {

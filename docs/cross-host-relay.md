@@ -2,7 +2,7 @@
 
 The opt-in relay gives Windows, Linux and macOS hosts a shared task mailbox and
 warning-only resource claims. A Cloudflare Worker owns its D1 records; a
-user-owned `csd relay` polls outbound and invokes `codex queue` locally. Existing
+user-owned `csd serve` polls outbound and invokes `codex queue` locally. Existing
 `cs message`, native steering, the loopback daemon and the machine-local swarm
 ledger keep their current behavior. This is an explicit additional execution
 lane, not replication of `state.db` or the Codex session database.
@@ -12,8 +12,8 @@ lane, not replication of `state.db` or the Codex session database.
 Build `cs` and `csd` from the same reviewed source. The host must have a Codex
 CLI that supports `codex queue --thread --message` (verified with 0.153.4).
 Run the receiver under the same OS user/profile as the destination task. Root
-and SYSTEM execution is rejected. `csd relay` has no listener and is not
-installed into the existing system service automatically.
+and SYSTEM relay execution is rejected. Configure the normal daemon explicitly;
+without relay configuration it remains local-only.
 
 Configure these environment variables in the sender/receiver user processes:
 
@@ -34,8 +34,45 @@ From the **destination user session**, enroll each exact existing task:
 ```text
 cs relay register --thread <task-uuid> --title "Existing task"
 cs relay tasks --host thomas-windows
-csd relay --codex <installed-codex-path>
+csd serve --relay-config <absolute-private-config-path>
 ```
+
+The daemon reads a private JSON file (mode 0600 on Unix; restrict its Windows
+ACL to the owning user). Only its absolute filename goes into service arguments:
+
+```json
+{
+  "url": "https://codex-swarm.midtowntg.com",
+  "host": "your-host-id",
+  "token": "<host-secret>",
+  "codex": "<absolute-installed-codex-path>",
+  "journal": "<absolute-existing-relay-journal-path>",
+  "interval": "30s"
+}
+```
+
+`journal` defaults beside the selected local ledger, `codex` to PATH, and
+`interval` to 30 seconds (5 seconds–1 hour). Prefer an absolute Codex path for
+installed daemons. Set `CODEX_SWARM_RELAY_CONFIG` before `csd install --user` to
+persist the configuration filename. Restart to load changed credentials.
+Relay initialization errors stop the daemon; temporary transport failures retain
+pending work and retry. Both components share shutdown and join subprocess work.
+
+On Windows, `csd install --user` creates a Task Scheduler logon task named
+`codex-swarm-daemon-<current-user-SID>`, with InteractiveToken and LeastPrivilege.
+Start it immediately with `schtasks /Run /TN <reported-task-name>`. It runs while
+that user is logged in and starts again at logon. It does not replace an existing
+task. `csd uninstall --user` stops and removes only that user's task.
+
+An existing default Windows SCM service runs as LocalSystem and cannot execute
+the relay. Before switching, record its exact state path and binary, stop and
+disable that service explicitly, then install/start the user task with
+`CODEX_SWARM_STATE` set to the same ledger. Preserve the old service for rollback.
+Do not start two daemons on port 8787, or two relay receivers against one journal.
+The graphical installer still installs the SCM service; do not use it to upgrade
+a migrated user-task installation without reconciling startup ownership.
+Linux uses the existing user systemd unit; macOS uses its user launch agent.
+`csd relay --once` remains available for diagnostics and recovery.
 
 Registration writes central discovery plus an independent local allowlist in
 `relay.db`, next to the normal swarm ledger. The journal is bound to its exact

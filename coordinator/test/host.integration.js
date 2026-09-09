@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID, createHash } from "node:crypto";
 import { Miniflare } from "miniflare";
@@ -16,7 +16,7 @@ test(
   async () => {
     const dir = await mkdtemp(join(tmpdir(), "swarm-relay-"));
     const root = resolve("..");
-    let mf;
+    let mf, daemon;
     try {
       const cs = join(dir, "cs"),
         csd = join(dir, "csd");
@@ -96,7 +96,55 @@ test(
         run(csd, ["relay", "--once", "--journal", journal, "--codex", fake], {
           env: { ...env, SWARM_TEST_CALLS: count },
         });
-      await poll();
+      const config = join(dir, "host.json");
+      await writeFile(
+        config,
+        JSON.stringify({
+          url: url.origin,
+          host: "receiver",
+          token,
+          codex: fake,
+          journal,
+          interval: "5s",
+        }),
+        { mode: 0o600 },
+      );
+      daemon = spawn(
+        csd,
+        [
+          "serve",
+          "--addr",
+          "127.0.0.1:0",
+          "--state",
+          join(dir, "state.db"),
+          "--relay-config",
+          config,
+        ],
+        { env: { ...env, SWARM_TEST_CALLS: count }, stdio: "pipe" },
+      );
+      let output = "";
+      daemon.stdout.on("data", (chunk) => {
+        output += chunk;
+      });
+      const deadline = Date.now() + 15000;
+      while (
+        (await cli(["get", "--id", sent.id], "sender")).state !== "submitted"
+      ) {
+        assert.ok(Date.now() < deadline, "integrated daemon did not submit");
+        assert.equal(daemon.exitCode, null, "daemon exited early");
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      const address = output.match(/addr=(127\.0\.0\.1:\d+)/)?.[1];
+      assert.ok(address, "daemon listener missing");
+      assert.ok(
+        (await fetch(`http://${address}/healthz`)).ok,
+        "local API unavailable alongside relay",
+      );
+      const exited = new Promise((resolve) => daemon.once("exit", resolve));
+      daemon.kill("SIGTERM");
+      assert.equal(await exited, 0, "integrated shutdown failed");
+      daemon = null;
+      // Restart through the diagnostic poller: persisted journal prevents replay.
       await poll();
       assert.equal((await readFile(count, "utf8")).trim(), "called");
       const submitted = await cli(["get", "--id", sent.id], "sender");
@@ -128,6 +176,7 @@ test(
         "completed",
       );
     } finally {
+      daemon?.kill("SIGKILL");
       await mf?.dispose();
       await rm(dir, { recursive: true, force: true });
     }
