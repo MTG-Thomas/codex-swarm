@@ -18,7 +18,10 @@ import (
 
 func (c cli) relayCommand(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: cs relay register|send|get|tasks|inbox|receipt|claim|claims|release (see docs/cross-host-relay.md)")
+		return fmt.Errorf("usage: cs relay register|session-start|send|get|tasks|inbox|receipt|claim|claims|release (see docs/cross-host-relay.md)")
+	}
+	if args[0] == "session-start" {
+		return c.relaySessionStartStdin(args[1:])
 	}
 	fs := flag.NewFlagSet("relay "+args[0], flag.ContinueOnError)
 	fs.SetOutput(c.err)
