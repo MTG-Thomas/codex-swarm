@@ -125,13 +125,15 @@ jobs:
           trap - EXIT
           test ! -f "$unit"
 
-      - name: Windows user task registration smoke
+      - name: Windows user task startup smoke
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $env:CODEX_SWARM_STATE = Join-Path $env:RUNNER_TEMP 'codex-swarm-user-state.db'
-          $env:CODEX_SWARM_RELAY_CONFIG = Join-Path $env:RUNNER_TEMP 'private-relay.json'
+          $env:CODEX_SWARM_RELAY_CONFIG = ''
+          $env:CODEX_SWARM_DAEMON_ADDR = '127.0.0.1:18790'
+          $env:CODEX_SWARM_LOG_FILE = Join-Path $env:RUNNER_TEMP 'csd-user-task.log'
           $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
           $taskName = "codex-swarm-daemon-$sid"
           $installed = $false
@@ -140,8 +142,22 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'user task registration failed' }
             $installed = $true
             $task = Get-ScheduledTask -TaskName $taskName
-            if ($task.Actions.Arguments -notlike '*--relay-config*') {
-              throw 'task lost relay configuration filename'
+            if ($task.Actions.Arguments -notlike '*--log-file*') {
+              throw 'task lost log filename'
+            }
+            Start-ScheduledTask -TaskName $taskName
+            $ready = $false
+            for ($i = 0; $i -lt 20; $i++) {
+              try {
+                $health = Invoke-RestMethod "http://$($env:CODEX_SWARM_DAEMON_ADDR)/healthz"
+                if ($health.status -eq 'ok') { $ready = $true; break }
+              } catch {}
+              Start-Sleep -Seconds 1
+            }
+            if (-not $ready) {
+              Get-ScheduledTaskInfo -TaskName $taskName | Format-List | Out-Host
+              if (Test-Path $env:CODEX_SWARM_LOG_FILE) { Get-Content $env:CODEX_SWARM_LOG_FILE | Out-Host }
+              throw 'scheduled daemon did not become healthy'
             }
           } finally {
             if ($installed) {

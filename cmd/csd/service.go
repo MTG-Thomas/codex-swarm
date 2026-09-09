@@ -26,6 +26,7 @@ type serviceConfig struct {
 	Addr        string
 	StatePath   string
 	RelayConfig string
+	LogFile     string
 }
 
 func defaultServiceConfig() (serviceConfig, error) {
@@ -48,6 +49,10 @@ func defaultServiceConfig() (serviceConfig, error) {
 	cfg.RelayConfig = os.Getenv("CODEX_SWARM_RELAY_CONFIG")
 	if cfg.RelayConfig != "" && !filepath.IsAbs(cfg.RelayConfig) {
 		return serviceConfig{}, fmt.Errorf("CODEX_SWARM_RELAY_CONFIG must be absolute")
+	}
+	cfg.LogFile = os.Getenv("CODEX_SWARM_LOG_FILE")
+	if cfg.LogFile != "" && !filepath.IsAbs(cfg.LogFile) {
+		return serviceConfig{}, fmt.Errorf("CODEX_SWARM_LOG_FILE must be absolute")
 	}
 	cfg.Args = cfg.serveArgs()
 	return cfg, nil
@@ -80,6 +85,9 @@ func (c serviceConfig) serveArgs() []string {
 	args := []string{"serve", "--addr", c.Addr, "--state", c.StatePath}
 	if c.RelayConfig != "" {
 		args = append(args, "--relay-config", c.RelayConfig)
+	}
+	if c.LogFile != "" {
+		args = append(args, "--log-file", c.LogFile)
 	}
 	return args
 }

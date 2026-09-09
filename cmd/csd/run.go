@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -16,7 +17,28 @@ import (
 	"github.com/MTG-Thomas/codex-swarm/internal/store"
 )
 
-func runConfiguredServer(ctx context.Context, c serveConfig, out io.Writer) error {
+func runConfiguredServer(ctx context.Context, c serveConfig, out io.Writer) (result error) {
+	if c.LogFile != "" {
+		if !filepath.IsAbs(c.LogFile) {
+			return fmt.Errorf("daemon log path must be absolute")
+		}
+		if err := os.MkdirAll(filepath.Dir(c.LogFile), 0700); err != nil {
+			return fmt.Errorf("create daemon log directory: %w", err)
+		}
+		file, err := os.OpenFile(c.LogFile, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			return fmt.Errorf("open daemon log: %w", err)
+		}
+		fmt.Fprintf(file, "%s csd starting\n", time.Now().UTC().Format(time.RFC3339))
+		// Write the file first: Task Scheduler may supply unusable standard handles.
+		out = io.MultiWriter(file, out)
+		defer func() {
+			if result != nil {
+				fmt.Fprintf(file, "%s csd: %v\n", time.Now().UTC().Format(time.RFC3339), result)
+			}
+			_ = file.Close()
+		}()
+	}
 	out = &lockedWriter{out: out}
 	var task func(context.Context) error
 	if c.RelayConfig != "" {

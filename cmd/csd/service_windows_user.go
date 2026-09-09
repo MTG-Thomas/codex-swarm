@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -43,6 +44,7 @@ func installWindowsUserDaemon() error {
 		return err
 	}
 	cfg.StatePath = envDefault("CODEX_SWARM_STATE", config.DefaultStatePath())
+	cfg.LogFile = envDefault("CODEX_SWARM_LOG_FILE", filepath.Join(filepath.Dir(cfg.StatePath), "csd.log"))
 	cfg.Args = cfg.serveArgs()
 	args := make([]string, len(cfg.Args))
 	for i, arg := range cfg.Args {
