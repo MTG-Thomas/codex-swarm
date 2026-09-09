@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/user"
@@ -11,6 +12,10 @@ import (
 
 	_ "modernc.org/sqlite"
 )
+
+var errJournalBusy = errors.New("relay journal is busy")
+
+func IsJournalBusy(err error) bool { return errors.Is(err, errJournalBusy) }
 
 // Journal is separate from the local swarm ledger. It contains only local
 // enrollment, pending claim requests, and durable queue submission receipts.
@@ -33,9 +38,13 @@ func OpenJournal(path, origin, host string) (*Journal, error) {
 		return nil, err
 	}
 	ok, err := tryLockStateFile(lock)
-	if err != nil || !ok {
+	if err != nil {
 		lock.Close()
-		return nil, fmt.Errorf("relay journal is busy or unavailable: %s", path)
+		return nil, fmt.Errorf("relay journal lock: %w", err)
+	}
+	if !ok {
+		lock.Close()
+		return nil, fmt.Errorf("%w: %s", errJournalBusy, path)
 	}
 	j := &Journal{lock: lock}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
