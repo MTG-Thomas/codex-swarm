@@ -85,8 +85,10 @@ operating model, and verify a healthy local service without reading source.
 
 ## Cross-host relay follow-up
 
-The opt-in mailbox has a Worker/D1 implementation and local Go receiver. Remaining
-work: live account/Windows acceptance, optional user-service installation,
-retention with a defined replay horizon, automatic host-observed acknowledgments,
-and an explicit mapping/export contract for existing local workers and claims.
+Integrated user-owned daemon startup and live Windows/Linux round-trip task
+receipt are verified. Follow [fleet-messaging.md](fleet-messaging.md) for host
+onboarding, explicit task enrollment, skill distribution and acceptance evidence.
+Remaining product work: retention with a defined replay horizon, automatic
+host-observed acknowledgments, task-start enrollment within explicit policy, and
+an explicit mapping/export contract for existing local workers and claims.
 Do not treat the relay as transparent replacement of the local ledger.
