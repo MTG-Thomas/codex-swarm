@@ -1,6 +1,6 @@
 ---
 name: codex-swarm-coordination
-description: "Use for substantial local Codex coordination: workers, warning-only claims, messages, callbacks, handoffs, evidence, open-loop readback, and terminal closeout."
+description: "Use for substantial local or cross-host Codex coordination: workers, warning-only claims, messages, callbacks, handoffs, evidence, open-loop readback, and terminal closeout."
 ---
 
 # Codex Swarm Coordination
@@ -156,6 +156,21 @@ prompt. Then record success with `cs message confirm-followup`, or record the
 tool error with `cs message followup-failed`. If either command is unsupported,
 report the version skew and upgrade before relying on this callback path. Do not
 finish while a returned native callback is unacknowledged or silently stranded.
+
+### Cross-host fallback
+
+When native delivery tools are missing, check `codex queue --help` on the
+**destination host**, under the destination task's OS user. Queueing locally
+works for same-host tasks; another host needs an authorized transport. Never
+resume a remote task ID in a new local app-server. A queue receipt proves
+submission only; verify actual destination receipt before claiming acknowledgment.
+
+For an enrolled shared relay, use `cs relay send` and `cs relay get`; read
+[the relay guide](../../../../docs/cross-host-relay.md) for exact commands,
+configuration, local enrollment, and evidence recording. `csd relay` owns the
+queue invocation and its durable retry journal. Do not also send the same work
+through a native callback. Relay records are separate from local worker delivery
+IDs; do not manufacture a local `confirm-followup` from a relay submission.
 
 ## 5. Keep coordinators nonblocking
 

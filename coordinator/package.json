@@ -1,0 +1,23 @@
+{
+  "name": "codex-swarm-coordinator",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "dev": "wrangler dev",
+    "check": "wrangler deploy --dry-run",
+    "test:integration": "node --test test/host.integration.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "miniflare": "4.20260730.0",
+    "prettier": "3.9.6",
+    "wrangler": "4.130.0"
+  },
+  "overrides": {
+    "undici": "7.29.1",
+    "sharp": "0.35.4"
+  }
+}
