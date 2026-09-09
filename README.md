@@ -279,7 +279,8 @@ the operator API; a configured user-owned `csd serve` delivers through the desti
 `codex queue`. Lost responses reuse request IDs, and uncertain submissions are
 not automatically repeated. Existing local coordination remains available.
 See the guide for configuration, explicit enrollment, receipt verification,
-testing and deployment. This does not replicate the local swarm database.
+testing and deployment. Use [fleet messaging](docs/fleet-messaging.md) for host
+onboarding and agent enrollment. This does not replicate the local swarm database.
 
 ## Common workflows
 

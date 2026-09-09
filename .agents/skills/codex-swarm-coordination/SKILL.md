@@ -167,8 +167,8 @@ submission only; verify actual destination receipt before claiming acknowledgmen
 
 For an enrolled shared relay, use `cs relay send` and `cs relay get`; read
 [the relay guide](../../../../docs/cross-host-relay.md) for exact commands,
-configuration, local enrollment, and evidence recording. `csd relay` owns the
-queue invocation and its durable retry journal. Do not also send the same work
+configuration, local enrollment, and evidence recording. The integrated
+user-owned `csd serve` receiver owns the queue invocation and its durable retry journal. Do not also send the same work
 through a native callback. Relay records are separate from local worker delivery
 IDs; do not manufacture a local `confirm-followup` from a relay submission.
 
