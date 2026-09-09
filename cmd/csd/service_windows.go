@@ -21,7 +21,7 @@ func installService(args []string) error {
 		return err
 	}
 	if scope == serviceScopeUser {
-		return fmt.Errorf("--user service installation is not supported on Windows")
+		return installWindowsUserDaemon()
 	}
 	cfg, err := defaultServiceConfig()
 	if err != nil {
@@ -57,7 +57,7 @@ func uninstallService(args []string) error {
 		return err
 	}
 	if scope == serviceScopeUser {
-		return fmt.Errorf("--user service uninstallation is not supported on Windows")
+		return uninstallWindowsUserDaemon()
 	}
 	cfg, err := defaultServiceConfig()
 	if err != nil {
@@ -130,12 +130,12 @@ func (s windowsService) Execute(startArgs []string, requests <-chan svc.ChangeRe
 	if len(args) > 0 && args[0] == "serve" {
 		args = args[1:]
 	}
-	addr, statePath, err := serveOptionsWithDefaultState(args, defaultServiceStatePath())
+	cfg, err := parseServeConfig(args, defaultServiceStatePath())
 	if err != nil {
 		return false, 1
 	}
 	go func() {
-		done <- runServer(ctx, addr, statePath, io.Discard)
+		done <- runConfiguredServer(ctx, cfg, io.Discard)
 	}()
 
 	changes <- svc.Status{State: svc.StartPending}
@@ -156,8 +156,11 @@ func (s windowsService) Execute(startArgs []string, requests <-chan svc.ChangeRe
 				return false, 0
 			default:
 			}
-		case <-done:
+		case err := <-done:
 			cancel()
+			if err != nil {
+				return true, 1
+			}
 			return false, 0
 		}
 	}

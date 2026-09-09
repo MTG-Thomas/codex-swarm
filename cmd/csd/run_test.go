@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"io"
 	"path/filepath"
 	"testing"
@@ -43,4 +44,45 @@ func (w signalWriter) Write(p []byte) (int, error) {
 	default:
 	}
 	return io.Discard.Write(p)
+}
+
+func TestRunServerJoinsTaskOnShutdown(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started, joined := make(chan struct{}), make(chan struct{})
+	done := make(chan error, 1)
+	state := filepath.Join(t.TempDir(), "state.db")
+	go func() {
+		done <- runServerWithTask(ctx, "127.0.0.1:0", state, io.Discard, func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+			close(joined)
+			return ctx.Err()
+		})
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown did not join task")
+	}
+	select {
+	case <-joined:
+	default:
+		t.Fatal("task not joined")
+	}
+}
+
+func TestRunServerStopsWhenTaskFails(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	expected := errors.New("relay startup failed")
+	err := runServerWithTask(ctx, "127.0.0.1:0", filepath.Join(t.TempDir(), "state.db"), io.Discard, func(context.Context) error { return expected })
+	if !errors.Is(err, expected) {
+		t.Fatalf("error = %v", err)
+	}
 }

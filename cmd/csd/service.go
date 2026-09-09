@@ -25,6 +25,7 @@ type serviceConfig struct {
 	Args        []string
 	Addr        string
 	StatePath   string
+	RelayConfig string
 }
 
 func defaultServiceConfig() (serviceConfig, error) {
@@ -44,7 +45,11 @@ func defaultServiceConfig() (serviceConfig, error) {
 		Addr:        envDefault("CODEX_SWARM_DAEMON_ADDR", "127.0.0.1:8787"),
 		StatePath:   envDefault("CODEX_SWARM_STATE", defaultServiceStatePath()),
 	}
-	cfg.Args = []string{"serve", "--addr", cfg.Addr, "--state", cfg.StatePath}
+	cfg.RelayConfig = os.Getenv("CODEX_SWARM_RELAY_CONFIG")
+	if cfg.RelayConfig != "" && !filepath.IsAbs(cfg.RelayConfig) {
+		return serviceConfig{}, fmt.Errorf("CODEX_SWARM_RELAY_CONFIG must be absolute")
+	}
+	cfg.Args = cfg.serveArgs()
 	return cfg, nil
 }
 
@@ -69,4 +74,12 @@ func (s serviceScope) String() string {
 		return "user"
 	}
 	return "system"
+}
+
+func (c serviceConfig) serveArgs() []string {
+	args := []string{"serve", "--addr", c.Addr, "--state", c.StatePath}
+	if c.RelayConfig != "" {
+		args = append(args, "--relay-config", c.RelayConfig)
+	}
+	return args
 }

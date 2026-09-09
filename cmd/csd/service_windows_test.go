@@ -3,19 +3,11 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
-
-func TestWindowsServiceRejectsUserScope(t *testing.T) {
-	if err := installService([]string{"--user"}); err == nil || !strings.Contains(err.Error(), "not supported on Windows") {
-		t.Fatalf("installService(--user) error = %v", err)
-	}
-	if err := uninstallService([]string{"--user"}); err == nil || !strings.Contains(err.Error(), "not supported on Windows") {
-		t.Fatalf("uninstallService(--user) error = %v", err)
-	}
-}
 
 func TestWindowsServiceDefaultStatePathUsesProgramData(t *testing.T) {
 	programData := t.TempDir()
@@ -68,5 +60,34 @@ func TestWindowsServiceArgsFallBackToStartArguments(t *testing.T) {
 		if got[i] != startArgs[i] {
 			t.Fatalf("windowsServiceArgs()[%d] = %q, want %q", i, got[i], startArgs[i])
 		}
+	}
+}
+
+func TestWindowsUserInstallPersistsConfigWithoutStarting(t *testing.T) {
+	t.Setenv("CODEX_SWARM_RELAY_CONFIG", filepath.Join(t.TempDir(), "private.json"))
+	t.Setenv("CODEX_SWARM_STATE", filepath.Join(t.TempDir(), "existing.db"))
+	original := runWindowsTask
+	defer func() { runWindowsTask = original }()
+	calls := 0
+	runWindowsTask = func(args ...string) ([]byte, error) {
+		calls++
+		if len(args) != 5 || args[0] != "/Create" || args[3] != "/XML" {
+			t.Fatalf("unexpected invocation %q", args)
+		}
+		data, err := os.ReadFile(args[4])
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		if !strings.Contains(text, "--relay-config") || !strings.Contains(text, "existing.db") || strings.Contains(text, "LocalSystem") {
+			t.Fatalf("incorrect task definition")
+		}
+		return nil, nil
+	}
+	if err := installService([]string{"--user"}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls=%d", calls)
 	}
 }
