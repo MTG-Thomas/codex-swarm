@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -84,5 +86,21 @@ func TestRunServerStopsWhenTaskFails(t *testing.T) {
 	err := runServerWithTask(ctx, "127.0.0.1:0", filepath.Join(t.TempDir(), "state.db"), io.Discard, func(context.Context) error { return expected })
 	if !errors.Is(err, expected) {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRunConfiguredServerLogsStartupFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "logs", "csd.log")
+	err := runConfiguredServer(context.Background(), serveConfig{Addr: "invalid-address", StatePath: filepath.Join(dir, "state.db"), LogFile: path}, io.Discard)
+	if err == nil {
+		t.Fatal("expected startup error")
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(data), err.Error()) {
+		t.Fatalf("startup error absent from log: %s", data)
 	}
 }

@@ -62,7 +62,9 @@ On Windows, `csd install --user` creates a Task Scheduler logon task named
 `codex-swarm-daemon-<current-user-SID>`, with InteractiveToken and LeastPrivilege.
 Start it immediately with `schtasks /Run /TN <reported-task-name>`. It runs while
 that user is logged in and starts again at logon. It does not replace an existing
-task. `csd uninstall --user` stops and removes only that user's task.
+task. The user task writes startup and runtime diagnostics to `csd.log` beside
+the selected ledger; `CODEX_SWARM_LOG_FILE` overrides that absolute path.
+Foreground `serve --log-file <absolute-path>` supports the same logging. `csd uninstall --user` stops and removes only that user's task.
 
 An existing default Windows SCM service runs as LocalSystem and cannot execute
 the relay. Before switching, record its exact state path and binary, stop and
