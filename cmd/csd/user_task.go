@@ -2,8 +2,11 @@ package main
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/xml"
 	"fmt"
+	"strings"
+	"unicode/utf16"
 )
 
 // Task Scheduler starts the daemon in the logged-in user's session. No password,
@@ -22,4 +25,17 @@ func userTaskXML(sid, executable, arguments string) string {
  <Actions Context="User"><Exec><Command>%s</Command><Arguments>%s</Arguments></Exec></Actions>
 </Task>
 `, escape(sid), escape(sid), escape(executable), escape(arguments))
+}
+
+// schtasks reads imported task files as UTF-16; match the declaration to the
+// little-endian BOM instead of relying on XML's UTF-8 default.
+func userTaskFile(sid, executable, arguments string) []byte {
+	doc := strings.Replace(userTaskXML(sid, executable, arguments), `encoding="UTF-8"`, `encoding="UTF-16"`, 1)
+	words := utf16.Encode([]rune(doc))
+	data := make([]byte, 2+len(words)*2)
+	data[0], data[1] = 0xff, 0xfe
+	for i, w := range words {
+		binary.LittleEndian.PutUint16(data[2+i*2:], w)
+	}
+	return data
 }

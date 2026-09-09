@@ -53,7 +53,7 @@ func installWindowsUserDaemon() error {
 		return err
 	}
 	defer os.Remove(f.Name())
-	_, writeErr := f.WriteString(userTaskXML(sid, cfg.Executable, strings.Join(args, " ")))
+	_, writeErr := f.Write(userTaskFile(sid, cfg.Executable, strings.Join(args, " ")))
 	closeErr := f.Close()
 	if writeErr != nil {
 		return writeErr

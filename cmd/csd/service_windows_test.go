@@ -78,7 +78,7 @@ func TestWindowsUserInstallPersistsConfigWithoutStarting(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		text := string(data)
+		text := decodeTaskFile(t, data)
 		if !strings.Contains(text, "--relay-config") || !strings.Contains(text, "existing.db") || strings.Contains(text, "LocalSystem") {
 			t.Fatalf("incorrect task definition")
 		}
