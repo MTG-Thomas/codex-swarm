@@ -125,6 +125,31 @@ jobs:
           trap - EXIT
           test ! -f "$unit"
 
+      - name: Windows user task registration smoke
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:CODEX_SWARM_STATE = Join-Path $env:RUNNER_TEMP 'codex-swarm-user-state.db'
+          $env:CODEX_SWARM_RELAY_CONFIG = Join-Path $env:RUNNER_TEMP 'private-relay.json'
+          $sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+          $taskName = "codex-swarm-daemon-$sid"
+          $installed = $false
+          try {
+            .\csd.exe install --user
+            if ($LASTEXITCODE -ne 0) { throw 'user task registration failed' }
+            $installed = $true
+            $task = Get-ScheduledTask -TaskName $taskName
+            if ($task.Actions.Arguments -notlike '*--relay-config*') {
+              throw 'task lost relay configuration filename'
+            }
+          } finally {
+            if ($installed) {
+              .\csd.exe uninstall --user
+              if ($LASTEXITCODE -ne 0) { throw 'user task cleanup failed' }
+            }
+          }
+
       - name: Windows service smoke
         if: runner.os == 'Windows'
         shell: pwsh
