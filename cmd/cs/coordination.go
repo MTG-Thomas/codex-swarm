@@ -207,6 +207,8 @@ func (c cli) printNativeCallbacks(response protocol.MessageResponse) {
 			request.StatePath, request.RecipientID, request.ThreadID, request.DeliveryID)
 		fmt.Fprintf(c.out, "  after_failure=cs message followup-failed --state %q --worker %s --thread %s --error <error> %s\n",
 			request.StatePath, request.RecipientID, request.ThreadID, request.DeliveryID)
+		fmt.Fprintf(c.out, "  via_codex_queue=cs message deliver-followup --via codex-queue --state %q --worker %s --thread %s %s\n",
+			request.StatePath, request.RecipientID, request.ThreadID, request.DeliveryID)
 	}
 }
 

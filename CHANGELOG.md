@@ -4,6 +4,16 @@ All notable changes to codex-swarm are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- `cs message deliver-followup --via codex-queue <delivery-id>` delivers a
+  queued `native_followup` envelope through `codex queue` by exact thread
+  UUID, locally or through the worker's recorded SSH transport. Success uses
+  the existing idempotent `confirm-followup` transition, definite failure
+  records `followup-failed`, and uncertain outcomes leave the delivery queued
+  without retry. Active-turn `native_steering` envelopes are rejected, and
+  Codex CLI versions older than 0.149.0 fail before delivery.
+
 ## [0.8.3] - 2026-09-01
 
 ### Added

@@ -258,6 +258,23 @@ Use `cs message followup-failed ... --error <error>` when the host call fails.
 The delivery remains queued with the error and continues to appear in inbox and
 attention readback.
 
+When the desktop-native task-message tool is unavailable, a terminal/SSH
+operator can deliver the same envelope explicitly with
+`codex queue` (Codex CLI 0.149.0 or newer) instead:
+
+```powershell
+cs message deliver-followup --via codex-queue --state <state-path> `
+  --worker <worker-id> --thread <thread-id> <delivery-id>
+```
+
+Delivery targets the recorded thread UUID, runs locally or through the
+worker's recorded SSH transport without shell-interpolating the prompt, and
+reuses the same durable transitions: success confirms the follow-up, definite
+failure records `followup-failed`, and an uncertain outcome leaves the
+delivery queued without retry. It never applies to `native_steering`
+envelopes and never replaces direct app-server messaging for cs-owned
+workers.
+
 ### Close the work
 
 ```powershell
