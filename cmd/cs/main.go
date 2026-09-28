@@ -809,6 +809,8 @@ func (c cli) message(args []string) error {
 			return c.updateNativeFollowup(args[1:], true)
 		case "followup-failed":
 			return c.updateNativeFollowup(args[1:], false)
+		case "deliver-followup":
+			return c.deliverFollowup(args[1:])
 		}
 	}
 	fs := c.flagSet("message")
@@ -1823,6 +1825,7 @@ Usage:
   cs message steering-failed --worker <worker> --thread <thread> --turn <turn> --error <error> <delivery>
   cs message confirm-followup --worker <worker> --thread <thread> <delivery>
   cs message followup-failed --worker <worker> --thread <thread> --error <error> <delivery>
+  cs message deliver-followup --via codex-queue --worker <worker> --thread <thread> <delivery>
   cs inbox --queued <worker>
   cs touch --worker <worker> --repo . --path internal/store/store.go --intent "edit store"
   cs handoff --request-id <id> <from-worker> <to-worker> "summary"

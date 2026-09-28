@@ -25,6 +25,9 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	if os.Getenv("CS_TEST_QUEUE_HELPER") == "1" {
+		os.Exit(runTestQueueHelper())
+	}
 	// Tests that pass --state must never inherit the operator's installed daemon.
 	// Individual daemon tests opt in with t.Setenv and an httptest server.
 	_ = os.Setenv("CODEX_SWARM_DAEMON_URL", "")
