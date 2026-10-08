@@ -23,8 +23,6 @@ jobs:
   sonar:
     name: SonarCloud
     runs-on: ubuntu-latest
-    env:
-      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -39,17 +37,28 @@ jobs:
           cache: true
 
       - name: Test with coverage
-        if: env.SONAR_TOKEN != ''
         run: |
           mkdir -p .sonar
           go test -coverprofile=.sonar/coverage.out ./...
 
+      - name: Check SonarCloud configuration
+        id: sonar
+        if: github.event_name == 'push'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        run: |
+          if [[ -n "$SONAR_TOKEN" ]]; then
+            echo 'configured=true' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: SonarCloud scan
-        if: env.SONAR_TOKEN != ''
+        if: github.event_name == 'push' && steps.sonar.outputs.configured == 'true'
         uses: SonarSource/sonarqube-scan-action@ba9859eae8dd6bd29e412f25ddbbef3d032000f4 # v8.2.2
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
 
       - name: SonarCloud not configured
-        if: env.SONAR_TOKEN == ''
+        if: github.event_name == 'push' && steps.sonar.outputs.configured != 'true'
         run: |
           echo "Skipping SonarCloud scan because SONAR_TOKEN is not configured for this repository."
           echo "Create the SonarCloud project MTG-Thomas_codex-swarm in organization mtg-thomas and add SONAR_TOKEN as a GitHub Actions secret."
