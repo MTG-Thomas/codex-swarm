@@ -20,6 +20,8 @@ import (
 
 const stateLockTimeout = 15 * time.Second
 
+var errUnsafeStateLock = errors.New("unsafe state lock")
+
 type JSONStore struct {
 	path string
 	mu   sync.Mutex
@@ -1367,8 +1369,11 @@ func acquireStateLock(statePath string) (*stateLock, error) {
 	lockPath := statePath + ".lock"
 	deadline := time.Now().Add(stateLockTimeout)
 	for {
-		file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+		file, err := openStateLockFile(lockPath)
 		if err != nil {
+			if errors.Is(err, errUnsafeStateLock) {
+				return nil, fmt.Errorf("open state lock %s: %w", lockPath, err)
+			}
 			if time.Now().After(deadline) {
 				return nil, fmt.Errorf("open state lock %s: timed out after %s: %w", lockPath, stateLockTimeout, err)
 			}
