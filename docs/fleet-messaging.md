@@ -63,9 +63,9 @@ runtime commit `206238f8de70dd4f11dcbeed321cdac8b6f8841e`. That proves the
 implementation on those hosts, not universal fleet enrollment.
 
 Remaining rollout work is host discovery and onboarding, installation/trust of
-the policy-bound enrollment hook, and distribution of the handoff skill. Product follow-up
-includes automated host-observed acknowledgments, retention with a replay horizon,
-and an explicit export contract if local coordination records ever need sharing.
+the policy-bound enrollment hook, and distribution of the handoff skill. Product
+follow-up includes automated host-observed acknowledgments and an explicit export
+contract if local coordination records ever need sharing.
 None of those future features is implied by enabling today's relay.
 
 ## Automatic enrollment at startup and resume

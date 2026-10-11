@@ -2,7 +2,7 @@
 // The fake Codex executable only emits a receipt; it never opens a real task.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { execFile, spawn } from "node:child_process";
@@ -34,14 +34,17 @@ test(
         },
       });
       const db = await mf.getD1Database("DB");
-      const sql = await readFile("migrations/0001_relay.sql", "utf8");
-      await db.batch(
-        sql
-          .split(";")
-          .map((s) => s.trim())
-          .filter(Boolean)
-          .map((s) => db.prepare(s)),
-      );
+      for (const name of (await readdir("migrations")).sort()) {
+        if (!name.endsWith(".sql")) continue;
+        const sql = await readFile(`migrations/${name}`, "utf8");
+        await db.batch(
+          sql
+            .split(";")
+            .map((s) => s.trim())
+            .filter(Boolean)
+            .map((s) => db.prepare(s)),
+        );
+      }
       const url = await mf.ready;
       const env = {
         ...process.env,

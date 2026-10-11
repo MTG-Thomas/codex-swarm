@@ -1,8 +1,9 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { Miniflare } from "miniflare";
+import { compactRelay } from "../src/index.js";
 let mf;
 const thread = randomUUID();
 const tokens = {
@@ -11,15 +12,18 @@ const tokens = {
   other: "test-other-token",
 };
 async function call(host, path, body, token = tokens[host]) {
-  const r = await mf.dispatchFetch("http://relay.test" + path, {
+  return relayCall(mf, host, path, body, token);
+}
+async function relayCall(relay, host, path, body, token = tokens[host]) {
+  const r = await relay.dispatchFetch("http://relay.test" + path, {
     method: body ? "POST" : "GET",
     headers: { "X-Swarm-Host": host, Authorization: `Bearer ${token}` },
     body: body ? JSON.stringify(body) : undefined,
   });
   return { status: r.status, data: await r.json() };
 }
-before(async () => {
-  mf = new Miniflare({
+async function startRelay(quotaLimits) {
+  const relay = new Miniflare({
     modules: true,
     scriptPath: new URL("../src/index.js", import.meta.url).pathname,
     compatibilityDate: "2026-07-30",
@@ -33,20 +37,29 @@ before(async () => {
           ]),
         ),
       ),
+      RELAY_QUOTA_LIMITS_JSON:
+        typeof quotaLimits === "string"
+          ? quotaLimits
+          : JSON.stringify(quotaLimits ?? {}),
     },
   });
-  const db = await mf.getD1Database("DB");
-  const sql = await readFile(
-    new URL("../migrations/0001_relay.sql", import.meta.url),
-    "utf8",
-  );
-  await db.batch(
-    sql
-      .split(";")
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .map((s) => db.prepare(s)),
-  );
+  const db = await relay.getD1Database("DB");
+  const migrations = new URL("../migrations/", import.meta.url);
+  for (const name of (await readdir(migrations)).sort()) {
+    if (!name.endsWith(".sql")) continue;
+    const sql = await readFile(new URL(name, migrations), "utf8");
+    await db.batch(
+      sql
+        .split(";")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((s) => db.prepare(s)),
+    );
+  }
+  return relay;
+}
+before(async () => {
+  mf = await startRelay();
 });
 after(async () => mf?.dispose());
 test("host authentication is required", async () =>
@@ -54,6 +67,23 @@ test("host authentication is required", async () =>
     (await call("windows", "/v1/tasks", null, "wrong")).status,
     401,
   ));
+test("invalid quota configuration cannot disable the checked-in limits", async () => {
+  const relay = await startRelay("null");
+  try {
+    assert.equal(
+      (
+        await relayCall(relay, "windows", "/v1/tasks", {
+          thread_id: randomUUID(),
+          title: "default limits",
+          enabled: true,
+        })
+      ).status,
+      200,
+    );
+  } finally {
+    await relay.dispose();
+  }
+});
 test("end-to-end mailbox, retries, ownership and explicit completion", async () => {
   assert.equal(
     (
@@ -322,4 +352,245 @@ test("task inventory pagination preserves more than 100 tasks", async () => {
       .size,
     106,
   );
+});
+test("aggregate quotas reject new rows but preserve idempotent replays", async () => {
+  const relay = await startRelay({
+    tasksPerHost: 1,
+    claimsPerHost: 2,
+    activeClaimsPerHost: 1,
+    attemptsPerHost: 1,
+    messagesPerSender: 2,
+    activeMessagesPerSender: 1,
+    activeMessagesPerTarget: 1,
+  });
+  try {
+    const task = {
+      thread_id: randomUUID(),
+      title: "quota target",
+      enabled: true,
+    };
+    assert.equal(
+      (await relayCall(relay, "windows", "/v1/tasks", task)).status,
+      200,
+    );
+    assert.equal(
+      (
+        await relayCall(relay, "windows", "/v1/tasks", {
+          thread_id: randomUUID(),
+          title: "too many",
+          enabled: true,
+        })
+      ).status,
+      429,
+    );
+    assert.equal(
+      (
+        await relayCall(relay, "windows", "/v1/tasks", {
+          ...task,
+          title: "safe update at capacity",
+        })
+      ).status,
+      200,
+    );
+
+    const claim = {
+      request_id: randomUUID(),
+      resource: "repo:quota",
+      note: "first",
+    };
+    assert.equal(
+      (await relayCall(relay, "linux", "/v1/claims", claim)).status,
+      200,
+    );
+    assert.equal(
+      (await relayCall(relay, "linux", "/v1/claims", claim)).status,
+      200,
+    );
+    assert.equal(
+      (
+        await relayCall(relay, "linux", "/v1/claims", {
+          ...claim,
+          request_id: randomUUID(),
+        })
+      ).status,
+      429,
+    );
+
+    const message = {
+      request_id: randomUUID(),
+      target_host: "windows",
+      thread_id: task.thread_id,
+      prompt: "first",
+    };
+    assert.equal(
+      (await relayCall(relay, "linux", "/v1/messages", message)).status,
+      200,
+    );
+    assert.equal(
+      (await relayCall(relay, "linux", "/v1/messages", message)).status,
+      200,
+    );
+    assert.equal(
+      (
+        await relayCall(relay, "linux", "/v1/messages", {
+          ...message,
+          request_id: randomUUID(),
+        })
+      ).status,
+      429,
+    );
+
+    const attempt = { request_id: randomUUID() };
+    assert.equal(
+      (await relayCall(relay, "windows", "/v1/claim", attempt)).status,
+      200,
+    );
+    assert.equal(
+      (await relayCall(relay, "windows", "/v1/claim", attempt)).status,
+      200,
+    );
+    assert.equal(
+      (
+        await relayCall(relay, "windows", "/v1/claim", {
+          request_id: randomUUID(),
+        })
+      ).status,
+      429,
+    );
+  } finally {
+    await relay.dispose();
+  }
+});
+test("concurrent senders cannot race past a target queue quota", async () => {
+  const relay = await startRelay({ activeMessagesPerTarget: 1 });
+  try {
+    const targetThread = randomUUID();
+    assert.equal(
+      (
+        await relayCall(relay, "windows", "/v1/tasks", {
+          thread_id: targetThread,
+          title: "bounded target",
+          enabled: true,
+        })
+      ).status,
+      200,
+    );
+    const sends = await Promise.all(
+      ["linux", "other"].map((host) =>
+        relayCall(relay, host, "/v1/messages", {
+          request_id: randomUUID(),
+          target_host: "windows",
+          thread_id: targetThread,
+          prompt: `from ${host}`,
+        }),
+      ),
+    );
+    assert.deepEqual(sends.map(({ status }) => status).sort(), [200, 429]);
+    const db = await relay.getD1Database("DB");
+    assert.equal(
+      (
+        await db
+          .prepare(
+            "SELECT COUNT(*) AS count FROM messages WHERE target_host='windows' AND state!='completed'",
+          )
+          .first()
+      ).count,
+      1,
+    );
+  } finally {
+    await relay.dispose();
+  }
+});
+test("compaction deletes expired terminal history but preserves replay-horizon rows", async () => {
+  const relay = await startRelay();
+  try {
+    const db = await relay.getD1Database("DB");
+    const old = "2020-01-01T00:00:00.000Z";
+    const recent = "2026-10-01T00:00:00.000Z";
+    const oldMessage = `linux:${randomUUID()}`;
+    const recentMessage = `linux:${randomUUID()}`;
+    await db.batch([
+      db
+        .prepare("INSERT INTO hosts(id,seen_at) VALUES(?,?)")
+        .bind("linux", recent),
+      db
+        .prepare("INSERT INTO hosts(id,seen_at) VALUES(?,?)")
+        .bind("windows", recent),
+      db
+        .prepare(
+          "INSERT INTO tasks(host_id,thread_id,title,enabled,updated_at) VALUES(?,?,?,?,?)",
+        )
+        .bind("windows", thread, "fixture", 1, recent),
+      ...[oldMessage, recentMessage].map((id, index) =>
+        db
+          .prepare(
+            "INSERT INTO messages(id,sender_host,request_id,target_host,thread_id,prompt,state,created_at,updated_at) VALUES(?,?,?,?,?,?,'completed',?,?)",
+          )
+          .bind(
+            id,
+            "linux",
+            id.slice("linux:".length),
+            "windows",
+            thread,
+            "fixture",
+            index === 0 ? old : recent,
+            index === 0 ? old : recent,
+          ),
+      ),
+      db
+        .prepare(
+          "INSERT INTO attempts(host_id,request_id,message_id,created_at) VALUES(?,?,?,?)",
+        )
+        .bind("windows", randomUUID(), oldMessage, old),
+      db
+        .prepare(
+          "INSERT INTO attempts(host_id,request_id,message_id,created_at) VALUES(?,?,NULL,?)",
+        )
+        .bind("windows", randomUUID(), old),
+      db
+        .prepare(
+          "INSERT INTO receipts(host_id,request_id,message_id,state,submission_id,evidence,created_at) VALUES(?,?,?,'completed','','done',?)",
+        )
+        .bind("windows", randomUUID(), oldMessage, old),
+      db
+        .prepare(
+          "INSERT INTO claims(id,host_id,resource,note,created_at,released_at) VALUES(?,?,?,?,?,?)",
+        )
+        .bind(`linux:${randomUUID()}`, "linux", "repo:old", "old", old, old),
+      db
+        .prepare(
+          "INSERT INTO claims(id,host_id,resource,note,created_at,released_at) VALUES(?,?,?,?,?,?)",
+        )
+        .bind(
+          `linux:${randomUUID()}`,
+          "linux",
+          "repo:recent",
+          "recent",
+          recent,
+          recent,
+        ),
+    ]);
+    await compactRelay(db, "2026-09-01T00:00:00.000Z");
+    assert.equal(
+      (await db.prepare("SELECT COUNT(*) AS count FROM messages").first())
+        .count,
+      1,
+    );
+    assert.equal(
+      (await db.prepare("SELECT COUNT(*) AS count FROM attempts").first())
+        .count,
+      0,
+    );
+    assert.equal(
+      (await db.prepare("SELECT COUNT(*) AS count FROM receipts").first())
+        .count,
+      0,
+    );
+    assert.equal(
+      (await db.prepare("SELECT COUNT(*) AS count FROM claims").first()).count,
+      1,
+    );
+  } finally {
+    await relay.dispose();
+  }
 });
