@@ -85,8 +85,11 @@ the current user's SID on Windows, matching the journal identity:
 {"enabled": true, "host": "your-enrolled-host-id", "os_user": "your-user-id"}
 ```
 
-The policy must match the configured relay host and actual process user. Installing
-or configuring a receiver alone does not enable automatic enrollment. To stop new
+The policy and relay configuration must be owner-only regular files (0600/0400
+on Unix; owning-user ACL on Windows). Their loaders reject final and untrusted
+path symlinks, Windows reparse points, untrusted owners and replaceable parent
+paths. The policy must match the configured relay host and actual process user. Installing or
+configuring a receiver alone does not enable automatic enrollment. To stop new
 automatic enrollment, set `enabled` to false; this does not revoke existing tasks.
 Explicit `cs relay register --disabled` revocation is respected on later resumes,
 as is a disabled central enrollment. Re-enable explicitly if desired. Root and

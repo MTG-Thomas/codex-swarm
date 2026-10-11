@@ -37,8 +37,11 @@ cs relay tasks --host thomas-windows
 csd serve --relay-config <absolute-private-config-path>
 ```
 
-The daemon reads a private JSON file (mode 0600 on Unix; restrict its Windows
-ACL to the owning user). Only its absolute filename goes into service arguments:
+The daemon reads a private JSON file. The loader requires an owner-only file
+(mode 0600/0400 on Unix; owning-user ACL on Windows), rejects final and
+untrusted path symlinks plus Windows reparse points, and rejects parent paths
+that another principal can replace. SYSTEM/Administrators may retain Windows
+recovery access. Only the absolute filename goes into service arguments:
 
 ```json
 {

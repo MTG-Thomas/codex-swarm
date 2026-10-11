@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"os"
 	"path/filepath"
 )
 
@@ -31,9 +30,9 @@ func LoadEnrollmentPolicy(path string) (EnrollmentPolicy, error) {
 	if !filepath.IsAbs(path) {
 		return p, fmt.Errorf("enrollment policy path must be absolute")
 	}
-	f, err := os.Open(path)
+	f, err := openPrivateFile(path)
 	if err != nil {
-		return p, fmt.Errorf("open enrollment policy: %w", err)
+		return p, fmt.Errorf("open private enrollment policy: %w", err)
 	}
 	defer f.Close()
 	info, err := f.Stat()
