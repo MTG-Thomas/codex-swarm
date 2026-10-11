@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -62,14 +61,6 @@ func (c cli) bifrostDeployment(args []string) error {
 		})
 		if err != nil {
 			return err
-		}
-		preparedFile := filepath.Join(*outputDir, "prepared-deployment.json")
-		data, err := json.MarshalIndent(prepared, "", "  ")
-		if err != nil {
-			return fmt.Errorf("encode prepared deployment: %w", err)
-		}
-		if err := os.WriteFile(preparedFile, append(data, '\n'), 0o644); err != nil {
-			return fmt.Errorf("write prepared deployment: %w", err)
 		}
 		return writeBifrostJSON(c.out, prepared)
 	case "register":
