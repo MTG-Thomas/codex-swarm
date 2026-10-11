@@ -1,5 +1,15 @@
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const hostID = /^[a-z0-9][a-z0-9-]{0,62}$/;
+export const DEFAULT_LIMITS = Object.freeze({
+  tasksPerHost: 1000,
+  claimsPerHost: 2048,
+  activeClaimsPerHost: 256,
+  attemptsPerHost: 10000,
+  messagesPerSender: 1024,
+  activeMessagesPerSender: 256,
+  activeMessagesPerTarget: 512,
+});
+const RETENTION_DAYS = 30;
 const json = (body, status = 200) =>
   Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
 class HTTPError extends Error {
@@ -84,12 +94,53 @@ async function authenticate(request, env) {
 function messageID(host, request) {
   return `${host}:${request}`;
 }
+function limits(env) {
+  let configured = {};
+  try {
+    const parsed = JSON.parse(env.RELAY_QUOTA_LIMITS_JSON || "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+      configured = parsed;
+  } catch {
+    // Invalid optional reductions never weaken the checked-in limits.
+  }
+  return Object.fromEntries(
+    Object.entries(DEFAULT_LIMITS).map(([key, maximum]) => {
+      const value = configured[key];
+      return [
+        key,
+        Number.isSafeInteger(value) && value > 0
+          ? Math.min(value, maximum)
+          : maximum,
+      ];
+    }),
+  );
+}
+export async function compactRelay(db, cutoff) {
+  const q = (sql, ...args) => db.prepare(sql).bind(...args);
+  await db.batch([
+    q(
+      "DELETE FROM receipts WHERE message_id IN (SELECT id FROM messages WHERE state='completed' AND updated_at<?)",
+      cutoff,
+    ),
+    q(
+      "DELETE FROM attempts WHERE message_id IN (SELECT id FROM messages WHERE state='completed' AND updated_at<?)",
+      cutoff,
+    ),
+    q("DELETE FROM messages WHERE state='completed' AND updated_at<?", cutoff),
+    q("DELETE FROM attempts WHERE message_id IS NULL AND created_at<?", cutoff),
+    q(
+      "DELETE FROM claims WHERE released_at IS NOT NULL AND released_at<?",
+      cutoff,
+    ),
+  ]);
+}
 async function handle(request, env) {
   const host = await authenticate(request, env);
   const url = new URL(request.url),
     path = url.pathname;
   const db = env.DB,
     now = new Date().toISOString();
+  const quota = limits(env);
   const q = (sql, ...args) => db.prepare(sql).bind(...args);
   if (request.method === "POST" && path === "/v1/tasks") {
     const b = await body(request);
@@ -106,14 +157,24 @@ async function handle(request, env) {
         now,
       ),
       q(
-        "INSERT INTO tasks(host_id,thread_id,title,enabled,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(host_id,thread_id) DO UPDATE SET title=excluded.title,enabled=excluded.enabled,updated_at=excluded.updated_at",
+        "INSERT INTO tasks(host_id,thread_id,title,enabled,updated_at) SELECT ?,?,?,?,? WHERE EXISTS(SELECT 1 FROM tasks WHERE host_id=? AND thread_id=?) OR (SELECT COUNT(*) FROM tasks WHERE host_id=?)<? ON CONFLICT(host_id,thread_id) DO UPDATE SET title=excluded.title,enabled=excluded.enabled,updated_at=excluded.updated_at",
         host,
         b.thread_id,
         b.title,
         +b.enabled,
         now,
+        host,
+        b.thread_id,
+        host,
+        quota.tasksPerHost,
       ),
     ]);
+    const task = await q(
+      "SELECT host_id,thread_id,title,enabled,updated_at FROM tasks WHERE host_id=? AND thread_id=?",
+      host,
+      b.thread_id,
+    ).first();
+    requireValue(task, "host task quota exceeded", 429);
     return json({ host_id: host, ...b });
   }
   if (request.method === "GET" && path === "/v1/tasks") {
@@ -138,22 +199,37 @@ async function handle(request, env) {
       "invalid claim",
     );
     const id = messageID(host, b.request_id);
-    await db.batch([
-      q(
-        "INSERT INTO hosts(id,seen_at) VALUES(?,?) ON CONFLICT(id) DO NOTHING",
-        host,
-        now,
-      ),
-      q(
-        "INSERT INTO claims(id,host_id,resource,note,created_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO NOTHING",
-        id,
-        host,
-        b.resource,
-        b.note,
-        now,
-      ),
-    ]);
-    const claim = await q("SELECT * FROM claims WHERE id=?", id).first();
+    let claim = await q("SELECT * FROM claims WHERE id=?", id).first();
+    if (claim) {
+      requireValue(
+        claim.resource === b.resource && claim.note === b.note,
+        "claim replay mismatch",
+        409,
+      );
+    }
+    if (!claim) {
+      await db.batch([
+        q(
+          "INSERT INTO hosts(id,seen_at) VALUES(?,?) ON CONFLICT(id) DO NOTHING",
+          host,
+          now,
+        ),
+        q(
+          "INSERT INTO claims(id,host_id,resource,note,created_at) SELECT ?,?,?,?,? WHERE (SELECT COUNT(*) FROM claims WHERE host_id=?)<? AND (SELECT COUNT(*) FROM claims WHERE host_id=? AND released_at IS NULL)<? ON CONFLICT(id) DO NOTHING",
+          id,
+          host,
+          b.resource,
+          b.note,
+          now,
+          host,
+          quota.claimsPerHost,
+          host,
+          quota.activeClaimsPerHost,
+        ),
+      ]);
+    }
+    claim ??= await q("SELECT * FROM claims WHERE id=?", id).first();
+    requireValue(claim, "host claim quota exceeded", 429);
     requireValue(
       claim.resource === b.resource && claim.note === b.note,
       "claim replay mismatch",
@@ -217,7 +293,7 @@ async function handle(request, env) {
           now,
         ),
         q(
-          "INSERT INTO messages(id,sender_host,request_id,target_host,thread_id,prompt,state,created_at,updated_at) SELECT ?,?,?,?,?,?,'queued',?,? WHERE EXISTS(SELECT 1 FROM tasks WHERE host_id=? AND thread_id=? AND enabled=1) ON CONFLICT(id) DO NOTHING",
+          "INSERT INTO messages(id,sender_host,request_id,target_host,thread_id,prompt,state,created_at,updated_at) SELECT ?,?,?,?,?,?,'queued',?,? WHERE EXISTS(SELECT 1 FROM tasks WHERE host_id=? AND thread_id=? AND enabled=1) AND (SELECT COUNT(*) FROM messages WHERE sender_host=?)<? AND (SELECT COUNT(*) FROM messages WHERE sender_host=? AND state!='completed')<? AND (SELECT COUNT(*) FROM messages WHERE target_host=? AND state!='completed')<? ON CONFLICT(id) DO NOTHING",
           id,
           host,
           b.request_id,
@@ -228,11 +304,25 @@ async function handle(request, env) {
           now,
           b.target_host,
           b.thread_id,
+          host,
+          quota.messagesPerSender,
+          host,
+          quota.activeMessagesPerSender,
+          b.target_host,
+          quota.activeMessagesPerTarget,
         ),
       ]);
       m = await q("SELECT * FROM messages WHERE id=?", id).first();
     }
-    requireValue(m, "target task is not enrolled", 409);
+    if (!m) {
+      const enrolled = await q(
+        "SELECT 1 AS enrolled FROM tasks WHERE host_id=? AND thread_id=? AND enabled=1",
+        b.target_host,
+        b.thread_id,
+      ).first();
+      requireValue(enrolled, "target task is not enrolled", 409);
+      throw new HTTPError(429, "sender or target message quota exceeded");
+    }
     requireValue(
       m.target_host === b.target_host &&
         m.thread_id === b.thread_id &&
@@ -265,6 +355,20 @@ async function handle(request, env) {
   if (request.method === "POST" && path === "/v1/claim") {
     const b = await body(request);
     requireValue(uuid.test(b.request_id), "invalid request ID");
+    const replay = await q(
+      "SELECT message_id FROM attempts WHERE host_id=? AND request_id=?",
+      host,
+      b.request_id,
+    ).first();
+    if (replay) {
+      const m = replay.message_id
+        ? await q(
+            "SELECT * FROM messages WHERE id=?",
+            replay.message_id,
+          ).first()
+        : null;
+      return json({ message: m });
+    }
     // One atomic batch records both empty claims and selected messages. Lost responses
     // can replay the same attempt; dispatching messages are NEVER automatically leased again.
     await db.batch([
@@ -274,11 +378,13 @@ async function handle(request, env) {
         now,
       ),
       q(
-        "INSERT INTO attempts(host_id,request_id,message_id,created_at) SELECT ?,?,(SELECT m.id FROM messages m JOIN tasks t ON t.host_id=m.target_host AND t.thread_id=m.thread_id WHERE m.target_host=? AND m.state='queued' AND t.enabled=1 ORDER BY m.created_at,m.id LIMIT 1),? ON CONFLICT(host_id,request_id) DO NOTHING",
+        "INSERT INTO attempts(host_id,request_id,message_id,created_at) SELECT ?,?,(SELECT m.id FROM messages m JOIN tasks t ON t.host_id=m.target_host AND t.thread_id=m.thread_id WHERE m.target_host=? AND m.state='queued' AND t.enabled=1 ORDER BY m.created_at,m.id LIMIT 1),? WHERE (SELECT COUNT(*) FROM attempts WHERE host_id=?)<? ON CONFLICT(host_id,request_id) DO NOTHING",
         host,
         b.request_id,
         host,
         now,
+        host,
+        quota.attemptsPerHost,
       ),
       q(
         "UPDATE messages SET state='dispatching',attempt_id=?,updated_at=? WHERE id=(SELECT message_id FROM attempts WHERE host_id=? AND request_id=?) AND state='queued'",
@@ -288,6 +394,12 @@ async function handle(request, env) {
         b.request_id,
       ),
     ]);
+    const attempt = await q(
+      "SELECT message_id FROM attempts WHERE host_id=? AND request_id=?",
+      host,
+      b.request_id,
+    ).first();
+    requireValue(attempt, "host delivery-attempt quota exceeded", 429);
     const m = await q(
       "SELECT m.* FROM attempts a JOIN messages m ON m.id=a.message_id WHERE a.host_id=? AND a.request_id=?",
       host,
@@ -425,5 +537,11 @@ export default {
         error instanceof HTTPError ? error.status : 500,
       );
     }
+  },
+  async scheduled(_controller, env, ctx) {
+    const cutoff = new Date(
+      Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    ctx.waitUntil(compactRelay(env.DB, cutoff));
   },
 };

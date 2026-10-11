@@ -233,7 +233,7 @@ and replace those bindings before deploying. `workers_dev` is disabled. Set `HOS
 `wrangler secret put HOST_KEYS_JSON` through its secret-input prompt. Do not
 commit tokens, their map, `.dev.vars`, or local D1 state.
 
-Apply the reviewed migration, then deploy the reviewed Worker:
+Apply the reviewed migrations, then deploy the reviewed Worker:
 
 ```text
 npx wrangler d1 migrations apply codex-swarm --remote
@@ -253,12 +253,22 @@ old prompts do not become new work. Local-only swarm remains available.
 ## Storage, tests, and current scope
 
 D1 stores bounded prompts, metadata, claims and receipt references. Large
-transcripts, logs, artifacts and credentials do not belong here. Local pending
-rows and completed D1 history are retained in this version; automatic retention
-and compaction are not yet implemented. Monitor storage and daily row usage
-before enabling this for a large fleet. Retention must preserve replay identity
-or reject requests older than an explicit horizon before deleting dedupe rows.
-Do not silently purge them and permit old work to execute again.
+transcripts, logs, artifacts and credentials do not belong here. Admission is
+bounded per authenticated host: at most 1,000 tasks, 2,048 claims (256 active),
+10,000 delivery attempts and 1,024 retained messages (256 nonterminal) per
+sender. A target accepts at most 512 nonterminal messages across all senders.
+The optional `RELAY_QUOTA_LIMITS_JSON` binding can only reduce these checked-in
+ceilings; malformed values and attempted increases are ignored. Quota failures
+return HTTP 429, while an existing idempotency key remains replayable at
+capacity.
+
+The daily Worker cron compacts completed messages and their receipt/attempt
+records, released claims, and empty delivery attempts after 30 days. This is the
+explicit replay horizon: request IDs remain deduplicated for at least 30 days,
+but a retry after its terminal record is compacted is a new request and must not
+be sent. Nonterminal messages, active claims, enrolled tasks and host records
+are never removed automatically. The hard admission limits remain the safety
+boundary if scheduled compaction is delayed.
 
 The free D1 cap is 500 MB per database, with 5 million rows read and 100,000 rows
 written per day. Empty polling is read-only. Indexes reduce scanned rows but
