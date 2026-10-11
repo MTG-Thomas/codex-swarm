@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -201,6 +203,26 @@ func TestPrepareDeploymentIsDeterministicAndUsesCanonicalReferences(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, path := range []string{input.OutputDir, first.SourceArchive, filepath.Join(input.OutputDir, "prepared-deployment.json")} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+			t.Fatalf("output permissions for %s are %o", path, info.Mode().Perm())
+		}
+	}
+	preparedJSON, err := os.ReadFile(filepath.Join(input.OutputDir, "prepared-deployment.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var persisted PreparedDeployment
+	if err := json.Unmarshal(preparedJSON, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted.BundleHash != first.BundleHash || persisted.SourceArchive != first.SourceArchive {
+		t.Fatalf("persisted=%+v returned=%+v", persisted, first)
+	}
 	input.OutputDir = filepath.Join(t.TempDir(), "second")
 	second, err := PrepareDeployment(input)
 	if err != nil {
@@ -230,6 +252,81 @@ func TestPrepareDeploymentIsDeterministicAndUsesCanonicalReferences(t *testing.T
 	source := sources["workflows/run.py"].(map[string]any)
 	if source["object_key"] != wantObjects[1] {
 		t.Fatalf("source=%#v", source)
+	}
+}
+
+func TestPrepareDeploymentRequiresNewOutputDirectory(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "source.txt"), []byte("source"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	output := t.TempDir()
+	_, err := PrepareDeployment(minimalPrepareInput(workspace, output))
+	if err == nil || !strings.Contains(err.Error(), "path must not already exist") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestExclusiveOutputDoesNotFollowFinalSymlink(t *testing.T) {
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	if err := os.WriteFile(victim, []byte("unchanged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("victim", filepath.Join(dir, "source.zip")); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if err := writeExclusiveRootFile(root, "source.zip", []byte("replacement")); err == nil {
+		t.Fatal("exclusive output unexpectedly followed or replaced symlink")
+	}
+	content, err := os.ReadFile(victim)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "unchanged" {
+		t.Fatalf("victim content=%q", content)
+	}
+}
+
+func TestStableSourceReadRejectsScanOpenSwap(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.txt")
+	if err := os.WriteFile(source, []byte("validated"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scanned, err := os.Lstat(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "replacement.txt"), []byte("attacker"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(source); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("replacement.txt", source); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	if _, err := readStableRootFile(root, "source.txt", scanned); err == nil || !strings.Contains(err.Error(), "identity changed") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func minimalPrepareInput(workspace, output string) PrepareDeploymentInput {
+	return PrepareDeploymentInput{
+		Workspace: workspace, OutputDir: output, SolutionID: "solution-1", DeploymentID: "deployment-1",
+		CompiledManifest: []byte(`{"schema_version":1,"workflows":{},"agents":{},"forms":{},"events":{},"applications":{},"dependencies":{}}`),
+		ResolutionMap:    []byte(`{"schema_version":1,"workflows":{},"agents":{},"forms":{},"events":{},"applications":{},"dependencies":{}}`),
 	}
 }
 

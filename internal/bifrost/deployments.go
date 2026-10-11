@@ -11,12 +11,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -315,17 +317,18 @@ func PrepareDeployment(input PrepareDeploymentInput) (PreparedDeployment, error)
 	if err := validateManifestResolution(manifest, resolution); err != nil {
 		return PreparedDeployment{}, err
 	}
-	outputDir, err := filepath.Abs(input.OutputDir)
-	if err != nil {
-		return PreparedDeployment{}, fmt.Errorf("resolve output directory: %w", err)
-	}
-	if err := os.MkdirAll(outputDir, 0o755); err != nil {
-		return PreparedDeployment{}, fmt.Errorf("create output directory: %w", err)
-	}
-	archivePath := filepath.Join(outputDir, "source.zip")
-	archive, err := deterministicZip(input.Workspace, archivePath)
+	outputRoot, outputDir, outputIdentity, err := createPrivateOutputRoot(input.OutputDir)
 	if err != nil {
 		return PreparedDeployment{}, err
+	}
+	defer outputRoot.Close()
+	archivePath := filepath.Join(outputDir, "source.zip")
+	archive, err := deterministicZip(input.Workspace, outputDir)
+	if err != nil {
+		return PreparedDeployment{}, err
+	}
+	if err := writeExclusiveRootFile(outputRoot, "source.zip", archive); err != nil {
+		return PreparedDeployment{}, fmt.Errorf("write source archive: %w", err)
 	}
 	bundleHash := digest(archive)
 	manifest["schema_version"] = 1
@@ -338,7 +341,7 @@ func PrepareDeployment(input PrepareDeploymentInput) (PreparedDeployment, error)
 	if err != nil {
 		return PreparedDeployment{}, err
 	}
-	return PreparedDeployment{
+	prepared := PreparedDeployment{
 		SchemaVersion: 1, SolutionID: input.SolutionID, DeploymentID: deploymentID,
 		SourceArchive: archivePath, SourceArtifactKey: artifactKey, RuntimeStoragePrefix: runtimePrefix,
 		BundleHash: bundleHash, ManifestHash: digest(manifestCanonical), ResolutionMapHash: resolutionHash,
@@ -349,7 +352,18 @@ func PrepareDeployment(input PrepareDeploymentInput) (PreparedDeployment, error)
 			DeclaredVersion: input.DeclaredVersion, GitRepository: input.GitRepository, GitRef: input.GitRef,
 			GitCommitSHA: input.GitCommitSHA, CodexWorkerID: input.CodexWorkerID,
 		},
-	}, nil
+	}
+	preparedJSON, err := json.MarshalIndent(prepared, "", "  ")
+	if err != nil {
+		return PreparedDeployment{}, fmt.Errorf("encode prepared deployment: %w", err)
+	}
+	if err := writeExclusiveRootFile(outputRoot, "prepared-deployment.json", append(preparedJSON, '\n')); err != nil {
+		return PreparedDeployment{}, fmt.Errorf("write prepared deployment: %w", err)
+	}
+	if err := verifyOutputRootIdentity(outputRoot, outputDir, outputIdentity); err != nil {
+		return PreparedDeployment{}, err
+	}
+	return prepared, nil
 }
 
 func anchorRuntimeSources(resolution map[string]any, runtimePrefix string) ([]string, error) {
@@ -446,71 +460,163 @@ func randomUUID() (string, error) {
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", data[0:4], data[4:6], data[6:8], data[8:10], data[10:16]), nil
 }
 
-func deterministicZip(root, excludedOutput string) ([]byte, error) {
+type deploymentSource struct {
+	name    string
+	content []byte
+}
+
+func deterministicZip(root, excludedDir string) ([]byte, error) {
 	root, err := filepath.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace: %w", err)
 	}
-	info, err := os.Stat(root)
-	if err != nil || !info.IsDir() {
+	workspaceRoot, err := os.OpenRoot(root)
+	if err != nil {
 		return nil, fmt.Errorf("workspace must be a directory: %s", root)
 	}
-	excludedOutput, _ = filepath.Abs(excludedOutput)
-	excludedDir := filepath.Dir(excludedOutput)
-	preparedOutput := filepath.Join(excludedDir, "prepared-deployment.json")
-	var files []string
-	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+	defer workspaceRoot.Close()
+	excludedDir, _ = filepath.Abs(excludedDir)
+	excludedRel := ""
+	if rel, relErr := filepath.Rel(root, excludedDir); relErr == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		excludedRel = filepath.ToSlash(rel)
+	}
+	var files []deploymentSource
+	err = fs.WalkDir(workspaceRoot.FS(), ".", func(walkPath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if path == excludedOutput || path == preparedOutput {
-			return nil
-		}
-		if path == excludedDir && path != root && entry.IsDir() {
+		if excludedRel != "" && walkPath == excludedRel && entry.IsDir() {
 			return filepath.SkipDir
 		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() && (rel == ".git" || strings.HasPrefix(filepath.ToSlash(rel), ".git/")) {
+		if entry.IsDir() && (walkPath == ".git" || strings.HasPrefix(walkPath, ".git/")) {
 			return filepath.SkipDir
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("deployment source contains symlink %s", rel)
+			return fmt.Errorf("deployment source contains symlink %s", walkPath)
 		}
-		if !entry.IsDir() {
-			files = append(files, rel)
+		if entry.IsDir() {
+			return nil
 		}
+		info, err := entry.Info()
+		if err != nil {
+			return fmt.Errorf("inspect deployment source %s: %w", walkPath, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("deployment source is not a regular file: %s", walkPath)
+		}
+		content, err := readStableRootFile(workspaceRoot, walkPath, info)
+		if err != nil {
+			return fmt.Errorf("read deployment source %s: %w", walkPath, err)
+		}
+		files = append(files, deploymentSource{name: walkPath, content: content})
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("scan deployment workspace: %w", err)
 	}
-	sort.Strings(files)
+	sort.Slice(files, func(i, j int) bool { return files[i].name < files[j].name })
 	var buffer bytes.Buffer
 	writer := zip.NewWriter(&buffer)
-	for _, rel := range files {
-		content, err := os.ReadFile(filepath.Join(root, rel))
-		if err != nil {
-			return nil, fmt.Errorf("read deployment source %s: %w", rel, err)
-		}
-		header := &zip.FileHeader{Name: filepath.ToSlash(rel), Method: zip.Deflate}
+	for _, file := range files {
+		header := &zip.FileHeader{Name: file.name, Method: zip.Deflate}
 		header.SetMode(0o644)
 		header.SetModTime(time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC))
 		entry, err := writer.CreateHeader(header)
 		if err != nil {
 			return nil, err
 		}
-		if _, err := entry.Write(content); err != nil {
+		if _, err := entry.Write(file.content); err != nil {
 			return nil, err
 		}
 	}
 	if err := writer.Close(); err != nil {
 		return nil, err
 	}
-	if err := os.WriteFile(excludedOutput, buffer.Bytes(), 0o644); err != nil {
-		return nil, fmt.Errorf("write source archive: %w", err)
-	}
 	return buffer.Bytes(), nil
+}
+
+func createPrivateOutputRoot(path string) (*os.Root, string, fs.FileInfo, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("resolve output directory: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(absPath), 0o700); err != nil {
+		return nil, "", nil, fmt.Errorf("create output parent: %w", err)
+	}
+	if err := os.Mkdir(absPath, 0o700); err != nil {
+		return nil, "", nil, fmt.Errorf("create private output directory (path must not already exist): %w", err)
+	}
+	root, err := os.OpenRoot(absPath)
+	if err != nil {
+		return nil, "", nil, fmt.Errorf("open private output directory: %w", err)
+	}
+	identity, err := root.Stat(".")
+	if err != nil || !identity.IsDir() || (runtime.GOOS != "windows" && identity.Mode().Perm()&0o077 != 0) {
+		root.Close()
+		return nil, "", nil, fmt.Errorf("output directory must be an owner-private directory: %s", absPath)
+	}
+	current, err := os.Lstat(absPath)
+	if err != nil || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(identity, current) {
+		root.Close()
+		return nil, "", nil, fmt.Errorf("output directory changed while opening: %s", absPath)
+	}
+	return root, absPath, identity, nil
+}
+
+func verifyOutputRootIdentity(root *os.Root, path string, identity fs.FileInfo) error {
+	opened, err := root.Stat(".")
+	if err != nil || !os.SameFile(identity, opened) {
+		return fmt.Errorf("output directory identity changed while packaging: %s", path)
+	}
+	current, err := os.Lstat(path)
+	if err != nil || current.Mode()&os.ModeSymlink != 0 || !os.SameFile(identity, current) {
+		return fmt.Errorf("output directory path changed while packaging: %s", path)
+	}
+	return nil
+}
+
+func writeExclusiveRootFile(root *os.Root, name string, data []byte) (err error) {
+	file, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if closeErr := file.Close(); err == nil && closeErr != nil {
+			err = closeErr
+		}
+		if err != nil {
+			_ = root.Remove(name)
+		}
+	}()
+	if _, err = file.Write(data); err != nil {
+		return err
+	}
+	return file.Sync()
+}
+
+func readStableRootFile(root *os.Root, name string, scanned fs.FileInfo) ([]byte, error) {
+	file, err := root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(scanned, opened) {
+		return nil, errors.New("source identity changed after validation")
+	}
+	content, err := io.ReadAll(file)
+	if err != nil {
+		return nil, err
+	}
+	after, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(opened, after) || opened.Size() != after.Size() || !opened.ModTime().Equal(after.ModTime()) || int64(len(content)) != after.Size() {
+		return nil, errors.New("source changed while packaging")
+	}
+	return content, nil
 }

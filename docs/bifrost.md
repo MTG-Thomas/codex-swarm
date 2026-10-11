@@ -19,7 +19,10 @@ false. `artifact_upload`, `server_side_compilation`, and
 
 `prepare` deterministically packages the workspace and anchors an existing
 Bifrost-compiled manifest and resolution map to a deployment UUID. Codex-swarm
-does not invent workflow, agent, form, event, or application definitions.
+does not invent workflow, agent, form, event, or application definitions. The
+`--out` path must not already exist; `prepare` creates it owner-private and
+creates both output files exclusively so it will not overwrite or follow a
+pre-positioned file or symlink.
 
 ```powershell
 cs bifrost deployment prepare `
