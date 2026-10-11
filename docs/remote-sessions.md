@@ -21,6 +21,9 @@ an integration branch after merge; it is not the per-worker branch manager.
 - The remote host can clone and push the repository. Configure a repository-
   scoped deploy key or another host-owned Git credential. `cs` does not copy or
   persist GitHub credentials.
+- The repository URL is credential-free HTTPS, `ssh://`, or SCP-style SSH.
+  Query strings, fragments, passwords, and token-bearing HTTPS userinfo are
+  rejected before an SSH process starts.
 - SSH host keys are already trusted by the operator.
 
 ## Start a worker

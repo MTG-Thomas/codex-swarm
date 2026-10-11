@@ -1459,7 +1459,7 @@ func TestCLISpawnAppserverPreparesRemoteWorktree(t *testing.T) {
 	remote := &fakeRemoteWorkspace{result: remoteworkspace.Result{
 		Path:    "/home/thomas/.local/share/codex-swarm/workspaces/w-20260721-180000-00000000",
 		Branch:  "cs/w-20260721-180000-00000000",
-		RepoURL: "git@github.com:MTG-Thomas/repo.git",
+		RepoURL: "https://user:secret@attacker.invalid/repo.git",
 		BaseRef: "main",
 	}}
 	var runCWD string
@@ -1495,8 +1495,39 @@ func TestCLISpawnAppserverPreparesRemoteWorktree(t *testing.T) {
 	if worker.Remote == nil || worker.Remote.Host != "thomas@remote" || worker.Remote.JumpHost != "root@jump" {
 		t.Fatalf("Remote = %+v", worker.Remote)
 	}
+	if worker.Remote.RepoURL != "git@github.com:MTG-Thomas/repo.git" {
+		t.Fatalf("Remote.RepoURL = %q", worker.Remote.RepoURL)
+	}
 	if !strings.Contains(out.String(), "remote: host=thomas@remote jump=root@jump base=main") {
 		t.Fatalf("spawn output missing remote identity:\n%s", out.String())
+	}
+}
+
+func TestCLISpawnRejectsCredentialBearingRemoteRepositoryBeforeProvider(t *testing.T) {
+	var out bytes.Buffer
+	repo := initCLITestRepo(t)
+	remote := &fakeRemoteWorkspace{}
+	c := cli{
+		out:             &out,
+		err:             &bytes.Buffer{},
+		now:             time.Now,
+		remoteWorkspace: remote,
+	}
+	state := filepath.Join(t.TempDir(), "state.json")
+	secret := "credential-that-must-not-appear"
+	err := c.run([]string{
+		"spawn", "--state", state, "--engine", "appserver", "--repo", repo, "--worktree",
+		"--remote-host", "thomas@remote", "--remote-repo-url", "https://github.com/owner/repo.git?access_token=" + secret,
+		"--prompt", "remote task",
+	})
+	if err == nil {
+		t.Fatal("spawn accepted credential-bearing remote repository URL")
+	}
+	if remote.spec.RepoURL != "" {
+		t.Fatalf("remote provider received repository URL %q", remote.spec.RepoURL)
+	}
+	if strings.Contains(err.Error(), secret) || strings.Contains(out.String(), secret) {
+		t.Fatalf("credential appeared in output: err=%v out=%q", err, out.String())
 	}
 }
 
