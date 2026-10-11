@@ -6,6 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+
+	"github.com/MTG-Thomas/codex-swarm/internal/daemon"
 )
 
 const serviceName = "codex-swarm-daemon"
@@ -27,6 +29,7 @@ type serviceConfig struct {
 	StatePath   string
 	RelayConfig string
 	LogFile     string
+	TokenFile   string
 }
 
 func defaultServiceConfig() (serviceConfig, error) {
@@ -47,6 +50,10 @@ func defaultServiceConfig() (serviceConfig, error) {
 		StatePath:   envDefault("CODEX_SWARM_STATE", defaultServiceStatePath()),
 	}
 	cfg.RelayConfig = os.Getenv("CODEX_SWARM_RELAY_CONFIG")
+	cfg.TokenFile = envDefault("CODEX_SWARM_DAEMON_TOKEN_FILE", daemon.TokenPath(cfg.StatePath))
+	if !filepath.IsAbs(cfg.TokenFile) {
+		return serviceConfig{}, fmt.Errorf("CODEX_SWARM_DAEMON_TOKEN_FILE must be absolute")
+	}
 	if cfg.RelayConfig != "" && !filepath.IsAbs(cfg.RelayConfig) {
 		return serviceConfig{}, fmt.Errorf("CODEX_SWARM_RELAY_CONFIG must be absolute")
 	}
@@ -83,6 +90,7 @@ func (s serviceScope) String() string {
 
 func (c serviceConfig) serveArgs() []string {
 	args := []string{"serve", "--addr", c.Addr, "--state", c.StatePath}
+	args = append(args, "--auth-token-file", c.TokenFile)
 	if c.RelayConfig != "" {
 		args = append(args, "--relay-config", c.RelayConfig)
 	}

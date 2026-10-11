@@ -250,9 +250,14 @@ without an explicit operator action.
 
 ## Daemon contract
 
-Broad daemon surfaces are read-only. Mutation routes remain loopback-only,
-small, typed, and idempotent. API contracts shared outside handlers live in
-`internal/protocol`; versioned mutation paths return typed JSON errors.
+Every daemon route except the liveness-only `/healthz` requires a private
+per-user bearer capability. The daemon creates that capability with exclusive
+owner access, validates its owner and Unix mode or Windows DACL through a
+stable no-link handle, and never prints its value. Clients load it from the
+configured file and refuse to send it outside loopback HTTP. Mutation routes
+remain loopback-only, small, typed, and idempotent. API contracts shared
+outside handlers live in `internal/protocol`; versioned mutation paths return
+typed JSON errors.
 
 `GET /v1/codex-tasks` and `GET /v1/codex-tasks/status` expose the discovery
 cache. `POST /v1/codex-tasks/ingest` is the only task-index mutation: it accepts

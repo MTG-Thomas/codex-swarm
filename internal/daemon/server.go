@@ -9,12 +9,14 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/MTG-Thomas/codex-swarm/internal/claims"
+	"github.com/MTG-Thomas/codex-swarm/internal/config"
 	"github.com/MTG-Thomas/codex-swarm/internal/coordination"
 	"github.com/MTG-Thomas/codex-swarm/internal/dispatch"
 	gh "github.com/MTG-Thomas/codex-swarm/internal/github"
@@ -743,6 +745,8 @@ func coordinationCode(err error) string {
 type Client struct {
 	BaseURL    string
 	HTTPClient *http.Client
+	Token      string
+	TokenFile  string
 }
 
 // Status returns compact daemon state, falling back only for legacy daemons.
@@ -975,6 +979,9 @@ func (c Client) get(ctx context.Context, path string, target any) error {
 	if err != nil {
 		return err
 	}
+	if err := c.authorize(req); err != nil {
+		return err
+	}
 	client := c.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
@@ -1004,6 +1011,9 @@ func (c Client) post(ctx context.Context, path string, body, target any) error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if err := c.authorize(req); err != nil {
+		return err
+	}
 	client := c.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: 10 * time.Second}
@@ -1017,6 +1027,44 @@ func (c Client) post(ctx context.Context, path string, body, target any) error {
 		return statusError{StatusCode: resp.StatusCode, Status: resp.Status, Body: responseBody(resp)}
 	}
 	return json.NewDecoder(resp.Body).Decode(target)
+}
+
+func (c Client) authorize(req *http.Request) error {
+	token := strings.TrimSpace(c.Token)
+	if token == "" {
+		path := strings.TrimSpace(c.TokenFile)
+		if path == "" {
+			path = strings.TrimSpace(os.Getenv("CODEX_SWARM_DAEMON_TOKEN_FILE"))
+		}
+		if path == "" {
+			statePath := strings.TrimSpace(os.Getenv("CODEX_SWARM_STATE"))
+			if statePath == "" {
+				statePath = config.DefaultStatePath()
+			}
+			path = TokenPath(statePath)
+		}
+		loaded, err := LoadToken(path)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		token = loaded
+	}
+	if req.URL.Scheme != "http" || !isLoopbackHost(req.URL.Hostname()) {
+		return errors.New("daemon bearer token may only be sent to a loopback HTTP endpoint")
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(strings.TrimSuffix(host, "."), "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func responseBody(resp *http.Response) string {
