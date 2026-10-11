@@ -14,7 +14,7 @@ type Request struct {
 // Response is the JSON-RPC envelope returned by `codex app-server`.
 type Response struct {
 	JSONRPC string          `json:"jsonrpc"`
-	ID      int64           `json:"id,omitempty"`
+	ID      json.RawMessage `json:"id,omitempty"`
 	Method  string          `json:"method,omitempty"`
 	Params  json.RawMessage `json:"params,omitempty"`
 	Result  json.RawMessage `json:"result,omitempty"`
@@ -33,6 +33,13 @@ type ThreadStartParams struct {
 	Sandbox        string `json:"sandbox,omitempty"`
 	ServiceName    string `json:"serviceName,omitempty"`
 	ThreadSource   string `json:"threadSource,omitempty"`
+}
+
+type ThreadResumeParams struct {
+	ThreadID       string `json:"threadId"`
+	CWD            string `json:"cwd,omitempty"`
+	ApprovalPolicy string `json:"approvalPolicy,omitempty"`
+	Sandbox        string `json:"sandbox,omitempty"`
 }
 
 type TurnStartParams struct {

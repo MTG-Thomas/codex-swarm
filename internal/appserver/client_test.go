@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -77,6 +78,91 @@ func TestThreadStartIncludesModelOverride(t *testing.T) {
 	}
 	if got := written.String(); !strings.Contains(got, `"model":"gpt-5.6-luna"`) {
 		t.Fatalf("thread/start request = %s, want model override", got)
+	}
+}
+
+func TestThreadResumeReassertsNonInteractivePolicy(t *testing.T) {
+	var written bytes.Buffer
+	server := strings.NewReader(`{"jsonrpc":"2.0","id":1,"result":{"thread":{"id":"thread-1"}}}` + "\n")
+	client := NewClient(&written, server)
+
+	_, err := client.ThreadResume(context.Background(), ThreadResumeParams{
+		ThreadID:       "thread-1",
+		CWD:            "/workspace/task",
+		ApprovalPolicy: "never",
+		Sandbox:        "read-only",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := written.String()
+	for _, expected := range []string{`"method":"thread/resume"`, `"threadId":"thread-1"`, `"approvalPolicy":"never"`, `"sandbox":"read-only"`, `"cwd":"/workspace/task"`} {
+		if !strings.Contains(got, expected) {
+			t.Fatalf("thread/resume request = %s, missing %s", got, expected)
+		}
+	}
+}
+
+func TestRunnerResumePolicyDefaultsFailClosed(t *testing.T) {
+	params := (Runner{}).threadResumeParams("/workspace/task", "thread-1")
+	if params.ThreadID != "thread-1" || params.CWD != "/workspace/task" || params.ApprovalPolicy != "never" || params.Sandbox != "read-only" {
+		t.Fatalf("resume params = %#v", params)
+	}
+	params = (Runner{Sandbox: "danger-full-access"}).threadResumeParams("/workspace/task", "thread-1")
+	if params.ApprovalPolicy != "never" || params.Sandbox != "danger-full-access" {
+		t.Fatalf("explicit resume params = %#v", params)
+	}
+}
+
+func TestServerRequestsNeverReceiveApproval(t *testing.T) {
+	tests := []struct {
+		name      string
+		id        string
+		method    string
+		params    string
+		want      string
+		wantError string
+	}{
+		{"command approval", `"approval-1"`, "item/commandExecution/requestApproval", `{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1"}`, `"decision":"decline"`, ""},
+		{"file approval", `22`, "item/fileChange/requestApproval", `{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1"}`, `"decision":"decline"`, ""},
+		{"legacy patch approval", `"patch-1"`, "applyPatchApproval", `{"conversationId":"thread-1","callId":"call-1"}`, `"denied":{"rejection":"` + deniedServerRequest + `"}`, ""},
+		{"legacy command approval", `24`, "execCommandApproval", `{"conversationId":"thread-1","callId":"call-1","cwd":"/workspace"}`, `"denied":{"rejection":"` + deniedServerRequest + `"}`, ""},
+		{"MCP elicitation", `"mcp-1"`, "mcpServer/elicitation/request", `{"threadId":"thread-1","serverName":"example"}`, `"action":"decline"`, ""},
+		{"permission escalation", `26`, "item/permissions/requestApproval", `{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","cwd":"/workspace"}`, "", `"code":-32001`},
+		{"user input", `"input-1"`, "item/tool/requestUserInput", `{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1"}`, "", `"code":-32601`},
+		{"dynamic tool", `28`, "item/tool/call", `{"threadId":"thread-1","turnId":"turn-1","callId":"call-1","tool":"unsafe","arguments":{}}`, "", `"code":-32601`},
+		{"unknown", `"unknown-1"`, "future/unsafe", `{}`, "", `"code":-32601`},
+		{"malformed approval", `30`, "item/commandExecution/requestApproval", `{"threadId":"thread-1"}`, "", `"code":-32602`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var written bytes.Buffer
+			server := strings.NewReader(fmt.Sprintf("{\"jsonrpc\":\"2.0\",\"id\":%s,\"method\":%q,\"params\":%s}\n{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n", tc.id, tc.method, tc.params))
+			client := NewClient(&written, server)
+			if _, err := client.Call(context.Background(), "test/method", map[string]string{"value": "x"}); err != nil {
+				t.Fatal(err)
+			}
+			scanner := bufio.NewScanner(strings.NewReader(written.String()))
+			response := ""
+			idNeedle := `"id":` + tc.id
+			for scanner.Scan() {
+				if strings.Contains(scanner.Text(), idNeedle) && !strings.Contains(scanner.Text(), `"method"`) {
+					response = scanner.Text()
+				}
+			}
+			if response == "" {
+				t.Fatalf("missing server-request response for %s: %q", idNeedle, written.String())
+			}
+			if tc.want != "" && !strings.Contains(response, tc.want) {
+				t.Fatalf("response = %s, missing %s", response, tc.want)
+			}
+			if tc.wantError != "" && !strings.Contains(response, tc.wantError) {
+				t.Fatalf("response = %s, missing %s", response, tc.wantError)
+			}
+			if strings.Contains(response, `"decision":"accept`) || strings.Contains(response, `"decision":"approved`) {
+				t.Fatalf("server request was approved: %s", response)
+			}
+		})
 	}
 }
 
