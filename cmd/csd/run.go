@@ -80,11 +80,7 @@ func runServerWithTaskAndToken(parent context.Context, addr, statePath, tokenPat
 	if err != nil {
 		return fmt.Errorf("initialize daemon authentication: %w", err)
 	}
-	httpServer := &http.Server{
-		Addr:              addr,
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	httpServer := newHTTPServer(addr, handler)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
@@ -123,6 +119,18 @@ func runServerWithTaskAndToken(parent context.Context, addr, statePath, tokenPat
 		first = nil
 	}
 	return errors.Join(first, shutdownErr)
+}
+
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+	}
 }
 
 // The server and relay share one output stream; serialize writes for custom

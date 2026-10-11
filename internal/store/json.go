@@ -1104,6 +1104,7 @@ func openSQLite(path string) (*sql.DB, error) {
 type sqlExecutor interface {
 	Exec(query string, args ...any) (sql.Result, error)
 	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
 }
 
 func getRecord[T any](q sqlExecutor, kind, id string) (T, bool, error) {

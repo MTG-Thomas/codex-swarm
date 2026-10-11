@@ -57,6 +57,9 @@ func (s *JSONStore) CreateMessage(message Message, recipients []string) (Message
 		if !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("find message request %s: %w", message.RequestID, err)
 		}
+		if err := pruneDeliveredMessagesForInsert(s.tx, len(recipients)); err != nil {
+			return err
+		}
 
 		createdAt := message.CreatedAt.UTC()
 		if createdAt.IsZero() {
@@ -105,7 +108,7 @@ func (s *JSONStore) ListMessages(recipientID string) ([]DeliveredMessage, error)
 		rows, err := s.tx.Query(`SELECT m.id,m.request_id,m.kind,m.sender,m.body,m.created_at,
 			d.id,d.state,d.last_error,d.created_at,d.updated_at
 			FROM message_deliveries d JOIN messages m ON m.id=d.message_id
-			WHERE d.recipient_id=? ORDER BY m.created_at DESC`, recipientID)
+			WHERE d.recipient_id=? ORDER BY m.created_at DESC LIMIT ?`, recipientID, MessageInboxCap)
 		if err != nil {
 			return fmt.Errorf("list messages for %s: %w", recipientID, err)
 		}
@@ -305,8 +308,66 @@ func (s *JSONStore) UpdateDelivery(id string, state DeliveryState, lastError str
 			id, state, lastError, updatedAt.Format(time.RFC3339Nano)); err != nil {
 			return fmt.Errorf("insert delivery event %s: %w", id, err)
 		}
+		if _, err := s.tx.Exec(`DELETE FROM message_delivery_events
+			WHERE delivery_id=? AND sequence NOT IN (
+				SELECT sequence FROM message_delivery_events WHERE delivery_id=? ORDER BY sequence DESC LIMIT ?
+			)`, id, id, DeliveryEventCap); err != nil {
+			return fmt.Errorf("prune delivery events %s: %w", id, err)
+		}
 		return nil
 	})
+}
+
+func pruneDeliveredMessagesForInsert(q sqlExecutor, incomingDeliveries int) error {
+	if incomingDeliveries > MessageDeliveryCap {
+		return ErrMessageQuotaExceeded
+	}
+	var messageCount, deliveryCount int
+	if err := q.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&messageCount); err != nil {
+		return fmt.Errorf("count durable messages: %w", err)
+	}
+	if err := q.QueryRow(`SELECT COUNT(*) FROM message_deliveries`).Scan(&deliveryCount); err != nil {
+		return fmt.Errorf("count durable message deliveries: %w", err)
+	}
+	if messageCount < MessageRetentionCap && deliveryCount+incomingDeliveries <= MessageDeliveryCap {
+		return nil
+	}
+	rows, err := q.Query(`SELECT m.id,COUNT(d.id) FROM messages m
+		JOIN message_deliveries d ON d.message_id=m.id
+		WHERE NOT EXISTS (
+			SELECT 1 FROM message_deliveries pending WHERE pending.message_id=m.id AND pending.state<>?
+		)
+		GROUP BY m.id,m.created_at ORDER BY m.created_at ASC,m.id`, DeliveryDelivered)
+	if err != nil {
+		return fmt.Errorf("list delivered messages for pruning: %w", err)
+	}
+	var prune []string
+	for rows.Next() && (messageCount-len(prune) >= MessageRetentionCap || deliveryCount+incomingDeliveries > MessageDeliveryCap) {
+		var id string
+		var deliveries int
+		if err := rows.Scan(&id, &deliveries); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		prune = append(prune, id)
+		deliveryCount -= deliveries
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if messageCount-len(prune) >= MessageRetentionCap || deliveryCount+incomingDeliveries > MessageDeliveryCap {
+		return ErrMessageQuotaExceeded
+	}
+	for _, id := range prune {
+		if _, err := q.Exec(`DELETE FROM messages WHERE id=?`, id); err != nil {
+			return fmt.Errorf("prune delivered message %s: %w", id, err)
+		}
+	}
+	return nil
 }
 
 // RecordFileTouch stores a recent touch and returns warning-only write conflicts.

@@ -296,7 +296,7 @@ func (s Service) recordTimeline(message store.Message, recipients []string) erro
 		issue := ""
 		if from := workers[message.From]; from != nil {
 			issue = from.Issue
-			from.Events = append(from.Events, store.Event{At: message.CreatedAt, Type: "message.sent", Message: message.Body, From: message.From, RequestID: message.RequestID, WorkerID: message.From, Issue: issue})
+			from.Events = appendBoundedWorkerEvent(from.Events, store.Event{At: message.CreatedAt, Type: "message.sent", Message: message.Body, From: message.From, RequestID: message.RequestID, WorkerID: message.From, Issue: issue})
 			from.UpdatedAt = message.CreatedAt
 		}
 		for _, recipient := range recipients {
@@ -307,13 +307,21 @@ func (s Service) recordTimeline(message store.Message, recipients []string) erro
 			if issue == "" {
 				issue = worker.Issue
 			}
-			worker.Events = append(worker.Events, store.Event{At: message.CreatedAt, Type: "message.received", Message: message.Body, From: message.From, To: recipient, RequestID: message.RequestID, WorkerID: recipient, Issue: issue})
+			worker.Events = appendBoundedWorkerEvent(worker.Events, store.Event{At: message.CreatedAt, Type: "message.received", Message: message.Body, From: message.From, To: recipient, RequestID: message.RequestID, WorkerID: recipient, Issue: issue})
 			worker.UpdatedAt = message.CreatedAt
 			events = append(events, store.Event{At: message.CreatedAt, Type: "message", Message: message.Body, From: message.From, To: recipient, RequestID: message.RequestID, WorkerID: message.From, Issue: issue})
 		}
 		return store.WorkerMutationResult{Fingerprint: fingerprint, Output: message.ID, Events: events}, nil
 	})
 	return err
+}
+
+func appendBoundedWorkerEvent(events []store.Event, event store.Event) []store.Event {
+	events = append(events, event)
+	if len(events) <= store.WorkerEventCap {
+		return events
+	}
+	return append([]store.Event(nil), events[len(events)-store.WorkerEventCap:]...)
 }
 
 func unique(values []string) []string {

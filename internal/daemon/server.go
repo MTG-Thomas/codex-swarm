@@ -541,9 +541,16 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		writeRouteError(w, r, http.StatusForbidden, "loopback_required", "dispatch requires loopback daemon access")
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req DispatchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		writeRouteError(w, r, http.StatusBadRequest, "invalid_json", "parse dispatch request: "+err.Error())
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeRouteError(w, r, http.StatusBadRequest, "invalid_json", "dispatch request must contain one JSON document")
 		return
 	}
 	if strings.TrimSpace(req.RequestID) == "" {
@@ -725,6 +732,8 @@ func coordinationStatus(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, store.ErrMessageReplayMismatch):
 		return http.StatusConflict
+	case errors.Is(err, store.ErrMessageQuotaExceeded):
+		return http.StatusTooManyRequests
 	default:
 		return http.StatusBadRequest
 	}
@@ -736,6 +745,8 @@ func coordinationCode(err error) string {
 		return "worker_not_found"
 	case errors.Is(err, store.ErrMessageReplayMismatch):
 		return "request_replay_mismatch"
+	case errors.Is(err, store.ErrMessageQuotaExceeded):
+		return "message_quota_exceeded"
 	default:
 		return "coordination_failed"
 	}

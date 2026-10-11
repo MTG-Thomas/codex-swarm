@@ -430,6 +430,35 @@ func TestServerDispatchRejectsNonLoopbackRemote(t *testing.T) {
 	}
 }
 
+func TestServerDispatchRejectsUnboundedOrAmbiguousJSON(t *testing.T) {
+	server := NewServerWithIssueProvider("state.json", &memoryStore{}, fakeIssueProvider{issue: readiness.Issue{Title: "Issue", Body: "Body"}})
+	tests := map[string]string{
+		"oversized":         strings.Repeat(" ", (1<<20)+1),
+		"unknown field":     `{"request_id":"request-1","unexpected":true}`,
+		"trailing document": `{"request_id":"request-1"} {}`,
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/dispatch", strings.NewReader(body))
+			req.RemoteAddr = "127.0.0.1:45678"
+			rec := httptest.NewRecorder()
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status code = %d, want %d body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestCoordinationStatusMapsMessageQuota(t *testing.T) {
+	if got := coordinationStatus(store.ErrMessageQuotaExceeded); got != http.StatusTooManyRequests {
+		t.Fatalf("coordinationStatus() = %d, want %d", got, http.StatusTooManyRequests)
+	}
+	if got := coordinationCode(store.ErrMessageQuotaExceeded); got != "message_quota_exceeded" {
+		t.Fatalf("coordinationCode() = %q, want message_quota_exceeded", got)
+	}
+}
+
 func TestServerV1DispatchReplayMismatchReturnsTypedError(t *testing.T) {
 	repo := t.TempDir()
 	writeDaemonRepoHints(t, repo)

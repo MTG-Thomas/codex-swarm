@@ -16,6 +16,7 @@ var (
 	ErrBifrostChangesetNotFound = errors.New("bifrost changeset not found")
 	ErrMessageNotFound          = errors.New("message not found")
 	ErrMessageReplayMismatch    = errors.New("message request replay mismatch")
+	ErrMessageQuotaExceeded     = errors.New("durable message quota exceeded")
 	ErrCodexTaskReplayMismatch  = errors.New("codex task snapshot request replay mismatch")
 	ErrDecisionNotFound         = errors.New("decision not found")
 	ErrDecisionReplayMismatch   = errors.New("decision request replay mismatch")
@@ -24,6 +25,11 @@ var (
 
 const (
 	SwarmEventCap             = 500
+	WorkerEventCap            = 500
+	MessageRetentionCap       = 1000
+	MessageDeliveryCap        = 5000
+	MessageInboxCap           = 500
+	DeliveryEventCap          = 100
 	CompletedMutationCacheCap = 500
 )
 

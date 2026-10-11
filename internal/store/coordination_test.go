@@ -2,10 +2,112 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestCreateMessagePrunesOnlyFullyDeliveredMessagesAtQuota(t *testing.T) {
+	st := NewJSONStore(filepath.Join(t.TempDir(), "state.db"))
+	seedMessages(t, st, MessageRetentionCap, func(i int) DeliveryState {
+		if i == 0 {
+			return DeliveryDelivered
+		}
+		return DeliveryQueued
+	})
+
+	message := Message{ID: "replacement", RequestID: "replacement-request", Kind: MessageDirect, From: "sender", Body: "new", CreatedAt: time.Now().UTC()}
+	if _, _, _, err := st.CreateMessage(message, []string{"recipient"}); err != nil {
+		t.Fatalf("CreateMessage() error = %v", err)
+	}
+	var count, oldest int
+	if err := st.withStateLock(func() error {
+		if err := st.tx.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&count); err != nil {
+			return err
+		}
+		return st.tx.QueryRow(`SELECT COUNT(*) FROM messages WHERE id='message-0000'`).Scan(&oldest)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if count != MessageRetentionCap || oldest != 0 {
+		t.Fatalf("message count=%d oldest=%d, want count=%d oldest pruned", count, oldest, MessageRetentionCap)
+	}
+}
+
+func TestCreateMessageRejectsInsertWhenPendingMessagesFillQuota(t *testing.T) {
+	st := NewJSONStore(filepath.Join(t.TempDir(), "state.db"))
+	seedMessages(t, st, MessageRetentionCap, func(int) DeliveryState { return DeliveryQueued })
+	message := Message{ID: "blocked", RequestID: "blocked-request", Kind: MessageDirect, From: "sender", Body: "new", CreatedAt: time.Now().UTC()}
+	_, _, _, err := st.CreateMessage(message, []string{"recipient"})
+	if !errors.Is(err, ErrMessageQuotaExceeded) {
+		t.Fatalf("CreateMessage() error = %v, want ErrMessageQuotaExceeded", err)
+	}
+}
+
+func TestCreateMessageRejectsFanoutBeyondDeliveryQuota(t *testing.T) {
+	st := NewJSONStore(filepath.Join(t.TempDir(), "state.db"))
+	recipients := make([]string, MessageDeliveryCap+1)
+	for i := range recipients {
+		recipients[i] = fmt.Sprintf("recipient-%04d", i)
+	}
+	message := Message{ID: "fanout", RequestID: "fanout-request", Kind: MessageSubtree, From: "sender", Body: "new", CreatedAt: time.Now().UTC()}
+	_, _, _, err := st.CreateMessage(message, recipients)
+	if !errors.Is(err, ErrMessageQuotaExceeded) {
+		t.Fatalf("CreateMessage() error = %v, want ErrMessageQuotaExceeded", err)
+	}
+}
+
+func TestListMessagesCapsInboxAndDeliveryHistory(t *testing.T) {
+	st := NewJSONStore(filepath.Join(t.TempDir(), "state.db"))
+	seedMessages(t, st, MessageInboxCap+2, func(int) DeliveryState { return DeliveryQueued })
+	messages, err := st.ListMessages("recipient")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != MessageInboxCap {
+		t.Fatalf("ListMessages() length = %d, want %d", len(messages), MessageInboxCap)
+	}
+
+	message := Message{ID: "history", RequestID: "history-request", Kind: MessageDirect, From: "sender", Body: "history", CreatedAt: time.Now().UTC()}
+	_, deliveries, _, err := st.CreateMessage(message, []string{"history-recipient"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < DeliveryEventCap+5; i++ {
+		if err := st.UpdateDelivery(deliveries[0].ID, DeliveryQueued, fmt.Sprintf("attempt-%03d", i), time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	history, err := st.ListMessages("history-recipient")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(history[0].Delivery.History); got != DeliveryEventCap {
+		t.Fatalf("delivery history length = %d, want %d", got, DeliveryEventCap)
+	}
+}
+
+func seedMessages(t *testing.T, st *JSONStore, count int, state func(int) DeliveryState) {
+	t.Helper()
+	created := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	if err := st.withStateLock(func() error {
+		for i := 0; i < count; i++ {
+			messageID := fmt.Sprintf("message-%04d", i)
+			if _, err := st.tx.Exec(`INSERT INTO messages(id,request_id,kind,sender,body,fingerprint,created_at) VALUES(?,?,?,?,?,?,?)`,
+				messageID, "request-"+messageID, MessageDirect, "sender", "body", "fingerprint-"+messageID, created); err != nil {
+				return err
+			}
+			if _, err := st.tx.Exec(`INSERT INTO message_deliveries(id,message_id,recipient_id,state,last_error,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`,
+				"delivery-"+messageID, messageID, "recipient", state(i), "", created, created); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed messages: %v", err)
+	}
+}
 
 func TestCreateMessageIsIdempotentAndListsQueuedDelivery(t *testing.T) {
 	st := NewJSONStore(filepath.Join(t.TempDir(), "state.db"))
