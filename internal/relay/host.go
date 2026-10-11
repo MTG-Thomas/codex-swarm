@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"time"
 )
@@ -27,9 +26,9 @@ func LoadHostConfig(path, statePath string) (HostConfig, error) {
 	if !filepath.IsAbs(path) {
 		return c, fmt.Errorf("relay config path must be absolute")
 	}
-	f, err := os.Open(path)
+	f, err := openPrivateFile(path)
 	if err != nil {
-		return c, fmt.Errorf("open relay config: %w", err)
+		return c, fmt.Errorf("open private relay config: %w", err)
 	}
 	defer f.Close()
 	info, err := f.Stat()
