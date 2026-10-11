@@ -110,7 +110,13 @@ jobs:
           sudo systemctl is-active --quiet codex-swarm-daemon.service
 
           for i in {1..20}; do
-            if CODEX_SWARM_DAEMON_URL="http://$CODEX_SWARM_DAEMON_ADDR" ./csd status; then
+            # The unflagged install is intentionally a root-owned system
+            # service. Its private capability must not become readable by the
+            # unprivileged runner account; query it as the same OS identity.
+            if sudo env \
+              CODEX_SWARM_DAEMON_URL="http://$CODEX_SWARM_DAEMON_ADDR" \
+              CODEX_SWARM_STATE="$CODEX_SWARM_STATE" \
+              ./csd status; then
               break
             fi
             if [ "$i" -eq 20 ]; then

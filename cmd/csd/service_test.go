@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"path/filepath"
+	"reflect"
+	"testing"
+)
 
 func TestServeOptionsAcceptsExplicitStateAndAddr(t *testing.T) {
 	addr, state, err := serveOptions([]string{"--addr", "127.0.0.1:9999", "--state", "state.json"})
@@ -9,6 +13,35 @@ func TestServeOptionsAcceptsExplicitStateAndAddr(t *testing.T) {
 	}
 	if addr != "127.0.0.1:9999" || state != "state.json" {
 		t.Fatalf("serveOptions() = addr:%q state:%q", addr, state)
+	}
+}
+
+func TestServeConfigDerivesAndAcceptsDaemonTokenPath(t *testing.T) {
+	state := filepath.Join(t.TempDir(), "state.db")
+	cfg, err := parseServeConfig([]string{"--state", state}, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.TokenFile != state+".daemon-token" {
+		t.Fatalf("token file=%q", cfg.TokenFile)
+	}
+	explicit := filepath.Join(t.TempDir(), "explicit.token")
+	cfg, err = parseServeConfig([]string{"--state", state, "--auth-token-file", explicit}, state)
+	if err != nil || cfg.TokenFile != explicit {
+		t.Fatalf("config=%+v error=%v", cfg, err)
+	}
+}
+
+func TestServiceArgsPersistDaemonTokenPath(t *testing.T) {
+	cfg := serviceConfig{
+		Addr: "127.0.0.1:8787", StatePath: "/state/state.db", TokenFile: "/state/daemon.token",
+	}
+	want := []string{
+		"serve", "--addr", "127.0.0.1:8787", "--state", "/state/state.db",
+		"--auth-token-file", "/state/daemon.token",
+	}
+	if got := cfg.serveArgs(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("args=%q want=%q", got, want)
 	}
 }
 

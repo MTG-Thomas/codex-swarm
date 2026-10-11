@@ -548,9 +548,15 @@ csd status --addr 127.0.0.1:8787
 csd install
 ```
 
-The daemon binds to loopback by default. Its broad status surfaces are
-read-only. Mutation routes are deliberately narrow and require idempotency
-keys. Service installation is explicit and uses the native Windows service,
+The daemon binds to loopback by default. On first start it creates an
+owner-only bearer token next to the selected state file and requires it for
+every route except the liveness-only `/healthz`. `cs` and `csd status` load the
+default token automatically. For a non-default location, set
+`CODEX_SWARM_DAEMON_TOKEN_FILE` for clients and pass
+`--auth-token-file <private-path>` to `csd serve`. The client refuses to send
+the token anywhere except a loopback HTTP endpoint. Mutation routes remain
+deliberately narrow and require idempotency keys. Service installation is
+explicit and uses the native Windows service,
 macOS LaunchAgent, or Linux systemd surface. Linux supports both the existing
 system service and the preferred user-owned service through
 `csd install --user` and `csd uninstall --user`. Windows user scope uses a

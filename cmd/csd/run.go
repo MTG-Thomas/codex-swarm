@@ -18,6 +18,9 @@ import (
 )
 
 func runConfiguredServer(ctx context.Context, c serveConfig, out io.Writer) (result error) {
+	if c.TokenFile == "" {
+		c.TokenFile = daemon.TokenPath(c.StatePath)
+	}
 	if c.LogFile != "" {
 		if !filepath.IsAbs(c.LogFile) {
 			return fmt.Errorf("daemon log path must be absolute")
@@ -55,27 +58,38 @@ func runConfiguredServer(ctx context.Context, c serveConfig, out io.Writer) (res
 		}
 		task = func(ctx context.Context) error { return relay.RunHost(ctx, cfg, out) }
 	}
-	return runServerWithTask(ctx, c.Addr, c.StatePath, out, task)
+	return runServerWithTaskAndToken(ctx, c.Addr, c.StatePath, c.TokenFile, out, task)
 }
 func runServer(ctx context.Context, addr, statePath string, out io.Writer) error {
 	return runServerWithTask(ctx, addr, statePath, out, nil)
 }
 func runServerWithTask(parent context.Context, addr, statePath string, out io.Writer, task func(context.Context) error) error {
+	return runServerWithTaskAndToken(parent, addr, statePath, daemon.TokenPath(statePath), out, task)
+}
+func runServerWithTaskAndToken(parent context.Context, addr, statePath, tokenPath string, out io.Writer, task func(context.Context) error) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 
+	token, tokenPath, err := daemon.EnsureToken(tokenPath)
+	if err != nil {
+		return fmt.Errorf("initialize daemon authentication: %w", err)
+	}
 	server := daemon.NewServer(statePath, store.NewJSONStore(statePath))
 	defer server.Close()
+	handler, err := daemon.Authenticate(server.Handler(), token)
+	if err != nil {
+		return fmt.Errorf("initialize daemon authentication: %w", err)
+	}
 	httpServer := &http.Server{
 		Addr:              addr,
-		Handler:           server.Handler(),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("listen %s: %w", addr, err)
 	}
-	fmt.Fprintf(out, "csd listening addr=%s state=%s\n", listener.Addr().String(), statePath)
+	fmt.Fprintf(out, "csd listening addr=%s state=%s auth-token-file=%s\n", listener.Addr().String(), statePath, tokenPath)
 
 	results := make(chan error, 2)
 	workers := 1

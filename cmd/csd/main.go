@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"time"
 
 	"github.com/MTG-Thomas/codex-swarm/internal/config"
@@ -63,7 +64,7 @@ func serveOptions(args []string) (string, string, error) {
 	return serveOptionsWithDefaultState(args, defaultStatePath())
 }
 
-type serveConfig struct{ Addr, StatePath, RelayConfig, LogFile string }
+type serveConfig struct{ Addr, StatePath, RelayConfig, LogFile, TokenFile string }
 
 func serveOptionsWithDefaultState(args []string, defaultState string) (string, string, error) {
 	c, err := parseServeConfig(args, defaultState)
@@ -75,13 +76,17 @@ func parseServeConfig(args []string, defaultState string) (serveConfig, error) {
 	state := fs.String("state", envDefault("CODEX_SWARM_STATE", defaultState), "local ledger path")
 	relay := fs.String("relay-config", os.Getenv("CODEX_SWARM_RELAY_CONFIG"), "absolute private relay JSON config path (opt-in)")
 	logFile := fs.String("log-file", os.Getenv("CODEX_SWARM_LOG_FILE"), "absolute daemon log path")
+	tokenFile := fs.String("auth-token-file", os.Getenv("CODEX_SWARM_DAEMON_TOKEN_FILE"), "private daemon bearer-token path")
 	if err := fs.Parse(args); err != nil {
 		return serveConfig{}, err
 	}
 	if fs.NArg() != 0 {
 		return serveConfig{}, fmt.Errorf("serve accepts no positional arguments")
 	}
-	return serveConfig{Addr: *addr, StatePath: *state, RelayConfig: *relay, LogFile: *logFile}, nil
+	if strings.TrimSpace(*tokenFile) == "" {
+		*tokenFile = daemon.TokenPath(*state)
+	}
+	return serveConfig{Addr: *addr, StatePath: *state, RelayConfig: *relay, LogFile: *logFile, TokenFile: *tokenFile}, nil
 }
 
 func status() error {
