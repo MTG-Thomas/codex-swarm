@@ -482,6 +482,11 @@ func (c cli) spawn(args []string) error {
 					return fmt.Errorf("resolve remote repository URL: %w", err)
 				}
 			}
+			var err error
+			repoURL, err = remoteworkspace.ValidateRepositoryURL(repoURL)
+			if err != nil {
+				return fmt.Errorf("validate remote repository URL: %w", err)
+			}
 			gitName, _ := gitConfigValue(ctx, repoRoot, "user.name")
 			gitEmail, _ := gitConfigValue(ctx, repoRoot, "user.email")
 			if gitName == "" {
@@ -511,7 +516,7 @@ func (c cli) spawn(args []string) error {
 				Host:        *remoteHost,
 				JumpHost:    *remoteJump,
 				CodexBinary: *remoteCodex,
-				RepoURL:     result.RepoURL,
+				RepoURL:     repoURL,
 				BaseRef:     result.BaseRef,
 			}
 			worker.HostID = *remoteHost

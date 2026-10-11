@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // Spec describes one isolated Git workspace on a remote host.
@@ -28,7 +29,7 @@ type Spec struct {
 type Result struct {
 	Path    string `json:"path"`
 	Branch  string `json:"branch"`
-	RepoURL string `json:"repo_url"`
+	RepoURL string `json:"-"`
 	BaseRef string `json:"base_ref"`
 }
 
@@ -58,6 +59,54 @@ func (commandRunner) Run(ctx context.Context, binary string, args []string, stdi
 }
 
 var endpointPattern = regexp.MustCompile(`^[A-Za-z0-9._:@-]+$`)
+var sshRepositoryUserPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9._-]*$`)
+var scpRepositoryURLPattern = regexp.MustCompile(`^(?:[A-Za-z_][A-Za-z0-9._-]*@)?(?:[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?|\[[0-9A-Fa-f:.]+\]):[^/?#\\[:space:]]+(?:/[^/?#\\[:space:]]+)*$`)
+
+// ValidateRepositoryURL accepts only credential-free network Git transports.
+// The remote host supplies authentication through its own credential store or
+// SSH keys; tokens must never be carried in this value.
+func ValidateRepositoryURL(raw string) (string, error) {
+	invalid := func() (string, error) {
+		return "", errors.New("remote repository URL must be credential-free HTTPS or SSH without a query or fragment")
+	}
+	if raw == "" || raw != strings.TrimSpace(raw) || strings.ContainsAny(raw, "?#") || strings.IndexFunc(raw, func(r rune) bool {
+		return unicode.IsControl(r) || unicode.IsSpace(r)
+	}) >= 0 || strings.Contains(raw, `\`) {
+		return invalid()
+	}
+	colon := strings.IndexByte(raw, ':')
+	unambiguousSCPHost := colon > 0 && (strings.Contains(raw[:colon], "@") || strings.Contains(raw[:colon], ".") || strings.HasPrefix(raw[:colon], "["))
+	if unambiguousSCPHost && scpRepositoryURLPattern.MatchString(raw) {
+		return raw, nil
+	}
+
+	parsed, err := url.ParseRequestURI(raw)
+	if err != nil || parsed.Opaque != "" || parsed.Host == "" || parsed.Hostname() == "" || parsed.Path == "" || parsed.Path == "/" || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || parsed.RawFragment != "" {
+		return invalid()
+	}
+	if strings.IndexFunc(parsed.Path, func(r rune) bool {
+		return unicode.IsControl(r) || unicode.IsSpace(r)
+	}) >= 0 {
+		return invalid()
+	}
+
+	switch parsed.Scheme {
+	case "https":
+		if parsed.User != nil {
+			return invalid()
+		}
+	case "ssh":
+		if parsed.User != nil {
+			username := parsed.User.Username()
+			if _, hasPassword := parsed.User.Password(); hasPassword || !sshRepositoryUserPattern.MatchString(username) || parsed.User.String() != username {
+				return invalid()
+			}
+		}
+	default:
+		return invalid()
+	}
+	return raw, nil
+}
 
 // SSH prepares isolated Git worktrees through OpenSSH. The remote host owns
 // Git credentials; codex-swarm never copies or persists them.
@@ -78,12 +127,11 @@ func (s SSH) Prepare(ctx context.Context, spec Spec) (Result, error) {
 	if strings.TrimSpace(spec.WorkerID) == "" || strings.TrimSpace(spec.RepoURL) == "" || strings.TrimSpace(spec.Branch) == "" {
 		return Result{}, fmt.Errorf("remote workspace requires worker id, repository URL, and branch")
 	}
-	if strings.ContainsAny(spec.RepoURL, "\x00\r\n") {
-		return Result{}, errors.New("remote repository URL contains control characters")
+	repoURL, err := ValidateRepositoryURL(spec.RepoURL)
+	if err != nil {
+		return Result{}, err
 	}
-	if parsed, err := url.Parse(spec.RepoURL); err == nil && parsed.User != nil {
-		return Result{}, errors.New("remote repository URL must not contain credentials")
-	}
+	spec.RepoURL = repoURL
 	if spec.BaseRef == "" {
 		spec.BaseRef = "main"
 	}
@@ -107,7 +155,7 @@ func (s SSH) Prepare(ctx context.Context, spec Spec) (Result, error) {
 	}
 	out, err := runner.Run(ctx, binary, args, []byte(script))
 	if err != nil {
-		return Result{}, fmt.Errorf("prepare remote workspace worker=%s repo=%s: %w", spec.WorkerID, spec.RepoURL, err)
+		return Result{}, fmt.Errorf("prepare remote workspace worker=%s: %w", spec.WorkerID, err)
 	}
 	var result Result
 	if err := json.Unmarshal(bytes.TrimSpace(out), &result); err != nil {
@@ -116,6 +164,7 @@ func (s SSH) Prepare(ctx context.Context, spec Spec) (Result, error) {
 	if result.Path == "" || result.Branch != spec.Branch {
 		return Result{}, fmt.Errorf("remote workspace returned inconsistent identity for worker=%s", spec.WorkerID)
 	}
+	result.RepoURL = spec.RepoURL
 	return result, nil
 }
 
@@ -181,7 +230,6 @@ with lock_path.open("a+") as lock:
 print(json.dumps({
     "path": str(workspace),
     "branch": branch,
-    "repo_url": repo_url,
     "base_ref": base_ref,
 }))
 `
