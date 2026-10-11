@@ -40,17 +40,13 @@ func EnsureToken(path string) (string, string, error) {
 		return "", "", fmt.Errorf("generate daemon token: %w", err)
 	}
 	token := hex.EncodeToString(raw)
-	file, err := os.OpenFile(absPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	file, err := createDaemonToken(absPath)
 	if errors.Is(err, os.ErrExist) {
 		loaded, loadErr := LoadToken(absPath)
 		return loaded, absPath, loadErr
 	}
 	if err != nil {
 		return "", "", fmt.Errorf("create daemon token: %w", err)
-	}
-	if err = restrictCreatedToken(file); err != nil {
-		file.Close()
-		return "", "", fmt.Errorf("restrict daemon token: %w", err)
 	}
 	if _, err = io.WriteString(file, token+"\n"); err == nil {
 		err = file.Sync()
