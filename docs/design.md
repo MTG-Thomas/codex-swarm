@@ -52,6 +52,12 @@ Other systems keep their own authority:
 - Codex app-server owns its threads, turns, and runtime events.
 - Codex hosts own native task creation and any worktree created for that task.
 
+The headless app-server client is non-interactive. It sets approval policy to
+`never` for both new and resumed threads, preserves the configured sandbox, and
+never grants server-initiated approval requests. Known approval and elicitation
+methods receive schema-valid denials; permission escalation, malformed input,
+and unsupported methods fail closed with JSON-RPC errors.
+
 The Codex task index is a durable discovery cache, not lifecycle authority.
 Codex hosts explicitly ingest bounded metadata snapshots. Stable host/thread
 identity, labels, paths, observed status and unread state, source timestamps,

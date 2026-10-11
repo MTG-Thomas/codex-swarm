@@ -158,8 +158,8 @@ func (c *Client) ThreadStart(ctx context.Context, params ThreadStartParams) (Thr
 }
 
 // ThreadResume resumes an existing Codex thread through the app-server.
-func (c *Client) ThreadResume(ctx context.Context, threadID string) (ThreadStartResponse, error) {
-	resp, err := c.Call(ctx, "thread/resume", map[string]string{"threadId": threadID})
+func (c *Client) ThreadResume(ctx context.Context, params ThreadResumeParams) (ThreadStartResponse, error) {
+	resp, err := c.Call(ctx, "thread/resume", params)
 	if err != nil {
 		return ThreadStartResponse{}, err
 	}
@@ -168,7 +168,7 @@ func (c *Client) ThreadResume(ctx context.Context, threadID string) (ThreadStart
 		return ThreadStartResponse{}, fmt.Errorf("decode thread/resume result: %w", err)
 	}
 	if result.Thread.ID == "" {
-		result.Thread.ID = threadID
+		result.Thread.ID = params.ThreadID
 	}
 	return result, nil
 }
@@ -291,10 +291,6 @@ func (c *Client) WaitTurnCompletedWithSteering(ctx context.Context, threadID, tu
 				}
 				return TurnCompletion{}, msg.err
 			}
-			if msg.response.ID != 0 && msg.response.Method != "" {
-				_ = c.respond(msg.response.ID, map[string]string{"decision": "accept"})
-				continue
-			}
 			if msg.response.Method == "item/agentMessage/delta" {
 				if delta := notificationText(msg.response.Params, threadID); delta != "" {
 					if separateNextAgentMessage && finalMessage.Len() > 0 {
@@ -400,24 +396,24 @@ func (c *Client) readLoop() {
 	for {
 		var resp Response
 		if err := c.out.Decode(&resp); err != nil {
-			c.pendingMu.Lock()
-			for _, pending := range c.pending {
-				select {
-				case pending <- clientMessage{err: err}:
-				default:
-				}
-			}
-			c.pendingMu.Unlock()
-			c.notifications <- clientMessage{err: err}
+			c.failReader(err)
 			return
 		}
-		if resp.ID != 0 && resp.Method != "" {
-			_ = c.respond(resp.ID, map[string]string{"decision": "accept"})
+		if hasResponseID(resp.ID) && resp.Method != "" {
+			if err := c.handleServerRequest(resp); err != nil {
+				c.failReader(err)
+				return
+			}
 			continue
 		}
-		if resp.ID != 0 {
+		if hasResponseID(resp.ID) {
+			id, ok := numericResponseID(resp.ID)
+			if !ok {
+				c.failReader(fmt.Errorf("app-server returned a non-numeric response id"))
+				return
+			}
 			c.pendingMu.Lock()
-			pending := c.pending[resp.ID]
+			pending := c.pending[id]
 			c.pendingMu.Unlock()
 			if pending != nil {
 				pending <- clientMessage{response: resp}
@@ -425,6 +421,93 @@ func (c *Client) readLoop() {
 			continue
 		}
 		c.notifications <- clientMessage{response: resp}
+	}
+}
+
+func (c *Client) failReader(err error) {
+	c.pendingMu.Lock()
+	for _, pending := range c.pending {
+		select {
+		case pending <- clientMessage{err: err}:
+		default:
+		}
+	}
+	c.pendingMu.Unlock()
+	c.notifications <- clientMessage{err: err}
+}
+
+func hasResponseID(raw json.RawMessage) bool {
+	value := strings.TrimSpace(string(raw))
+	return value != "" && value != "null"
+}
+
+func numericResponseID(raw json.RawMessage) (int64, bool) {
+	var id int64
+	if err := json.Unmarshal(raw, &id); err != nil {
+		return 0, false
+	}
+	return id, true
+}
+
+const deniedServerRequest = "codex-swarm does not grant app-server approval requests"
+
+func (c *Client) handleServerRequest(resp Response) error {
+	if resp.JSONRPC != "2.0" {
+		return c.respondError(resp.ID, -32600, "invalid JSON-RPC request")
+	}
+	invalidParams := func() error {
+		return c.respondError(resp.ID, -32602, "invalid server request parameters")
+	}
+	switch resp.Method {
+	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
+		if !hasStringParams(resp.Params, "threadId", "turnId", "itemId") {
+			return invalidParams()
+		}
+		return c.respond(resp.ID, map[string]string{"decision": "decline"})
+	case "applyPatchApproval":
+		if !hasStringParams(resp.Params, "conversationId", "callId") {
+			return invalidParams()
+		}
+		return c.respond(resp.ID, legacyDeniedResponse())
+	case "execCommandApproval":
+		if !hasStringParams(resp.Params, "conversationId", "callId", "cwd") {
+			return invalidParams()
+		}
+		return c.respond(resp.ID, legacyDeniedResponse())
+	case "mcpServer/elicitation/request":
+		if !hasStringParams(resp.Params, "threadId", "serverName") {
+			return invalidParams()
+		}
+		return c.respond(resp.ID, map[string]string{"action": "decline"})
+	case "item/permissions/requestApproval":
+		if !hasStringParams(resp.Params, "threadId", "turnId", "itemId", "cwd") {
+			return invalidParams()
+		}
+		return c.respondError(resp.ID, -32001, "permission escalation is not supported")
+	default:
+		return c.respondError(resp.ID, -32601, "server request method is not supported")
+	}
+}
+
+func hasStringParams(raw json.RawMessage, names ...string) bool {
+	var params map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &params); err != nil || params == nil {
+		return false
+	}
+	for _, name := range names {
+		var value string
+		if err := json.Unmarshal(params[name], &value); err != nil || strings.TrimSpace(value) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+func legacyDeniedResponse() map[string]any {
+	return map[string]any{
+		"decision": map[string]any{
+			"denied": map[string]string{"rejection": deniedServerRequest},
+		},
 	}
 }
 
@@ -459,12 +542,30 @@ func paramsContainSignal(params json.RawMessage, threadID, signal string) bool {
 	return strings.Contains(envelope.Delta, signal) || strings.Contains(envelope.Text, signal)
 }
 
-func (c *Client) respond(id int64, result any) error {
-	req := Request{
+func (c *Client) respond(id json.RawMessage, result any) error {
+	req := struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Result  any             `json:"result"`
+	}{
 		JSONRPC: "2.0",
 		ID:      id,
 		Result:  result,
 	}
+	data, err := json.Marshal(req)
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return c.write(data)
+}
+
+func (c *Client) respondError(id json.RawMessage, code int, message string) error {
+	req := struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Error   Error           `json:"error"`
+	}{JSONRPC: "2.0", ID: id, Error: Error{Code: code, Message: message}}
 	data, err := json.Marshal(req)
 	if err != nil {
 		return err
@@ -488,6 +589,19 @@ func (r Runner) command(ctx context.Context, cwd string) (*exec.Cmd, error) {
 		process = LocalProcess{Binary: r.Binary}
 	}
 	return process.Command(ctx, cwd)
+}
+
+func (r Runner) threadResumeParams(cwd, threadID string) ThreadResumeParams {
+	sandbox := r.Sandbox
+	if sandbox == "" {
+		sandbox = "read-only"
+	}
+	return ThreadResumeParams{
+		ThreadID:       threadID,
+		CWD:            cwd,
+		ApprovalPolicy: "never",
+		Sandbox:        sandbox,
+	}
 }
 
 // TurnObserver is called immediately after turn/start returns, before waiting
@@ -521,7 +635,7 @@ func (r Runner) SteerTurn(ctx context.Context, cwd, threadID, turnID, message st
 	if err := client.Initialize(ctx); err != nil {
 		return fmt.Errorf("initialize app-server for thread=%s turn=%s: %w", threadID, turnID, err)
 	}
-	if _, err := client.ThreadResume(ctx, threadID); err != nil {
+	if _, err := client.ThreadResume(ctx, r.threadResumeParams(cwd, threadID)); err != nil {
 		return fmt.Errorf("resume thread=%s before steer turn=%s: %w", threadID, turnID, err)
 	}
 	_, err = client.TurnSteer(ctx, TurnSteerParams{
@@ -601,7 +715,7 @@ func (r Runner) Resume(ctx context.Context, cwd, threadID string) (RunResult, er
 	if err := client.Initialize(ctx); err != nil {
 		return RunResult{}, err
 	}
-	thread, err := client.ThreadResume(ctx, threadID)
+	thread, err := client.ThreadResume(ctx, r.threadResumeParams(cwd, threadID))
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -672,7 +786,7 @@ func (r Runner) runTurn(ctx context.Context, cwd, threadID, prompt string, obser
 		}
 		threadID = thread.Thread.ID
 	} else {
-		if _, err := client.ThreadResume(ctx, threadID); err != nil {
+		if _, err := client.ThreadResume(ctx, r.threadResumeParams(cwd, threadID)); err != nil {
 			return RunResult{}, err
 		}
 	}
