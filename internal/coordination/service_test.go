@@ -16,6 +16,19 @@ type recordingSteerer struct {
 	err   error
 }
 
+func TestAppendBoundedWorkerEventRetainsNewestEvents(t *testing.T) {
+	var events []store.Event
+	for i := 0; i < store.WorkerEventCap+5; i++ {
+		events = appendBoundedWorkerEvent(events, store.Event{Message: string(rune(i))})
+	}
+	if len(events) != store.WorkerEventCap {
+		t.Fatalf("event count = %d, want %d", len(events), store.WorkerEventCap)
+	}
+	if got := int([]rune(events[0].Message)[0]); got != 5 {
+		t.Fatalf("oldest retained event = %d, want 5", got)
+	}
+}
+
 func TestSendSteeringFailureRemainsQueuedWithDurableErrorHistory(t *testing.T) {
 	st := testStore(t)
 	at := time.Date(2026, 7, 22, 14, 0, 0, 0, time.UTC)

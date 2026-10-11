@@ -2,10 +2,177 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestCreateMessagePrunesOnlyFullyDeliveredMessagesAtQuota(t *testing.T) {
+	st := NewJSONStore(filepath.Join(t.TempDir(), "state.db"))
+	seedMessages(t, st, MessageRetentionCap, func(i int) DeliveryState {
+		if i == 0 {
+			return DeliveryDelivered
+		}
+		return DeliveryQueued
+	})
+
+	message := Message{ID: "replacement", RequestID: "replacement-request", Kind: MessageDirect, From: "sender", Body: "new", CreatedAt: time.Now().UTC()}
+	if _, _, _, err := st.CreateMessage(message, []string{"recipient"}); err != nil {
+		t.Fatalf("CreateMessage() error = %v", err)
+	}
+	var count, oldest int
+	if err := st.withStateLock(func() error {
+		if err := st.tx.QueryRow(`SELECT COUNT(*) FROM messages`).Scan(&count); err != nil {
+			return err
+		}
+		return st.tx.QueryRow(`SELECT COUNT(*) FROM messages WHERE id='message-0000'`).Scan(&oldest)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if count != MessageRetentionCap || oldest != 0 {
+		t.Fatalf("message count=%d oldest=%d, want count=%d oldest pruned", count, oldest, MessageRetentionCap)
+	}
+	replayedMessage := Message{ID: "retry-id", RequestID: "request-message-0000", Kind: MessageDirect, From: "sender", Body: "body", CreatedAt: time.Now().UTC()}
+	saved, deliveries, replayed, err := st.CreateMessage(replayedMessage, []string{"recipient"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !replayed || saved.ID != "message-0000" || len(deliveries) != 1 || deliveries[0].State != DeliveryDelivered {
+		t.Fatalf("pruned replay = %#v %#v replayed=%t", saved, deliveries, replayed)
+	}
+}
+
+func TestCreateMessageRejectsInsertWhenPendingMessagesFillQuota(t *testing.T) {
+	st := NewJSONStore(filepath.Join(t.TempDir(), "state.db"))
+	seedMessages(t, st, MessageRetentionCap, func(int) DeliveryState { return DeliveryQueued })
+	message := Message{ID: "blocked", RequestID: "blocked-request", Kind: MessageDirect, From: "sender", Body: "new", CreatedAt: time.Now().UTC()}
+	_, _, _, err := st.CreateMessage(message, []string{"recipient"})
+	if !errors.Is(err, ErrMessageQuotaExceeded) {
+		t.Fatalf("CreateMessage() error = %v, want ErrMessageQuotaExceeded", err)
+	}
+}
+
+func TestCreateMessageRejectsFanoutBeyondDeliveryQuota(t *testing.T) {
+	st := NewJSONStore(filepath.Join(t.TempDir(), "state.db"))
+	recipients := make([]string, MessageDeliveryCap+1)
+	for i := range recipients {
+		recipients[i] = fmt.Sprintf("recipient-%04d", i)
+	}
+	message := Message{ID: "fanout", RequestID: "fanout-request", Kind: MessageSubtree, From: "sender", Body: "new", CreatedAt: time.Now().UTC()}
+	_, _, _, err := st.CreateMessage(message, recipients)
+	if !errors.Is(err, ErrMessageQuotaExceeded) {
+		t.Fatalf("CreateMessage() error = %v, want ErrMessageQuotaExceeded", err)
+	}
+}
+
+func TestMessageReplayRetentionIsBounded(t *testing.T) {
+	st := NewJSONStore(filepath.Join(t.TempDir(), "state.db"))
+	if err := st.withStateLock(func() error {
+		for i := 0; i < MessageReplayCap+2; i++ {
+			if _, err := st.tx.Exec(`INSERT INTO message_replays(request_id,fingerprint,result,created_at) VALUES(?,?,?,?)`,
+				fmt.Sprintf("request-%04d", i), "fingerprint", `{}`, time.Date(2026, 7, 1, 0, 0, i, 0, time.UTC).Format(time.RFC3339Nano)); err != nil {
+				return err
+			}
+		}
+		return pruneMessageReplays(st.tx)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var count, oldest int
+	if err := st.withStateLock(func() error {
+		if err := st.tx.QueryRow(`SELECT COUNT(*) FROM message_replays`).Scan(&count); err != nil {
+			return err
+		}
+		return st.tx.QueryRow(`SELECT COUNT(*) FROM message_replays WHERE request_id='request-0000'`).Scan(&oldest)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if count != MessageReplayCap || oldest != 0 {
+		t.Fatalf("replay count=%d oldest=%d, want count=%d oldest pruned", count, oldest, MessageReplayCap)
+	}
+}
+
+func TestListMessagesCapsInboxAndDeliveryHistory(t *testing.T) {
+	st := NewJSONStore(filepath.Join(t.TempDir(), "state.db"))
+	seedMessages(t, st, MessageRetentionCap, func(int) DeliveryState { return DeliveryQueued })
+	messages, err := st.ListMessages("recipient")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != MessageInboxCap {
+		t.Fatalf("ListMessages() length = %d, want %d", len(messages), MessageInboxCap)
+	}
+
+	historyStore := NewJSONStore(filepath.Join(t.TempDir(), "history.db"))
+	message := Message{ID: "history", RequestID: "history-request", Kind: MessageDirect, From: "sender", Body: "history", CreatedAt: time.Now().UTC()}
+	_, deliveries, _, err := historyStore.CreateMessage(message, []string{"history-recipient"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < DeliveryEventCap+5; i++ {
+		if err := historyStore.UpdateDelivery(deliveries[0].ID, DeliveryQueued, fmt.Sprintf("attempt-%03d", i), time.Now().UTC()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	history, err := historyStore.ListMessages("history-recipient")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(history[0].Delivery.History); got != DeliveryEventCap {
+		t.Fatalf("delivery history length = %d, want %d", got, DeliveryEventCap)
+	}
+}
+
+func TestSQLiteMigrationPrunesExistingDeliveryHistory(t *testing.T) {
+	st := NewJSONStore(filepath.Join(t.TempDir(), "state.db"))
+	now := time.Now().UTC()
+	_, deliveries, _, err := st.CreateMessage(Message{ID: "migration", RequestID: "migration-request", Kind: MessageDirect, From: "sender", Body: "body", CreatedAt: now}, []string{"recipient"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.withStateLock(func() error {
+		for i := 0; i < DeliveryEventCap+5; i++ {
+			if _, err := st.tx.Exec(`INSERT INTO message_delivery_events(delivery_id,state,last_error,created_at) VALUES(?,?,?,?)`,
+				deliveries[0].ID, DeliveryQueued, fmt.Sprintf("legacy-%03d", i), now.Add(time.Duration(i+1)*time.Second).Format(time.RFC3339Nano)); err != nil {
+				return err
+			}
+		}
+		_, err := st.tx.Exec(`PRAGMA user_version = 0`)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	messages, err := st.ListMessages("recipient")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(messages[0].Delivery.History); got != DeliveryEventCap {
+		t.Fatalf("migrated delivery history length = %d, want %d", got, DeliveryEventCap)
+	}
+}
+
+func seedMessages(t *testing.T, st *JSONStore, count int, state func(int) DeliveryState) {
+	t.Helper()
+	created := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	if err := st.withStateLock(func() error {
+		for i := 0; i < count; i++ {
+			messageID := fmt.Sprintf("message-%04d", i)
+			fingerprint := messageFingerprint(Message{Kind: MessageDirect, From: "sender", Body: "body"}, []string{"recipient"})
+			if _, err := st.tx.Exec(`INSERT INTO messages(id,request_id,kind,sender,body,fingerprint,created_at) VALUES(?,?,?,?,?,?,?)`,
+				messageID, "request-"+messageID, MessageDirect, "sender", "body", fingerprint, created); err != nil {
+				return err
+			}
+			if _, err := st.tx.Exec(`INSERT INTO message_deliveries(id,message_id,recipient_id,state,last_error,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`,
+				"delivery-"+messageID, messageID, "recipient", state(i), "", created, created); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed messages: %v", err)
+	}
+}
 
 func TestCreateMessageIsIdempotentAndListsQueuedDelivery(t *testing.T) {
 	st := NewJSONStore(filepath.Join(t.TempDir(), "state.db"))
