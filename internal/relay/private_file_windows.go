@@ -25,13 +25,24 @@ func openPrivateFile(path string) (*os.File, error) {
 		return nil, fmt.Errorf("private file must use an absolute local drive path")
 	}
 
-	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	token := windows.GetCurrentProcessToken()
+	user, err := token.GetTokenUser()
 	if err != nil {
 		return nil, fmt.Errorf("read current Windows identity: %w", err)
+	}
+	defaultOwner, err := windowsTokenOwner(token)
+	if err != nil {
+		return nil, fmt.Errorf("read current Windows default owner: %w", err)
 	}
 	trusted, err := privateWindowsSIDs(user.User.Sid)
 	if err != nil {
 		return nil, err
+	}
+	fileOwners := []*windows.SID{user.User.Sid}
+	// Elevated tokens commonly create files owned by Administrators. Accept the
+	// token's configured owner only when it is already in the narrow trust set.
+	if sidIn(defaultOwner, trusted) {
+		fileOwners = append(fileOwners, defaultOwner)
 	}
 
 	root := volume + `\`
@@ -39,7 +50,7 @@ func openPrivateFile(path string) (*os.File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open private path volume: %w", err)
 	}
-	if err = checkPrivateWindowsHandle(h, trusted, false, true); err != nil {
+	if err = checkPrivateWindowsHandle(h, trusted, fileOwners, false, true); err != nil {
 		windows.CloseHandle(h)
 		return nil, fmt.Errorf("private path volume: %w", err)
 	}
@@ -57,7 +68,7 @@ func openPrivateFile(path string) (*os.File, error) {
 			return nil, fmt.Errorf("open private path component %q: %w", part, openErr)
 		}
 		h = next
-		if err = checkPrivateWindowsHandle(h, trusted, last, false); err != nil {
+		if err = checkPrivateWindowsHandle(h, trusted, fileOwners, last, false); err != nil {
 			windows.CloseHandle(h)
 			return nil, fmt.Errorf("private path component %q: %w", part, err)
 		}
@@ -120,7 +131,27 @@ func privateWindowsSIDs(user *windows.SID) ([]*windows.SID, error) {
 	return result, nil
 }
 
-func checkPrivateWindowsHandle(h windows.Handle, trusted []*windows.SID, final, volumeRoot bool) error {
+func windowsTokenOwner(token windows.Token) (*windows.SID, error) {
+	type tokenOwner struct {
+		owner *windows.SID
+	}
+	var size uint32
+	err := windows.GetTokenInformation(token, windows.TokenOwner, nil, 0, &size)
+	if err != windows.ERROR_INSUFFICIENT_BUFFER {
+		return nil, err
+	}
+	buffer := make([]byte, size)
+	if err = windows.GetTokenInformation(token, windows.TokenOwner, &buffer[0], size, &size); err != nil {
+		return nil, err
+	}
+	owner := (*tokenOwner)(unsafe.Pointer(&buffer[0])).owner
+	if owner == nil || !owner.IsValid() {
+		return nil, fmt.Errorf("invalid owner SID")
+	}
+	return owner.Copy()
+}
+
+func checkPrivateWindowsHandle(h windows.Handle, trusted, fileOwners []*windows.SID, final, volumeRoot bool) error {
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(h, &info); err != nil {
 		return fmt.Errorf("inspect file identity: %w", err)
@@ -147,8 +178,8 @@ func checkPrivateWindowsHandle(h windows.Handle, trusted []*windows.SID, final, 
 		return fmt.Errorf("read owner SID: %w", err)
 	}
 	if final {
-		if !owner.Equals(trusted[0]) {
-			return fmt.Errorf("private file must be owned by the current user")
+		if !sidIn(owner, fileOwners) {
+			return fmt.Errorf("private file must be owned by the current user or process token owner")
 		}
 	} else if !volumeRoot && !sidIn(owner, trusted) {
 		return fmt.Errorf("private path directory has an untrusted owner")
