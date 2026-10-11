@@ -32,8 +32,53 @@ func openPrivateFile(path string) (*os.File, error) {
 
 	parts := strings.Split(strings.TrimPrefix(clean, string(filepath.Separator)), string(filepath.Separator))
 	current := string(filepath.Separator)
-	for i, part := range parts {
-		last := i == len(parts)-1
+	symlinks := 0
+	for len(parts) > 0 {
+		part := parts[0]
+		parts = parts[1:]
+		last := len(parts) == 0
+		var lst unix.Stat_t
+		if err = unix.Fstatat(fd, part, &lst, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			unix.Close(fd)
+			return nil, fmt.Errorf("inspect private path component %q: %w", part, err)
+		}
+		if uint32(lst.Mode)&unix.S_IFMT == unix.S_IFLNK {
+			if last || lst.Uid != 0 {
+				unix.Close(fd)
+				return nil, fmt.Errorf("private path symlink is not allowed: %q", filepath.Join(current, part))
+			}
+			symlinks++
+			if symlinks > 40 {
+				unix.Close(fd)
+				return nil, fmt.Errorf("private path has too many symlinks")
+			}
+			buf := make([]byte, 4096)
+			n, readErr := unix.Readlinkat(fd, part, buf)
+			if readErr != nil || n == len(buf) {
+				unix.Close(fd)
+				if readErr != nil {
+					return nil, fmt.Errorf("read private path symlink %q: %w", filepath.Join(current, part), readErr)
+				}
+				return nil, fmt.Errorf("private path symlink target is too long: %q", filepath.Join(current, part))
+			}
+			target := string(buf[:n])
+			resolved := filepath.Clean(target)
+			if !filepath.IsAbs(target) {
+				resolved = filepath.Clean(filepath.Join(current, target))
+			}
+			resolvedParts := []string{}
+			if trimmed := strings.TrimPrefix(resolved, string(filepath.Separator)); trimmed != "" {
+				resolvedParts = strings.Split(trimmed, string(filepath.Separator))
+			}
+			parts = append(resolvedParts, parts...)
+			unix.Close(fd)
+			fd, err = unix.Open(string(filepath.Separator), unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+			if err != nil {
+				return nil, fmt.Errorf("reopen filesystem root: %w", err)
+			}
+			current = string(filepath.Separator)
+			continue
+		}
 		flags := unix.O_RDONLY | unix.O_CLOEXEC | unix.O_NOFOLLOW
 		if !last {
 			flags |= unix.O_DIRECTORY
