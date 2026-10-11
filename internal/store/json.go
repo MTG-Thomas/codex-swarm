@@ -984,6 +984,13 @@ func openSQLite(path string) (*sql.DB, error) {
 			created_at TEXT NOT NULL
 		)`,
 		`CREATE INDEX IF NOT EXISTS message_delivery_events_delivery_sequence ON message_delivery_events(delivery_id, sequence)`,
+		`CREATE TABLE IF NOT EXISTS message_replays (
+			request_id TEXT PRIMARY KEY,
+			fingerprint TEXT NOT NULL,
+			result BLOB NOT NULL,
+			created_at TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS message_replays_created ON message_replays(created_at, request_id)`,
 		`CREATE TABLE IF NOT EXISTS file_touches (
 			id TEXT PRIMARY KEY,
 			worker_id TEXT NOT NULL,
@@ -1094,11 +1101,49 @@ func openSQLite(path string) (*sql.DB, error) {
 			return nil, fmt.Errorf("initialize SQLite state %s: %w", path, err)
 		}
 	}
+	if err := runSQLiteMigrations(db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("migrate SQLite state %s: %w", path, err)
+	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("secure SQLite state %s: %w", path, err)
 	}
 	return db, nil
+}
+
+func runSQLiteMigrations(db *sql.DB) (err error) {
+	var version int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	if version >= 1 {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err = tx.Exec(`DELETE FROM message_delivery_events WHERE sequence IN (
+		SELECT sequence FROM (
+			SELECT sequence,ROW_NUMBER() OVER (PARTITION BY delivery_id ORDER BY sequence DESC) AS position
+			FROM message_delivery_events
+		) WHERE position > ?
+	)`, DeliveryEventCap); err != nil {
+		return fmt.Errorf("prune legacy delivery history: %w", err)
+	}
+	if _, err = tx.Exec(`PRAGMA user_version = 1`); err != nil {
+		return fmt.Errorf("record schema version: %w", err)
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit schema migration: %w", err)
+	}
+	return nil
 }
 
 type sqlExecutor interface {

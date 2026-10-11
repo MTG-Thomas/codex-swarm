@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"path"
@@ -15,6 +16,11 @@ import (
 )
 
 const touchRetention = 30 * time.Minute
+
+type messageReplayResult struct {
+	Message    Message    `json:"message"`
+	Deliveries []Delivery `json:"deliveries"`
+}
 
 // CreateMessage inserts an immutable message and one queued delivery per recipient.
 // Reusing a request ID is idempotent only when the complete message matches.
@@ -57,6 +63,23 @@ func (s *JSONStore) CreateMessage(message Message, recipients []string) (Message
 		if !errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("find message request %s: %w", message.RequestID, err)
 		}
+		var replayFingerprint string
+		var replayData []byte
+		err = s.tx.QueryRow(`SELECT fingerprint,result FROM message_replays WHERE request_id=?`, message.RequestID).Scan(&replayFingerprint, &replayData)
+		if err == nil {
+			if replayFingerprint != fingerprint {
+				return fmt.Errorf("request %q for message does not match original mutation fingerprint: %w", message.RequestID, ErrMessageReplayMismatch)
+			}
+			var result messageReplayResult
+			if err := json.Unmarshal(replayData, &result); err != nil {
+				return fmt.Errorf("decode message replay %s: %w", message.RequestID, err)
+			}
+			saved, deliveries, replayed = result.Message, result.Deliveries, true
+			return nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("find message replay %s: %w", message.RequestID, err)
+		}
 		if err := pruneDeliveredMessagesForInsert(s.tx, len(recipients)); err != nil {
 			return err
 		}
@@ -96,7 +119,10 @@ func (s *JSONStore) CreateMessage(message Message, recipients []string) (Message
 			deliveries = append(deliveries, delivery)
 		}
 		saved = message
-		return nil
+		if err := saveMessageReplay(s.tx, fingerprint, saved, deliveries); err != nil {
+			return err
+		}
+		return pruneMessageReplays(s.tx)
 	})
 	return saved, deliveries, replayed, err
 }
@@ -363,9 +389,52 @@ func pruneDeliveredMessagesForInsert(q sqlExecutor, incomingDeliveries int) erro
 		return ErrMessageQuotaExceeded
 	}
 	for _, id := range prune {
+		if err := snapshotMessageReplay(q, id); err != nil {
+			return err
+		}
 		if _, err := q.Exec(`DELETE FROM messages WHERE id=?`, id); err != nil {
 			return fmt.Errorf("prune delivered message %s: %w", id, err)
 		}
+	}
+	return nil
+}
+
+func snapshotMessageReplay(q sqlExecutor, messageID string) error {
+	var message Message
+	var fingerprint, created string
+	if err := q.QueryRow(`SELECT id,request_id,kind,sender,body,fingerprint,created_at FROM messages WHERE id=?`, messageID).
+		Scan(&message.ID, &message.RequestID, &message.Kind, &message.From, &message.Body, &fingerprint, &created); err != nil {
+		return fmt.Errorf("read message %s for replay snapshot: %w", messageID, err)
+	}
+	var err error
+	if message.CreatedAt, err = time.Parse(time.RFC3339Nano, created); err != nil {
+		return fmt.Errorf("parse message replay time %s: %w", messageID, err)
+	}
+	deliveries, err := listMessageDeliveries(q, messageID)
+	if err != nil {
+		return fmt.Errorf("read message deliveries %s for replay snapshot: %w", messageID, err)
+	}
+	return saveMessageReplay(q, fingerprint, message, deliveries)
+}
+
+func saveMessageReplay(q sqlExecutor, fingerprint string, message Message, deliveries []Delivery) error {
+	data, err := json.Marshal(messageReplayResult{Message: message, Deliveries: deliveries})
+	if err != nil {
+		return fmt.Errorf("encode message replay %s: %w", message.RequestID, err)
+	}
+	if _, err := q.Exec(`INSERT INTO message_replays(request_id,fingerprint,result,created_at) VALUES(?,?,?,?)
+		ON CONFLICT(request_id) DO UPDATE SET fingerprint=excluded.fingerprint,result=excluded.result,created_at=excluded.created_at`,
+		message.RequestID, fingerprint, data, message.CreatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("save message replay %s: %w", message.RequestID, err)
+	}
+	return nil
+}
+
+func pruneMessageReplays(q sqlExecutor) error {
+	if _, err := q.Exec(`DELETE FROM message_replays WHERE request_id NOT IN (
+		SELECT request_id FROM message_replays ORDER BY created_at DESC,request_id DESC LIMIT ?
+	)`, MessageReplayCap); err != nil {
+		return fmt.Errorf("prune message replays: %w", err)
 	}
 	return nil
 }
@@ -475,7 +544,10 @@ func listMessageDeliveries(q sqlExecutor, messageID string) (deliveries []Delive
 }
 
 func listDeliveryEvents(q sqlExecutor, deliveryID string) (events []DeliveryEvent, err error) {
-	rows, err := q.Query(`SELECT sequence,state,last_error,created_at FROM message_delivery_events WHERE delivery_id=? ORDER BY sequence`, deliveryID)
+	rows, err := q.Query(`SELECT sequence,state,last_error,created_at FROM (
+		SELECT sequence,state,last_error,created_at FROM message_delivery_events
+		WHERE delivery_id=? ORDER BY sequence DESC LIMIT ?
+	) ORDER BY sequence`, deliveryID, DeliveryEventCap)
 	if err != nil {
 		return nil, fmt.Errorf("list delivery events for %s: %w", deliveryID, err)
 	}

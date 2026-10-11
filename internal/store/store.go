@@ -24,11 +24,14 @@ var (
 )
 
 const (
-	SwarmEventCap             = 500
-	WorkerEventCap            = 500
-	MessageRetentionCap       = 1000
-	MessageDeliveryCap        = 5000
-	MessageInboxCap           = 500
+	SwarmEventCap       = 500
+	WorkerEventCap      = 500
+	MessageRetentionCap = 1000
+	MessageDeliveryCap  = 5000
+	MessageInboxCap     = MessageRetentionCap
+	// MessageReplayCap defines the idempotency window in completed message
+	// creations after a delivered payload is removed by retention pruning.
+	MessageReplayCap          = 1000
 	DeliveryEventCap          = 100
 	CompletedMutationCacheCap = 500
 )
