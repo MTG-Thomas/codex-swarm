@@ -39,6 +39,6 @@ func openDaemonToken(path string) (*os.File, error) {
 	return file, nil
 }
 
-func restrictCreatedToken(file *os.File) error {
-	return file.Chmod(0o600)
+func createDaemonToken(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 }
