@@ -230,9 +230,16 @@ npx wrangler login --device
 
 The checked-in `wrangler.jsonc` targets MTG account
 `b5fc61a1bec847ecc83b3b880b563aaf`, D1 database
-`ee70620a-8bf6-477a-a344-fedd79c84036`, and
-`codex-swarm.midtowntg.com`. For another installation, create its own D1 database
-and replace those bindings before deploying. `workers_dev` is disabled. Set `HOST_KEYS_JSON` with
+`ee70620a-8bf6-477a-a344-fedd79c84036`. The checked-in configuration is paused:
+`routes` and `triggers.crons` are empty, and both `workers_dev` and `preview_urls`
+are disabled. The Worker, secrets, and database are retained. A repository edit
+alone does not disconnect existing live routes or schedules; verify their removal
+in Cloudflare when applying the paused configuration.
+
+To resume, restore the custom domain route for `codex-swarm.midtowntg.com`
+with `custom_domain: true` and the daily cron `17 4 * * *` before deploying.
+For another installation, create its own D1 database and replace those bindings
+before deploying. Set `HOST_KEYS_JSON` with
 `wrangler secret put HOST_KEYS_JSON` through its secret-input prompt. Do not
 commit tokens, their map, `.dev.vars`, or local D1 state.
 
@@ -265,8 +272,8 @@ ceilings; malformed values and attempted increases are ignored. Quota failures
 return HTTP 429, while an existing idempotency key remains replayable at
 capacity.
 
-The daily Worker cron compacts completed messages and their receipt/attempt
-records, released claims, and empty delivery attempts after 30 days. This is the
+When enabled, the daily Worker cron compacts completed messages and their
+receipt/attempt records, released claims, and empty delivery attempts after 30 days. This is the
 explicit replay horizon: request IDs remain deduplicated for at least 30 days,
 but a retry after its terminal record is compacted is a new request and must not
 be sent. Nonterminal messages, active claims, enrolled tasks and host records
