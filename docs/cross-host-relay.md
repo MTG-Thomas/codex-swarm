@@ -238,8 +238,12 @@ in Cloudflare when applying the paused configuration.
 
 To resume, restore the custom domain route for `codex-swarm.midtowntg.com`
 with `custom_domain: true` and the daily cron `17 4 * * *` before deploying.
-For another installation, create its own D1 database and replace those bindings
-before deploying. Set `HOST_KEYS_JSON` with
+For another installation, set its account ID, create its own D1 database, and
+replace the database binding. Before deploying an active relay, configure its
+own custom-domain route with `custom_domain: true` or enable `workers_dev: true`
+to provide a public HTTPS endpoint. Add `17 4 * * *` to `triggers.crons` to enable
+the documented daily compaction job. Leaving the paused defaults deploys no
+public endpoint or scheduled compaction. Set `HOST_KEYS_JSON` with
 `wrangler secret put HOST_KEYS_JSON` through its secret-input prompt. Do not
 commit tokens, their map, `.dev.vars`, or local D1 state.
 
@@ -273,8 +277,8 @@ return HTTP 429, while an existing idempotency key remains replayable at
 capacity.
 
 When enabled, the daily Worker cron compacts completed messages and their
-receipt/attempt records, released claims, and empty delivery attempts after 30 days. This is the
-explicit replay horizon: request IDs remain deduplicated for at least 30 days,
+receipt/attempt records, released claims, and empty delivery attempts after
+30 days. This is the explicit replay horizon: request IDs remain deduplicated for at least 30 days,
 but a retry after its terminal record is compacted is a new request and must not
 be sent. Nonterminal messages, active claims, enrolled tasks and host records
 are never removed automatically. The hard admission limits remain the safety
