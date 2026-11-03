@@ -34,3 +34,10 @@ clean:
 	$(GO) clean
 	rm -rf $(BIN_DIR)
 	rm -f cmd/cs/resource_windows_*.syso cmd/csd/resource_windows_*.syso
+
+.PHONY: secret-scan pre-push
+# Local authenticated gate; keep CI/check/test targets unchanged.
+secret-scan:
+	python3 scripts/secret_gate.py
+
+pre-push: secret-scan
