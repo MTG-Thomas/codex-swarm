@@ -136,7 +136,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $env:CODEX_SWARM_STATE = Join-Path $env:RUNNER_TEMP 'codex-swarm-user-state.db'
+          # The daemon rejects replaceable volume roots; RUNNER_TEMP can be on D:.
+          $env:CODEX_SWARM_STATE = Join-Path $env:APPDATA ("codex-swarm-ci-user-" + [guid]::NewGuid().ToString('N') + '\state.db')
           $env:CODEX_SWARM_RELAY_CONFIG = ''
           $env:CODEX_SWARM_DAEMON_ADDR = '127.0.0.1:18790'
           $env:CODEX_SWARM_LOG_FILE = Join-Path $env:RUNNER_TEMP 'csd-user-task.log'
@@ -178,7 +179,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $env:CODEX_SWARM_DAEMON_ADDR = '127.0.0.1:18789'
-          $env:CODEX_SWARM_STATE = Join-Path $env:RUNNER_TEMP 'codex-swarm-service-state.json'
+          $env:CODEX_SWARM_STATE = Join-Path $env:APPDATA ("codex-swarm-ci-service-" + [guid]::NewGuid().ToString('N') + '\state.db')
           $serviceName = 'codex-swarm-daemon'
           try {
             .\csd.exe uninstall | Out-Host
